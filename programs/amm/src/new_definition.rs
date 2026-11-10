@@ -1,250 +1,184 @@
-use std::num::NonZeroU128;
-
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
     compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, isqrt_product, spot_price_q64_64, AmmConfig, PoolDefinition,
-    MINIMUM_LIQUIDITY,
+    compute_vault_pda_seed, event::Event, isqrt_product, oracle, spot_price_q64_64, AmmState,
+    Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY,
 };
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
-};
-use twap_oracle_core::compute_current_tick_account_pda;
+use lee_core::program::{ReceiveInput, Response, SyncMessage};
+use token_core::Message as TokenMessage;
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "instruction surface passes explicit pool, vault, mint, lock, and user accounts"
-)]
-pub fn new_definition(
-    config: AccountWithMetadata,
-    pool: AccountWithMetadata,
-    vault_a: AccountWithMetadata,
-    vault_b: AccountWithMetadata,
-    pool_definition_lp: AccountWithMetadata,
-    lp_lock_holding: AccountWithMetadata,
-    user_holding_a: AccountWithMetadata,
-    user_holding_b: AccountWithMetadata,
-    user_holding_lp: AccountWithMetadata,
-    current_tick_account: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    token_a_amount: NonZeroU128,
-    token_b_amount: NonZeroU128,
-    amm_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let definition_token_a_id = token_core::TokenHolding::try_from(&user_holding_a.account.data)
-        .expect("New definition: AMM Program expects valid Token Holding account for Token A")
-        .definition_id();
-    let definition_token_b_id = token_core::TokenHolding::try_from(&user_holding_b.account.data)
-        .expect("New definition: AMM Program expects valid Token Holding account for Token B")
-        .definition_id();
+use crate::settlement::{finish, oracle_call, token_call};
 
-    // The Token Program is taken from the config account, not trusted from a caller-supplied
-    // holding. Validating the config PDA is also the Program's initialization gate.
-    assert_eq!(
-        config.account.program_owner, amm_program_id,
-        "New definition: AMM config account must be owned by the AMM Program"
-    );
-    let config_data = AmmConfig::try_from(&config.account.data)
-        .expect("New definition: AMM Program must be initialized before use");
-    let token_program_id = config_data.token_program_id;
-    let twap_oracle_program_id = config_data.twap_oracle_program_id;
-
-    assert_eq!(
-        user_holding_a.account.program_owner, token_program_id,
-        "User Token A holding must be owned by the configured Token Program"
-    );
-    assert_eq!(
-        user_holding_b.account.program_owner, token_program_id,
-        "User Token B holding must be owned by the configured Token Program"
-    );
-    // Verify token_a and token_b are different
+pub(crate) fn forward(input: &ReceiveInput, state: Option<AmmState>, request: Message) -> Response {
     assert!(
-        definition_token_a_id != definition_token_b_id,
-        "Cannot set up a swap for a token with itself"
+        matches!(state, Some(AmmState::Config(_))),
+        "pool creation goes to an initialized config"
     );
-    assert_eq!(
-        pool.account_id,
-        compute_pool_pda(
-            amm_program_id,
-            config.account_id,
-            definition_token_a_id,
-            definition_token_b_id
-        ),
-        "Pool Definition Account ID does not match PDA"
-    );
-    assert_eq!(
-        vault_a.account_id,
-        compute_vault_pda(amm_program_id, pool.account_id, definition_token_a_id),
-        "Vault ID does not match PDA"
-    );
-    assert_eq!(
-        vault_b.account_id,
-        compute_vault_pda(amm_program_id, pool.account_id, definition_token_b_id),
-        "Vault ID does not match PDA"
-    );
-    assert_eq!(
-        pool_definition_lp.account_id,
-        compute_liquidity_token_pda(amm_program_id, pool.account_id),
-        "Liquidity pool Token Definition Account ID does not match PDA"
-    );
-    assert_eq!(
-        lp_lock_holding.account_id,
-        compute_lp_lock_holding_pda(amm_program_id, pool.account_id),
-        "LP lock holding Account ID does not match PDA"
-    );
-
-    // Assert that pool is uninitialized (hard precondition)
-    assert_eq!(
-        pool.account,
-        Account::default(),
-        "Pool account must be uninitialized"
-    );
-    assert!(
-        user_holding_lp.account != Account::default() || user_holding_lp.is_authorized,
-        "Fresh user LP holding requires user authorization"
-    );
-
-    // The pool's TWAP current-tick account is created in the same transaction (a chained call to
-    // the oracle). Validate its PDA and that the clock is the canonical 1-block LEZ clock.
-    assert_eq!(
-        current_tick_account.account_id,
-        compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id),
-        "New definition: current tick Account ID does not match PDA"
-    );
-    assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
-        "New definition: clock account must be the canonical 1-block LEZ clock account"
-    );
-
-    // LP Token minting calculation. The `token_a * token_b` product is computed in U256 (via
-    // `isqrt_product`) so realistic 18-decimal amounts can't overflow u128 before the sqrt.
-    let initial_lp = isqrt_product(token_a_amount.get(), token_b_amount.get());
-    assert!(
-        initial_lp > MINIMUM_LIQUIDITY,
-        "Initial liquidity must exceed minimum liquidity lock"
-    );
-    let user_lp = initial_lp
-        .checked_sub(MINIMUM_LIQUIDITY)
-        .expect("initial liquidity must exceed minimum liquidity after validation");
-
-    // Update pool account
-    let pool_post_definition = PoolDefinition {
-        definition_token_a_id,
-        definition_token_b_id,
-        vault_a_id: vault_a.account_id,
-        vault_b_id: vault_b.account_id,
-        liquidity_pool_id: pool_definition_lp.account_id,
-        liquidity_pool_supply: initial_lp,
-        reserve_a: token_a_amount.into(),
-        reserve_b: token_b_amount.into(),
+    let Message::NewDefinition {
+        config,
+        definition_token_a_id: a,
+        definition_token_b_id: b,
+        ..
+    } = request
+    else {
+        unreachable!("pool creation")
     };
-
-    // Capture the ids the chained calls name before the pre-states move into the diffs.
-    let pool_id = pool.account_id;
-    let config_id = config.account_id;
-    let vault_a_id = vault_a.account_id;
-    let vault_b_id = vault_b.account_id;
-    let pool_definition_lp_id = pool_definition_lp.account_id;
-    let lp_lock_holding_id = lp_lock_holding.account_id;
-    let user_holding_a_id = user_holding_a.account_id;
-    let user_holding_b_id = user_holding_b.account_id;
-    let user_holding_lp_id = user_holding_lp.account_id;
-    let current_tick_account_id = current_tick_account.account_id;
-    let clock_id = clock.account_id;
-
-    // Writing the pool definition is itself the claim on the pool PDA: v0.2.5 makes the
-    // writing program the owner of a default-owned account it writes data to.
-    let pool_diff =
-        AccountStateDiff::new(pool, BalanceDiff::Add(0), Data::from(&pool_post_definition));
-
-    // Every chained call below names its accounts by id and carries its authority in
-    // `pda_seeds`. The runtime resolves each id against this transaction's accumulated
-    // diff, so a callee sees the pool as claimed by the diff above and the LP definition
-    // as created by an earlier call — none of that has to be predicted and hand-built here.
-
-    // Chain call for Token A (user_holding_a -> Vault_A)
-    let call_token_a = ChainedCall::new(
-        token_program_id,
-        vec![user_holding_a_id, vault_a_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: token_a_amount.into(),
-        },
+    assert_eq!(
+        config, input.receiver.account_id,
+        "pool config does not match receiver"
+    );
+    let pool = compute_pool_pda(input.receiver.program_account_id, config, a, b);
+    Response::keep_state().send(
+        SyncMessage::new(
+            crate::actor(input, pool),
+            &Internal::NewPool {
+                request: Box::new(request),
+            },
+        )
+        .with_pda_seeds([compute_pool_pda_seed(config, a, b)]),
     )
-    .with_pda_seeds(vec![compute_vault_pda_seed(pool_id, definition_token_a_id)]);
-    // Chain call for Token B (user_holding_b -> Vault_B)
-    let call_token_b = ChainedCall::new(
-        token_program_id,
-        vec![user_holding_b_id, vault_b_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: token_b_amount.into(),
-        },
-    )
-    .with_pda_seeds(vec![compute_vault_pda_seed(pool_id, definition_token_b_id)]);
+}
 
-    // Chain call for liquidity token lock holding
-    let call_token_lp_lock = ChainedCall::new(
-        token_program_id,
-        vec![pool_definition_lp_id, lp_lock_holding_id],
-        &token_core::Instruction::NewFungibleDefinition {
-            name: String::from("LP Token"),
-            total_supply: MINIMUM_LIQUIDITY,
-            // Self-authority: the LP token is mintable only by the pool, which
-            // presents this PDA as the authorized minter in the chained Mint call.
-            mint_authority: Some(pool_definition_lp_id),
-        },
-    )
-    .with_pda_seeds(vec![
-        compute_liquidity_token_pda_seed(pool_id),
-        compute_lp_lock_holding_pda_seed(pool_id),
-    ]);
-
-    let call_token_lp_user = ChainedCall::new(
-        token_program_id,
-        vec![pool_definition_lp_id, user_holding_lp_id],
-        &token_core::Instruction::Mint {
-            amount_to_mint: user_lp,
-        },
-    )
-    .with_pda_seeds(vec![compute_liquidity_token_pda_seed(pool_id)]);
-
-    // Chain call to create the pool's TWAP current-tick account, with the pool as the price
-    // source. The oracle derives the tick from the opening spot price (reserve_b / reserve_a as a
-    // Q64.64 ratio), so the seed value is taken from the pool's own reserves, not the caller.
-    let initial_price = spot_price_q64_64(token_a_amount.get(), token_b_amount.get());
-    let call_create_current_tick = ChainedCall::new(
-        twap_oracle_program_id,
-        vec![current_tick_account_id, pool_id, clock_id],
-        &twap_oracle_core::Instruction::CreateCurrentTickAccount { initial_price },
-    )
-    .with_pda_seeds(vec![compute_pool_pda_seed(
-        config_id,
+pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+    let Message::NewDefinition {
+        user_holding_a,
+        user_holding_b,
+        user_holding_lp,
+        token_a_amount,
+        token_b_amount,
         definition_token_a_id,
         definition_token_b_id,
-    )]);
-
-    let chained_calls = vec![
-        call_token_lp_lock,
-        call_token_lp_user,
-        call_token_b,
-        call_token_a,
-        call_create_current_tick,
-    ];
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(config),
-        pool_diff,
-        AccountStateDiff::unchanged(vault_a),
-        AccountStateDiff::unchanged(vault_b),
-        AccountStateDiff::unchanged(pool_definition_lp),
-        AccountStateDiff::unchanged(lp_lock_holding),
-        AccountStateDiff::unchanged(user_holding_a),
-        AccountStateDiff::unchanged(user_holding_b),
-        AccountStateDiff::unchanged(user_holding_lp),
-        AccountStateDiff::unchanged(current_tick_account),
-        AccountStateDiff::unchanged(clock),
-    ];
-
-    (state_diffs, chained_calls)
+        ..
+    } = pending.request
+    else {
+        unreachable!("new pool continuation")
+    };
+    let [a, b] = pending.holdings.as_slice() else {
+        unreachable!("two holdings read")
+    };
+    let a = a.as_ref().expect("token A holding must exist");
+    let b = b.as_ref().expect("token B holding must exist");
+    assert_eq!(
+        a.definition_id, definition_token_a_id,
+        "token A definition mismatch"
+    );
+    assert_eq!(
+        b.definition_id, definition_token_b_id,
+        "token B definition mismatch"
+    );
+    assert_ne!(
+        a.definition_id, b.definition_id,
+        "cannot pool a token with itself"
+    );
+    assert!(
+        token_a_amount != 0 && token_b_amount != 0,
+        "initial amounts must be nonzero"
+    );
+    assert!(
+        a.balance >= token_a_amount && b.balance >= token_b_amount,
+        "insufficient initial balances"
+    );
+    let program = input.receiver.program_account_id;
+    let pool_id = input.receiver.account_id;
+    assert_eq!(
+        pool_id,
+        compute_pool_pda(program, pending.config_id, a.definition_id, b.definition_id),
+        "pool does not match config and token pair"
+    );
+    let supply = isqrt_product(token_a_amount, token_b_amount);
+    assert!(
+        supply > MINIMUM_LIQUIDITY,
+        "initial liquidity must exceed minimum liquidity lock"
+    );
+    let pool = PoolDefinition {
+        config_id: pending.config_id,
+        definition_token_a_id: a.definition_id,
+        definition_token_b_id: b.definition_id,
+        vault_a_id: compute_vault_pda(program, pool_id, a.definition_id),
+        vault_b_id: compute_vault_pda(program, pool_id, b.definition_id),
+        liquidity_pool_id: compute_liquidity_token_pda(program, pool_id),
+        liquidity_pool_supply: supply,
+        reserve_a: token_a_amount,
+        reserve_b: token_b_amount,
+    };
+    let config = pending.config.as_ref().expect("config was read");
+    let lock = compute_lp_lock_holding_pda(program, pool_id);
+    let mut response = Response::keep_state();
+    for (vault, definition) in [
+        (pool.vault_a_id, a.definition_id),
+        (pool.vault_b_id, b.definition_id),
+    ] {
+        response = response.send(token_call(
+            config,
+            vault,
+            &TokenMessage::InitializeHolding { definition },
+            Some(compute_vault_pda_seed(pool_id, definition)),
+        ));
+    }
+    // The initial LP holding signs the definition's InitHolding and the transfer into the
+    // permanent lock. No lock seed is ever granted to a debit operation.
+    response = response
+        .send(token_call(
+            config,
+            pool.liquidity_pool_id,
+            &TokenMessage::NewDefinition {
+                name: "LP Token".to_owned(),
+                total_supply: supply,
+                mint_authority: Some(pool.liquidity_pool_id),
+                holding: user_holding_lp,
+            },
+            Some(compute_liquidity_token_pda_seed(pool_id)),
+        ))
+        .send(token_call(
+            config,
+            lock,
+            &TokenMessage::InitializeHolding {
+                definition: pool.liquidity_pool_id,
+            },
+            Some(compute_lp_lock_holding_pda_seed(pool_id)),
+        ))
+        .send(token_call(
+            config,
+            user_holding_lp,
+            &TokenMessage::Transfer {
+                to: lock,
+                amount: MINIMUM_LIQUIDITY,
+            },
+            None,
+        ))
+        .send(token_call(
+            config,
+            user_holding_a,
+            &TokenMessage::Transfer {
+                to: pool.vault_a_id,
+                amount: token_a_amount,
+            },
+            None,
+        ))
+        .send(token_call(
+            config,
+            user_holding_b,
+            &TokenMessage::Transfer {
+                to: pool.vault_b_id,
+                amount: token_b_amount,
+            },
+            None,
+        ))
+        .send(oracle_call(
+            input,
+            config,
+            &pool,
+            &oracle::Message::CreateCurrentTick {
+                price: spot_price_q64_64(token_a_amount, token_b_amount),
+            },
+        ))
+        .event(
+            Event::PoolCreated {
+                amount_a: token_a_amount,
+                amount_b: token_b_amount,
+                liquidity: supply,
+            }
+            .to_program_event(),
+        );
+    finish(input, AmmState::Pool(pool), response)
 }

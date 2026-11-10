@@ -8,7 +8,7 @@
 //! not by its ImageID, so every argument is a base58 account id. AMM instances are namespaced
 //! by `(owner, nonce)`; this prints the owner's default instance (all-zero nonce). With
 //! `<amm_account_id> <owner>` it prints the instance's config PDA; with all args it also prints
-//! the pool/vault/LP/lock/tick and protocol-fee-holding PDAs.
+//! the pool/vault/LP/lock/oracle and protocol-fee-holding PDAs.
 
 use std::str::FromStr;
 
@@ -16,8 +16,7 @@ use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
     compute_protocol_fee_pda, compute_vault_pda,
 };
-use lee_core::account::AccountId;
-use twap_oracle_core::compute_current_tick_account_pda;
+use lee_core::account::{AccountId, Actor};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -54,10 +53,7 @@ fn main() {
             "lp_lock_holding      {}",
             compute_lp_lock_holding_pda(amm, pool)
         );
-        println!(
-            "current_tick_account {}",
-            compute_current_tick_account_pda(twap, pool)
-        );
+        println!("oracle_actor         {:?}", Actor::new(pool, twap));
         // Protocol-fee holdings are per (config, token definition) — the input token's holding is
         // the one a swap credits and `WithdrawProtocolFees` drains.
         println!(
