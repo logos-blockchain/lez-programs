@@ -1,0 +1,17 @@
+[package]
+name = "nft_program"
+version = "0.1.0"
+edition = "2021"
+
+[lints]
+workspace = true
+
+[dependencies]
+# Not `workspace = true`: that would inherit the `host` feature into the guest build.
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e" }
+nft_core = { path = "core" }
+borsh = { version = "1.5", features = ["derive"] }
+
+[dev-dependencies]
+# `host` derives `Debug`/`PartialEq` on `Response`, for assertions.
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e", features = ["host"] }

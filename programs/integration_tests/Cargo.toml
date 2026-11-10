@@ -13,9 +13,15 @@ workspace = true
 name = "token"
 path = "tests/token.rs"
 
+[[test]]
+name = "nft"
+path = "tests/nft.rs"
+
 [dependencies]
 borsh = { workspace = true }
 lee = { workspace = true }
 lee_core = { workspace = true, features = ["host", "test_utils"] }
 token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
+nft_core = { workspace = true }
+nft-methods = { path = "../nft/methods" }

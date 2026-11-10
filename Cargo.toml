@@ -3,6 +3,9 @@ members = [
     "programs/token/core",
     "programs/token",
     "programs/token/methods",
+    "programs/nft/core",
+    "programs/nft",
+    "programs/nft/methods",
     "programs/integration_tests",
     "tools/risc0-packager",
     # Not yet ported to LEZ's actor model (docs/lez-actor-model-upgrade-plan.md §5).
@@ -30,6 +33,7 @@ members = [
 ]
 exclude = [
     "programs/token/methods/guest",
+    "programs/nft/methods/guest",
     "programs/amm/methods/guest",
     "programs/ata/methods/guest",
     "programs/stablecoin/methods/guest",
@@ -47,6 +51,8 @@ lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e", features = ["test-utils"] }
 token_core = { path = "programs/token/core" }
 token_program = { path = "programs/token" }
+nft_core = { path = "programs/nft/core" }
+nft_program = { path = "programs/nft" }
 amm_core = { path = "programs/amm/core" }
 amm_program = { path = "programs/amm" }
 ata_core = { path = "programs/ata/core" }
