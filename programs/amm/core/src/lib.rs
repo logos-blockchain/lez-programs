@@ -1,310 +1,22 @@
-//! This crate contains core data structures and utilities for the AMM Program.
+//! AMM actor state, messages, deterministic pricing and PDA derivations.
+//!
+//! Message and state enums are append-only: Borsh tags and stored layouts are part of
+//! the actor protocol. This replaces the pre-0.4 account-list instruction interface.
 
-use borsh::{BorshDeserialize, BorshSerialize};
-use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::PdaSeed,
-};
-use serde::{Deserialize, Serialize};
-use spel_framework_macros::account_type;
+use lee_core::{account::AccountId, program::PdaSeed};
 
-// These stable domain-separation tags are part of the PDA derivation scheme and must stay
-// unchanged for address compatibility.
+pub mod event;
+mod message;
+pub mod oracle;
+mod state;
+pub use message::*;
+pub use state::*;
+
 const LIQUIDITY_TOKEN_PDA_SEED: &[u8] = b"LIQUIDITY_TOKEN";
 const LP_LOCK_HOLDING_PDA_SEED: &[u8] = b"LP_LOCK_HOLDING";
 const PROTOCOL_FEE_HOLDING_PDA_SEED: &[u8] = b"PROTOCOL_FEE_HOLDING";
 
-/// AMM Program Instruction.
-///
-/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
-/// this type derives.
-///
-/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
-/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
-/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
-/// straight from the IDL. Carrying them here would only mean a type that accepts either
-/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
-/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
-/// the runtime rejects. Without a serde impl that is a compile error instead.
-///
-/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
-/// instruction enum alone.
-///
-/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
-/// inserting one shifts the encoding of every variant after it.
-#[derive(BorshSerialize, BorshDeserialize)]
-pub enum Instruction {
-    /// Initializes a **namespaced** AMM instance by creating its configuration account.
-    ///
-    /// A single deployed AMM Program hosts many independent instances, each identified by a
-    /// namespace `(owner, nonce)`. The configuration account is a PDA derived from that namespace
-    /// (`compute_config_pda(self_program_id, owner, nonce)`), where `owner` is the account that
-    /// signs this instruction. Signing squat-proofs the namespace: nobody can initialize an
-    /// instance (and set its program IDs) under an account they do not control. The `nonce`
-    /// discriminates multiple instances under the same owner; the all-zero nonce is the owner's
-    /// default instance.
-    ///
-    /// The config stores the program IDs the AMM issues chained calls to (the Token Program and
-    /// the TWAP oracle program) — so each namespace can point at its own deployments — plus the
-    /// admin `authority` allowed to transfer admin control later via `UpdateConfig`. Every pool
-    /// and downstream PDA is derived from this config's account id, so instances are fully
-    /// isolated even for the same token pair. Rejects if the config already exists.
-    ///
-    /// The config also stores the instance-wide `swap_fee_bps` — the swap fee (in basis points)
-    /// every pool in this namespace charges. Fees are no longer per-pool: whoever initializes the
-    /// instance sets the fee here once, and every swap reads it from the config.
-    ///
-    /// Required accounts:
-    /// - Owner Account — signs this instruction; its account id is the namespace owner.
-    /// - AMM Config Account, uninitialized, derived as `compute_config_pda(self_program_id,
-    ///   owner.account_id, nonce)`
-    Initialize {
-        /// Namespace discriminator under `owner`. `[0; 32]` is the owner's default instance.
-        nonce: [u8; 32],
-        /// Program ID of the Token Program the AMM will issue chained calls to.
-        token_program_id: AccountId,
-        /// Program ID of the TWAP oracle program the AMM will issue chained calls to.
-        twap_oracle_program_id: AccountId,
-        /// Admin authority allowed to transfer admin control via `UpdateConfig`.
-        authority: AccountId,
-        /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
-        /// Must be below `FEE_BPS_DENOMINATOR` (100%).
-        swap_fee_bps: u128,
-        /// Protocol fee as a fraction of the swap fee, in basis points. `swap_fee *
-        /// protocol_fee_bps / FEE_BPS_DENOMINATOR` of each swap's input token goes to the
-        /// instance's protocol-fee holding; the rest accrues to LPs. Must be at most
-        /// `FEE_BPS_DENOMINATOR` (100% of the swap fee); `0` disables protocol fees.
-        protocol_fee_bps: u128,
-    },
-
-    /// Transfers the AMM Program's admin authority to a new account. Only the configured admin
-    /// `authority` may call this; the authority account must be passed authorized (signed).
-    ///
-    /// The Token Program and TWAP oracle program IDs are **immutable deployment parameters** set
-    /// once at `Initialize`: they are baked into every derived PDA (vaults, current-tick,
-    /// price-observation / price accounts) and into the AMM's chained calls, so changing them
-    /// after any pool exists would orphan every derived account and vault. They therefore cannot
-    /// be reconfigured in place — a genuine change requires redeploying the AMM. This instruction
-    /// only moves the admin authority.
-    ///
-    /// Required accounts:
-    /// - AMM Config Account (initialized)
-    /// - Authority Account — must equal the config's current `authority`, passed authorized.
-    UpdateConfig {
-        /// New admin authority (transfers admin control to this account).
-        new_authority: AccountId,
-    },
-
-    /// Creates a TWAP price-observations account for a pool over a time window, on behalf of the
-    /// AMM, via a chained call to the configured TWAP oracle program.
-    ///
-    /// The pool acts as the price source: the AMM authorizes it (via its pool PDA seed) so the
-    /// oracle ties the observations account to this pool. The feed's initial tick is read from the
-    /// pool's [`CurrentTickAccount`](twap_oracle_core::CurrentTickAccount) — the authoritative
-    /// tick the AMM previously wrote — rather than being supplied by the caller, so the feed
-    /// cannot be seeded at a forged price. Rejects if the observations account already exists.
-    /// The clock must be the canonical 1-block LEZ clock.
-    ///
-    /// Required accounts:
-    /// - AMM Config Account (initialized)
-    /// - AMM Pool (initialized; acts as the price source)
-    /// - Current Tick Account, the pool's initialized TWAP PDA derived as
-    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; supplies the
-    ///   initial tick
-    /// - Price Observations Account, uninitialized TWAP PDA derived as
-    ///   `compute_price_observations_pda(twap_oracle_program_id, pool.account_id,
-    ///   window_duration)`
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    CreatePriceObservations {
-        /// Duration of the TWAP window this feed serves, in milliseconds. Part of the
-        /// observations PDA seed, so each window gets a distinct account.
-        window_duration: u64,
-    },
-
-    /// Creates a TWAP oracle price account for a pool over a time window, on behalf of the AMM,
-    /// via a chained call to the configured TWAP oracle program.
-    ///
-    /// The pool acts as the price source: the AMM authorizes it (via its pool PDA seed) so the
-    /// oracle ties the price account to this pool. The base/quote assets are the pool's token
-    /// definitions and the initial price is the pool's current spot price
-    /// (`reserve_b / reserve_a` as a Q64.64), read from the validated pool rather than supplied by
-    /// the caller — so the account cannot be seeded at a forged price. The account is overwritten
-    /// by `PublishPrice` once the feed has observations. Rejects if the price account already
-    /// exists. The clock must be the canonical 1-block LEZ clock.
-    ///
-    /// Required accounts:
-    /// - AMM Config Account (initialized)
-    /// - AMM Pool (initialized; acts as the price source)
-    /// - Oracle Price Account, uninitialized TWAP PDA derived as
-    ///   `compute_oracle_price_account_pda(twap_oracle_program_id, pool.account_id,
-    ///   window_duration)`
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    CreateOraclePriceAccount {
-        /// Duration of the TWAP window this price account serves, in milliseconds. Part of the
-        /// price-account PDA seed, so each window gets a distinct account.
-        window_duration: u64,
-    },
-
-    /// Initializes a new Pool (or re-initializes an existing zero-supply Pool).
-    ///
-    /// On initialization, `MINIMUM_LIQUIDITY` LP tokens are permanently locked
-    /// in the LP-lock holding PDA; the caller receives `initial_lp - MINIMUM_LIQUIDITY`.
-    ///
-    /// Required accounts:
-    /// - AMM Pool
-    /// - Vault Holding Account for Token A
-    /// - Vault Holding Account for Token B
-    /// - Pool Liquidity Token Definition
-    /// - LP Lock Holding Account, derived as `compute_lp_lock_holding_pda(self_program_id,
-    ///   pool.account_id)`
-    /// - User Holding Account for Token A (authorized)
-    /// - User Holding Account for Token B (authorized)
-    /// - User Holding Account for Pool Liquidity (authorized when uninitialized)
-    NewDefinition {
-        token_a_amount: u128,
-        token_b_amount: u128,
-        /// Unix timestamp (milliseconds) after which this transaction is invalid.
-        deadline: u64,
-    },
-
-    /// Adds liquidity to the Pool
-    ///
-    /// Required accounts:
-    /// - AMM Pool (initialized)
-    /// - Vault Holding Account for Token A (initialized)
-    /// - Vault Holding Account for Token B (initialized)
-    /// - Pool Liquidity Token Definition (initialized)
-    /// - User Holding Account for Token A (authorized)
-    /// - User Holding Account for Token B (authorized)
-    /// - User Holding Account for Pool Liquidity
-    /// - Current Tick Account, the pool's TWAP PDA derived as
-    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
-    ///   with the new spot price
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    AddLiquidity {
-        min_amount_liquidity: u128,
-        max_amount_to_add_token_a: u128,
-        max_amount_to_add_token_b: u128,
-        /// Unix timestamp (milliseconds) after which this transaction is invalid.
-        deadline: u64,
-    },
-
-    /// Removes liquidity from the Pool
-    ///
-    /// Required accounts:
-    /// - AMM Pool (initialized)
-    /// - Vault Holding Account for Token A (initialized)
-    /// - Vault Holding Account for Token B (initialized)
-    /// - Pool Liquidity Token Definition (initialized)
-    /// - User Holding Account for Token A (initialized)
-    /// - User Holding Account for Token B (initialized)
-    /// - User Holding Account for Pool Liquidity (authorized)
-    /// - Current Tick Account, the pool's TWAP PDA derived as
-    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
-    ///   with the new spot price
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    RemoveLiquidity {
-        remove_liquidity_amount: u128,
-        min_amount_to_remove_token_a: u128,
-        min_amount_to_remove_token_b: u128,
-        /// Unix timestamp (milliseconds) after which this transaction is invalid.
-        deadline: u64,
-    },
-
-    /// Swap some quantity of tokens while maintaining the Pool constant product.
-    ///
-    /// Swap direction is determined by the input holding: `user_input_holding`'s token definition
-    /// selects which pool token is sold. That holding must be signed so the downstream token
-    /// transfer can debit it; `user_output_holding` only receives and needs no signature.
-    ///
-    /// Required accounts:
-    /// - AMM Pool (initialized)
-    /// - Vault Holding Account for Token A (initialized)
-    /// - Vault Holding Account for Token B (initialized)
-    /// - User Input Holding Account (initialized, signed) — the token being sold
-    /// - User Output Holding Account (initialized) — receives the token being bought
-    /// - Current Tick Account, the pool's TWAP PDA derived as
-    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
-    ///   with the new spot price
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    SwapExactInput {
-        swap_amount_in: u128,
-        min_amount_out: u128,
-        /// Unix timestamp (milliseconds) after which this transaction is invalid.
-        deadline: u64,
-    },
-
-    /// Swap tokens specifying the exact desired output amount while maintaining the Pool constant
-    /// product.
-    ///
-    /// Swap direction is determined by the input holding: `user_input_holding`'s token definition
-    /// selects which pool token is sold. That holding must be signed so the downstream token
-    /// transfer can debit it; `user_output_holding` only receives and needs no signature.
-    ///
-    /// Required accounts:
-    /// - AMM Pool (initialized)
-    /// - Vault Holding Account for Token A (initialized)
-    /// - Vault Holding Account for Token B (initialized)
-    /// - User Input Holding Account (initialized, signed) — the token being sold
-    /// - User Output Holding Account (initialized) — receives the token being bought
-    /// - Current Tick Account, the pool's TWAP PDA derived as
-    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
-    ///   with the new spot price
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    SwapExactOutput {
-        exact_amount_out: u128,
-        max_amount_in: u128,
-        /// Unix timestamp (milliseconds) after which this transaction is invalid.
-        deadline: u64,
-    },
-
-    /// Sync pool reserves with current vault balances, refreshing the pool's TWAP current tick.
-    ///
-    /// Required accounts:
-    /// - AMM Pool (initialized, with LP supply at or above minimum liquidity)
-    /// - Vault Holding Account for Token A (initialized)
-    /// - Vault Holding Account for Token B (initialized)
-    /// - Current Tick Account, the pool's TWAP PDA derived as
-    ///   `compute_current_tick_account_pda(twap_oracle_program_id, pool.account_id)`; refreshed
-    ///   with the new spot price
-    /// - Clock Account (the canonical 1-block LEZ clock)
-    SyncReserves,
-
-    /// Withdraw accrued protocol fees for one token to a destination holding. Only the config's
-    /// admin `authority` may call this. Protocol fees accumulate in an instance-wide, AMM-owned
-    /// PDA holding per `(config, token)` (see [`compute_protocol_fee_pda`]); this moves `amount`
-    /// of them out under the protocol-fee PDA's authority.
-    ///
-    /// Required accounts:
-    /// - AMM Config Account (initialized) — its stored `authority` gates the call.
-    /// - Protocol-fee Holding, the source PDA derived as
-    ///   `compute_protocol_fee_pda(self_program_id, config.account_id, token_definition_id)`; its
-    ///   stored token definition selects the token being withdrawn.
-    /// - Destination Holding — an initialized Token Holding of the same token that receives the
-    ///   fees.
-    /// - Authority Account — must equal `config.authority` and be passed authorized (signed).
-    WithdrawProtocolFees {
-        /// Amount of protocol fees (base units of the holding's token) to move to the destination.
-        amount: u128,
-    },
-}
-
 pub const MINIMUM_LIQUIDITY: u128 = 1_000;
-
-#[account_type]
-#[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct PoolDefinition {
-    pub definition_token_a_id: AccountId,
-    pub definition_token_b_id: AccountId,
-    pub vault_a_id: AccountId,
-    pub vault_b_id: AccountId,
-    pub liquidity_pool_id: AccountId,
-    /// Total LP supply tracked by the pool. After initialization it includes the permanently
-    /// locked `MINIMUM_LIQUIDITY`; a zero supply means the pool is uninitialized
-    pub liquidity_pool_supply: u128,
-    pub reserve_a: u128,
-    pub reserve_b: u128,
-}
 
 pub const FEE_BPS_DENOMINATOR: u128 = 10_000;
 pub const FEE_TIER_BPS_1: u128 = 1;
@@ -554,74 +266,6 @@ pub fn isqrt_product(a: u128, b: u128) -> u128 {
     u128::try_from(root).expect("isqrt_product result exceeds u128")
 }
 
-impl TryFrom<&Data> for PoolDefinition {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        PoolDefinition::try_from_slice(data.as_ref())
-    }
-}
-
-impl From<&PoolDefinition> for Data {
-    fn from(definition: &PoolDefinition) -> Self {
-        // Using size_of_val as size hint for Vec allocation
-        let mut data = Vec::with_capacity(std::mem::size_of_val(definition));
-
-        BorshSerialize::serialize(definition, &mut data)
-            .expect("Serialization to Vec should not fail");
-
-        Data::try_from(data).expect("Token definition encoded data should fit into Data")
-    }
-}
-
-/// Singleton configuration account for the AMM Program.
-///
-/// Stored at the PDA derived from the constant `"CONFIG"` seed
-/// (`compute_config_pda(amm_program_id)`). Created once via the `Initialize` instruction; its
-/// existence is the Program's "initialized" flag. Every chained-call instruction reads
-/// `token_program_id` from here instead of trusting the program owner of a caller-supplied
-/// account.
-#[account_type]
-#[derive(Clone, Default, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct AmmConfig {
-    /// Account address of the Token Program the AMM issues chained calls to.
-    ///
-    /// A program is identified by its deployed header account since LEZ v0.2.5, so this
-    /// is deployment configuration: it cannot be derived from the program's binary.
-    pub token_program_id: AccountId,
-    /// Account address of the TWAP oracle program the AMM issues chained calls to.
-    pub twap_oracle_program_id: AccountId,
-    /// Admin authority allowed to transfer admin control via `UpdateConfig`.
-    pub authority: AccountId,
-    /// Instance-wide swap fee in basis points, applied to every swap in this namespace.
-    /// Set at `Initialize`; always below `FEE_BPS_DENOMINATOR` (100%). Fees are not per-pool.
-    pub swap_fee_bps: u128,
-    /// Protocol fee as a fraction of the swap fee, in basis points (of `FEE_BPS_DENOMINATOR`).
-    /// On each swap, `swap_fee * protocol_fee_bps / FEE_BPS_DENOMINATOR` of the input token is
-    /// diverted from LPs to the instance's protocol-fee holding for that token; the remainder
-    /// accrues to LPs as before. Set at `Initialize`; at most `FEE_BPS_DENOMINATOR` (100% of the
-    /// swap fee). `0` disables protocol fees.
-    pub protocol_fee_bps: u128,
-}
-
-impl TryFrom<&Data> for AmmConfig {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        AmmConfig::try_from_slice(data.as_ref())
-    }
-}
-
-impl From<&AmmConfig> for Data {
-    fn from(config: &AmmConfig) -> Self {
-        let mut data = Vec::with_capacity(std::mem::size_of_val(config));
-
-        BorshSerialize::serialize(config, &mut data).expect("Serialization to Vec should not fail");
-
-        Data::try_from(data).expect("AMM config encoded data should fit into Data")
-    }
-}
-
 // Stable domain-separation marker for the config PDA. Hashed together with the namespace
 // `(owner, nonce)` into the 32-byte seed; must stay unchanged for address compatibility.
 const CONFIG_PDA_SEED: &[u8] = b"CONFIG";
@@ -688,10 +332,10 @@ pub fn compute_pool_pda_seed(
         std::cmp::Ordering::Equal => panic!("Definitions match"),
     };
 
-    let mut bytes = [0; 96];
-    bytes[0..32].copy_from_slice(&config_id.to_bytes());
-    bytes[32..64].copy_from_slice(&token_1.to_bytes());
-    bytes[64..96].copy_from_slice(&token_2.to_bytes());
+    let mut bytes = Vec::with_capacity(96);
+    bytes.extend_from_slice(&config_id.to_bytes());
+    bytes.extend_from_slice(&token_1.to_bytes());
+    bytes.extend_from_slice(&token_2.to_bytes());
 
     PdaSeed::new(
         Impl::hash_bytes(&bytes)
@@ -805,34 +449,6 @@ pub fn compute_lp_lock_holding_pda_seed(pool_id: AccountId) -> PdaSeed {
     )
 }
 
-fn read_fungible_holding(account: &AccountWithMetadata, context: &str) -> (AccountId, u128) {
-    let token_holding = token_core::TokenHolding::try_from(&account.account.data)
-        .unwrap_or_else(|_| panic!("{context}: AMM Program expects a valid Token Holding Account"));
-
-    let token_core::TokenHolding::Fungible {
-        definition_id,
-        balance,
-    } = token_holding
-    else {
-        panic!("{context}: AMM Program expects a valid Fungible Token Holding Account");
-    };
-
-    (definition_id, balance)
-}
-
-pub fn read_vault_fungible_balances(
-    context: &str,
-    vault_a: &AccountWithMetadata,
-    vault_b: &AccountWithMetadata,
-) -> (u128, u128) {
-    let vault_a_context = format!("{context}: Vault A");
-    let vault_b_context = format!("{context}: Vault B");
-    let (_, vault_a_balance) = read_fungible_holding(vault_a, &vault_a_context);
-    let (_, vault_b_balance) = read_fungible_holding(vault_b, &vault_b_context);
-
-    (vault_a_balance, vault_b_balance)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,7 +473,9 @@ mod tests {
             );
         }
         // Ascending and de-duplicated.
-        assert!(SUPPORTED_FEE_TIERS.windows(2).all(|w| w[0] < w[1]));
+        assert!(SUPPORTED_FEE_TIERS
+            .windows(2)
+            .all(|w| matches!(w, [a, b] if a < b)));
     }
 
     #[test]

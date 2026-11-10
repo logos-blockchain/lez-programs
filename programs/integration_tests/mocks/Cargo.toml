@@ -1,0 +1,19 @@
+[package]
+name = "oracle-mock-methods"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lints]
+workspace = true
+
+[build-dependencies]
+risc0-build = "=3.0.5"
+
+[dependencies]
+amm_core = { path = "../../amm/core" }
+lee_core = { workspace = true }
+borsh = { workspace = true }
+
+[package.metadata.risc0]
+methods = ["guest"]
