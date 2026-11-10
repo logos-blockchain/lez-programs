@@ -1,6 +1,6 @@
 //! `Transfer`: the sender debits itself and credits the recipient asynchronously. The credit
 //! carries no authorization (a seed grant on the sender stays behind), and for a private
-//! recipient later it can wait in the mailbox (`token.md` §3.5).
+//! recipient later it can wait in the mailbox.
 
 use lee_core::{
     account::{AccountId, Actor},
@@ -33,7 +33,7 @@ pub(crate) fn transfer(input: &ReceiveInput, to: AccountId, amount: u128) -> Res
 
 /// At the recipient, for a transfer or a mint. Lands only on an existing holding of the same
 /// definition, so nobody can occupy an account's token actor with a token its owner didn't
-/// choose (`token.md` §3.7).
+/// choose.
 pub(crate) fn increase_balance(
     input: &ReceiveInput,
     from: Actor,
@@ -241,7 +241,7 @@ mod tests {
             );
         }
 
-        /// Supply conservation (`token.md` §3.3): outside programs can't get a credit decoded.
+        /// Supply conservation: outside programs can't get a credit decoded.
         #[test]
         fn is_never_decoded_from_an_outside_program() {
             let result = std::panic::catch_unwind(|| {

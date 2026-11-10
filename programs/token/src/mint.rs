@@ -1,5 +1,5 @@
 //! `Mint`: at the definition when it is its own authority, otherwise through the authority's
-//! own actor, which forwards `IncreaseSupply` (`token.md` §3.6).
+//! own actor, which forwards `IncreaseSupply`.
 
 use lee_core::{
     account::{AccountId, Actor},

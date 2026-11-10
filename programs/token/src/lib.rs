@@ -2,12 +2,10 @@
 //!
 //! A handler sees one actor: a definition, a holding, or an empty one. Operations that
 //! touch several (transfer, mint, burn, initialization) are short conversations between
-//! token actors; each operation's module holds all of its steps. Design:
-//! `docs/actor-model/token.md`.
+//! token actors; each operation's module holds all of its steps.
 //!
 //! Supply conservation rests on [`Internal`] messages being decoded only when a token
-//! actor sent them, and on every token code path that emits one upholding the invariant
-//! (`token.md` §3.3):
+//! actor sent them, and on every token code path that emits one upholding the invariant:
 //!
 //! - a holding sends `IncreaseBalance` only for its own definition, after debiting the same amount;
 //! - a definition sends `IncreaseBalance` only for itself, after raising its supply by the amount;
@@ -16,7 +14,7 @@
 //!   to the holding that asked (`RequestHolding`).
 //!
 //! Owner operations check `is_authorized` and nothing about the sender: a signature, an ATA
-//! seed grant and an AMM vault seed all look the same here (`token.md` §3.4).
+//! seed grant and an AMM vault seed all look the same here.
 
 use lee_core::{
     account::{AccountId, Actor},
@@ -120,7 +118,7 @@ fn assert_not_zero(authority: Option<AccountId>) {
 }
 
 /// The authority speaks through its own token actor, whose state is left untouched; the
-/// definition checks that the sender is its authority (`token.md` §3.6).
+/// definition checks that the sender is its authority.
 fn forward_as_authority(
     input: &ReceiveInput,
     definition: AccountId,

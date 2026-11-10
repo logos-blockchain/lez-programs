@@ -1,9 +1,9 @@
-//! `InitializeHolding`: holding → definition → holding (`token.md` §4.3), so a holding only
-//! ever exists for a definition that does.
+//! `InitializeHolding`: holding → definition → holding, so a holding only ever exists for a
+//! definition that does.
 //!
 //! The first message goes to the holding because a seed grant authorizes only the account it
 //! is addressed to; the holding's authorization then travels down the sync chain to the
-//! definition and back (`docs/actor-model/initialize-holding.md`).
+//! definition and back.
 
 use lee_core::{
     account::{AccountId, Actor},

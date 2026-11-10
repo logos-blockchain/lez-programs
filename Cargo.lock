@@ -1615,6 +1615,8 @@ dependencies = [
  "borsh",
  "lee",
  "lee_core",
+ "nft-methods",
+ "nft_core",
  "token-methods",
  "token_core",
 ]
@@ -1962,6 +1964,34 @@ dependencies = [
  "ctutils",
  "hybrid-array",
  "num-traits",
+]
+
+[[package]]
+name = "nft-methods"
+version = "0.1.0"
+dependencies = [
+ "nft_core",
+ "risc0-build",
+ "risc0-zkvm",
+]
+
+[[package]]
+name = "nft_core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-zkvm",
+ "serde",
+]
+
+[[package]]
+name = "nft_program"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "nft_core",
 ]
 
 [[package]]

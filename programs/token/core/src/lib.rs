@@ -1,7 +1,5 @@
 //! Core types for the fungible Token Program: actor state, messages and events.
 //!
-//! Design: `docs/actor-model/token.md`.
-//!
 //! State and messages outlive code (state stays on accounts, async messages in mailboxes),
 //! and Borsh encodes an enum variant as a leading tag byte. Every enum here is therefore
 //! append-only: a changed layout is a new variant, never an edit of an existing one.
