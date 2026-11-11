@@ -17,6 +17,10 @@ path = "tests/token.rs"
 name = "nft"
 path = "tests/nft.rs"
 
+[[test]]
+name = "ata"
+path = "tests/ata.rs"
+
 [dependencies]
 borsh = { workspace = true }
 lee = { workspace = true }
@@ -25,3 +29,7 @@ token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
+
+ata_core = { workspace = true }
+ata-methods = { path = "../ata/methods" }
+ata-mock-methods = { path = "ata_mocks" }

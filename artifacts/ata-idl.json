@@ -1,61 +1,41 @@
 {
-  "version": "0.1.0",
+  "version": "2",
   "name": "ata",
-  "instructions": [
+  "messages": [
     {
-      "name": "create",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "token_definition",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "ata_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "Create",
+      "tag": 0,
+      "docs": "Permissionlessly initialize the derived holding. Declare its token actor and\nthe definition's token actor. Repeated creation preserves an existing balance.",
+      "fields": [
         {
           "name": "token_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "owner",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
           "type": "account_id"
         }
       ]
     },
     {
-      "name": "transfer",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "sender_ata",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "recipient",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "Transfer",
+      "tag": 1,
+      "docs": "Transfer from the receiver owner's derived holding. Zero amounts validate both\nholdings and complete without an asset transfer or event.",
+      "fields": [
         {
           "name": "token_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "to",
           "type": "account_id"
         },
         {
@@ -65,30 +45,73 @@
       ]
     },
     {
-      "name": "burn",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "holder_ata",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "token_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "Burn",
+      "tag": 2,
+      "docs": "Burn from the receiver owner's holding. Declare holding and definition token actors.",
+      "fields": [
         {
           "name": "token_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "CreateNft",
+      "tag": 3,
+      "docs": "Permissionlessly initialize an NFT holding, declaring holding and definition NFT actors.",
+      "fields": [
+        {
+          "name": "nft_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "owner",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "TransferNft",
+      "tag": 4,
+      "docs": "Move the whole master or copy to an initialized holding of the same definition\nthat holds nothing. NFT printing is not exposed by ATA.",
+      "fields": [
+        {
+          "name": "nft_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "to",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "BurnNft",
+      "tag": 5,
+      "docs": "Burn master units or exactly one owned copy. Declare holding and definition NFT actors.",
+      "fields": [
+        {
+          "name": "nft_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
           "type": "account_id"
         },
         {
@@ -98,148 +121,138 @@
       ]
     }
   ],
-  "accounts": [
-    {
-      "name": "TokenDefinition",
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Fungible",
-            "fields": [
-              {
-                "name": "name",
-                "type": "string"
-              },
-              {
-                "name": "total_supply",
-                "type": "u128"
-              },
-              {
-                "name": "metadata_id",
-                "type": {
-                  "option": "account_id"
-                }
-              },
-              {
-                "name": "authority",
-                "type": {
-                  "option": "account_id"
-                }
-              }
-            ]
-          },
-          {
-            "name": "NonFungible",
-            "fields": [
-              {
-                "name": "name",
-                "type": "string"
-              },
-              {
-                "name": "printable_supply",
-                "type": "u128"
-              },
-              {
-                "name": "metadata_id",
-                "type": "account_id"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "name": "TokenHolding",
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Fungible",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "balance",
-                "type": "u128"
-              }
-            ]
-          },
-          {
-            "name": "NftMaster",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "print_balance",
-                "type": "u128"
-              }
-            ]
-          },
-          {
-            "name": "NftPrintedCopy",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "owned",
-                "type": "bool"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "name": "TokenMetadata",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "definition_id",
-            "type": "account_id"
-          },
-          {
-            "name": "standard",
-            "type": {
-              "defined": "MetadataStandard"
-            }
-          },
-          {
-            "name": "uri",
-            "type": "string"
-          },
-          {
-            "name": "creators",
-            "type": "string"
-          },
-          {
-            "name": "primary_sale_date",
-            "type": "u64"
-          }
-        ]
-      }
-    }
-  ],
+  "state": {
+    "defined": "AtaState"
+  },
   "types": [
     {
-      "name": "MetadataStandard",
+      "name": "AtaState",
       "kind": "enum",
       "variants": [
         {
-          "name": "Simple"
+          "name": "ReadingSource",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "TransferRequest"
+              }
+            }
+          ]
         },
         {
-          "name": "Expanded"
+          "name": "ReadingRecipient",
+          "fields": [
+            {
+              "name": "request",
+              "type": {
+                "defined": "TransferRequest"
+              }
+            },
+            {
+              "name": "source",
+              "type": {
+                "defined": "Holding"
+              }
+            }
+          ]
+        },
+        {
+          "name": "VerifyingRecipient",
+          "fields": [
+            {
+              "name": "asset_program",
+              "type": "account_id"
+            },
+            {
+              "name": "definition",
+              "type": "account_id"
+            },
+            {
+              "name": "expected",
+              "type": {
+                "defined": "Holding"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Holding",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Token",
+          "fields": [
+            {
+              "name": "0",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "Master",
+          "fields": [
+            {
+              "name": "0",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "Copy",
+          "fields": [
+            {
+              "name": "0",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "TransferKind",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Token",
+          "fields": [
+            {
+              "name": "amount",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "Nft"
+        }
+      ]
+    },
+    {
+      "name": "TransferRequest",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "account_id",
+          "docs": "Captured from the authorized receiver, never from a public message argument."
+        },
+        {
+          "name": "asset_program",
+          "type": "account_id"
+        },
+        {
+          "name": "definition",
+          "type": "account_id"
+        },
+        {
+          "name": "kind",
+          "type": {
+            "defined": "TransferKind"
+          }
         }
       ]
     }
-  ],
-  "instruction_type": "ata_core::Instruction"
+  ]
 }

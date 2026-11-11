@@ -280,6 +280,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
+name = "ata-methods"
+version = "0.1.0"
+dependencies = [
+ "ata_core",
+ "risc0-build",
+ "risc0-zkvm",
+]
+
+[[package]]
+name = "ata-mock-methods"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+]
+
+[[package]]
+name = "ata_core"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "lee_core",
+ "risc0-zkvm",
+]
+
+[[package]]
+name = "ata_program"
+version = "0.1.0"
+dependencies = [
+ "ata_core",
+ "borsh",
+ "lee_core",
+ "nft_core",
+ "token_core",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1619,6 +1655,9 @@ dependencies = [
 name = "integration_tests"
 version = "0.1.0"
 dependencies = [
+ "ata-methods",
+ "ata-mock-methods",
+ "ata_core",
  "borsh",
  "lee",
  "lee_core",
