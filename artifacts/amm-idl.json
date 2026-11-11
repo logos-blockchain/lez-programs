@@ -351,6 +351,17 @@
               }
             }
           ]
+        },
+        {
+          "name": "ReadingLpSupply",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "Pending"
+              }
+            }
+          ]
         }
       ]
     },
@@ -811,7 +822,7 @@
         {
           "name": "liquidity_pool_supply",
           "type": "u128",
-          "docs": "Includes the permanently locked minimum. Direct LP burns donate to remaining LPs."
+          "docs": "Includes the permanently locked minimum. Refreshed from the LP definition before\nadds and removals so direct LP burns donate to remaining LPs."
         },
         {
           "name": "reserve_a",

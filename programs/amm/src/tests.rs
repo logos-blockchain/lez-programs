@@ -141,3 +141,99 @@ fn deadline_is_inclusive_and_maximum_does_not_overflow() {
         }
     }
 }
+
+#[test]
+fn lp_definition_read_authenticates_account_and_program_without_a_pda_grant() {
+    let (a, b) = (AccountId::new([5; 32]), AccountId::new([6; 32]));
+    let config_id = amm_core::compute_config_pda(AMM, OWNER, [0; 32]);
+    let pool_id = amm_core::compute_pool_pda(AMM, config_id, a, b);
+    let lp = amm_core::compute_liquidity_token_pda(AMM, pool_id);
+    let pool = amm_core::PoolDefinition {
+        config_id,
+        definition_token_a_id: a,
+        definition_token_b_id: b,
+        vault_a_id: amm_core::compute_vault_pda(AMM, pool_id, a),
+        vault_b_id: amm_core::compute_vault_pda(AMM, pool_id, b),
+        liquidity_pool_id: lp,
+        liquidity_pool_supply: 10_000,
+        reserve_a: 10_000,
+        reserve_b: 10_000,
+    };
+    let mut call = input(
+        Some(AmmState::Pool(pool)),
+        &Message::AddLiquidity {
+            user_holding_a: OWNER,
+            user_holding_b: AccountId::new([7; 32]),
+            user_holding_lp: AccountId::new([8; 32]),
+            min_amount_liquidity: 1,
+            max_amount_to_add_token_a: 100,
+            max_amount_to_add_token_b: 100,
+            deadline: u64::MAX,
+        },
+    );
+    call.receiver = Actor::new(pool_id, AMM);
+    let mut response = handle_message(&call);
+    let mut snapshots = vec![AmmState::Config(config()).encode()];
+    // The holding snapshots reflect a direct burn of 1,000 out of 10,000 LP;
+    // the pool still caches the old supply until its definition reply arrives.
+    snapshots.extend(
+        [
+            (a, 10_000),
+            (b, 10_000),
+            (lp, 8_000),
+            (a, 10_000),
+            (b, 10_000),
+        ]
+        .map(|(definition_id, balance)| {
+            token_core::TokenState::Holding(token_core::TokenHolding {
+                definition_id,
+                balance,
+            })
+            .encode()
+        }),
+    );
+    for state in snapshots {
+        let [read] = response.sync_messages.as_slice() else {
+            panic!("one outstanding read")
+        };
+        call.from = Some(read.to);
+        call.pre_state = response.post_state.expect("pending read");
+        call.message = borsh::to_vec(&StateReply {
+            state: state.into(),
+        })
+        .expect("reply encodes");
+        response = handle_message(&call);
+    }
+    let [read] = response.sync_messages.as_slice() else {
+        panic!("LP definition read")
+    };
+    assert_eq!(read.to, Actor::new(lp, TOKEN));
+    assert!(read.pda_seeds.is_empty());
+    assert_eq!(
+        borsh::from_slice::<token_core::Message>(&read.message).expect("token request"),
+        token_core::Message::ReadState
+    );
+    call.pre_state = response.post_state.expect("pending LP supply");
+    assert!(matches!(
+        AmmState::decode(&call.pre_state),
+        Some(AmmState::ReadingLpSupply(_))
+    ));
+    call.message = borsh::to_vec(&StateReply {
+        state: token_core::TokenState::Definition(token_core::TokenDefinition {
+            name: "LP Token".to_owned(),
+            total_supply: 9_000,
+            authority: Some(lp),
+        })
+        .encode()
+        .into(),
+    })
+    .expect("definition reply encodes");
+    for from in [
+        None,
+        Some(Actor::new(lp, ORACLE)),
+        Some(Actor::new(OWNER, TOKEN)),
+    ] {
+        call.from = from;
+        assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
+    }
+}

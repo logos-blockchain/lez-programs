@@ -52,7 +52,7 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
     }
 }
 
-pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
+fn state_reply(input: &ReceiveInput, pending: &Pending) -> StateReply {
     assert_eq!(
         input.from,
         Some(Actor::new(
@@ -61,7 +61,11 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
         )),
         "unexpected AMM state reply sender"
     );
-    let reply: StateReply = borsh::from_slice(&input.message).expect("state reply must decode");
+    borsh::from_slice(&input.message).expect("state reply must decode")
+}
+
+pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
+    let reply = state_reply(input, &pending);
     if pending.config.is_none() {
         let Some(AmmState::Config(config)) = AmmState::decode(&reply.state) else {
             panic!("AMM config must be initialized")
@@ -104,10 +108,6 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
             | Message::ReadState => unreachable!("pool operation"),
         };
         if let Some(pool) = &pending.pool {
-            assert!(
-                pool.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
-                "pool liquidity is below minimum"
-            );
             accounts.extend([pool.vault_a_id, pool.vault_b_id]);
         }
         return holdings(input, pending, accounts);
@@ -119,6 +119,19 @@ pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
     };
     pending.holdings.push(holding);
     next(input, pending)
+}
+
+pub(crate) fn lp_supply_reply(input: &ReceiveInput, mut pending: Pending) -> Response {
+    let reply = state_reply(input, &pending);
+    let Some(TokenState::Definition(definition)) = TokenState::decode(&reply.state) else {
+        panic!("LP token definition must be initialized")
+    };
+    pending
+        .pool
+        .as_mut()
+        .expect("liquidity operation has a pool")
+        .liquidity_pool_supply = definition.total_supply;
+    execute(input, &pending)
 }
 
 pub(crate) fn holdings(
@@ -157,17 +170,48 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
             "vault B is below reserve"
         );
     }
+    if matches!(
+        pending.request,
+        Message::AddLiquidity { .. } | Message::RemoveLiquidity { .. }
+    ) {
+        let pool = pending
+            .pool
+            .as_ref()
+            .expect("liquidity operation has a pool");
+        let token = pending
+            .config
+            .as_ref()
+            .expect("config was read")
+            .token_program_id;
+        let expected = Actor::new(pool.liquidity_pool_id, token);
+        pending.expected_account = expected.account_id;
+        pending.expected_program = expected.program_account_id;
+        // LP holders may burn directly through token. Read its authoritative supply
+        // without granting the mint-authority seed to this read-only operation.
+        return Response::set_state(AmmState::ReadingLpSupply(Box::new(pending)).encode())
+            .send_sync(expected, &token_core::Message::ReadState);
+    }
+    execute(input, &pending)
+}
+
+fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
+    if let Some(pool) = &pending.pool {
+        assert!(
+            pool.liquidity_pool_supply >= MINIMUM_LIQUIDITY,
+            "pool liquidity is below minimum"
+        );
+    }
     match pending.request {
-        Message::NewDefinition { .. } => new_definition::execute(input, &pending),
-        Message::AddLiquidity { .. } => add::execute(input, &pending),
-        Message::RemoveLiquidity { .. } => remove::execute(input, &pending),
+        Message::NewDefinition { .. } => new_definition::execute(input, pending),
+        Message::AddLiquidity { .. } => add::execute(input, pending),
+        Message::RemoveLiquidity { .. } => remove::execute(input, pending),
         Message::SwapExactInput { .. } | Message::SwapExactOutput { .. } => {
-            swap::execute(input, &pending)
+            swap::execute(input, pending)
         }
         Message::SyncReserves
         | Message::CreatePriceObservations { .. }
-        | Message::CreateOraclePriceAccount { .. } => sync::execute(input, &pending),
-        Message::WithdrawProtocolFees { .. } => config::withdraw(input, &pending),
+        | Message::CreateOraclePriceAccount { .. } => sync::execute(input, pending),
+        Message::WithdrawProtocolFees { .. } => config::withdraw(input, pending),
         Message::Initialize { .. } | Message::UpdateConfig { .. } | Message::ReadState => {
             unreachable!("operation continuation")
         }

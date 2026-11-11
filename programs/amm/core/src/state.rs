@@ -13,6 +13,8 @@ pub enum AmmState {
     Pending(Box<Pending>),
     /// External calls are running. Only the actor's own completion message unlocks it.
     Settling(Box<AmmState>),
+    /// Holdings are loaded; reconcile the LP definition's supply before pricing liquidity.
+    ReadingLpSupply(Box<Pending>),
 }
 
 impl AmmState {
@@ -54,7 +56,8 @@ pub struct PoolDefinition {
     pub vault_a_id: AccountId,
     pub vault_b_id: AccountId,
     pub liquidity_pool_id: AccountId,
-    /// Includes the permanently locked minimum. Direct LP burns donate to remaining LPs.
+    /// Includes the permanently locked minimum. Refreshed from the LP definition before
+    /// adds and removals so direct LP burns donate to remaining LPs.
     pub liquidity_pool_supply: u128,
     pub reserve_a: u128,
     pub reserve_b: u128,

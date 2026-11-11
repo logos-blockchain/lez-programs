@@ -426,6 +426,101 @@ fn add_and_remove_liquidity_preserve_the_permanent_lock() {
 }
 
 #[test]
+fn direct_lp_burns_reduce_the_supply_used_to_mint_new_liquidity() {
+    let mut chain = Chain::new();
+    let pool = chain.pool();
+    let burned = pool.liquidity_pool_supply / 2;
+    chain
+        .token_submit(
+            chain.user_lp,
+            &[chain.user_lp, pool.liquidity_pool_id],
+            &[&key(6)],
+            &TokenMessage::Burn { amount: burned },
+        )
+        .expect("LP holder can burn directly through token");
+    let actual_supply = chain.lp_supply();
+    assert_eq!(
+        actual_supply,
+        pool.liquidity_pool_supply
+            .checked_sub(burned)
+            .expect("burned supply")
+    );
+    let before_lp = chain.balance(chain.user_lp);
+    // Doubling reserves should mint exactly the current outstanding supply,
+    // preserving the donation from the direct burn for existing LP holders.
+    chain
+        .call(
+            chain.pool,
+            &[&key(4), &key(5)],
+            &Message::AddLiquidity {
+                user_holding_a: chain.user_a,
+                user_holding_b: chain.user_b,
+                user_holding_lp: chain.user_lp,
+                min_amount_liquidity: actual_supply,
+                max_amount_to_add_token_a: pool.reserve_a,
+                max_amount_to_add_token_b: pool.reserve_b,
+                deadline: u64::MAX,
+            },
+        )
+        .expect("add uses the post-burn supply");
+    assert_eq!(
+        chain
+            .balance(chain.user_lp)
+            .checked_sub(before_lp)
+            .expect("minted LP"),
+        actual_supply
+    );
+    chain.assert_reserves();
+}
+
+#[test]
+fn direct_lp_burns_donate_to_remaining_liquidity_holders() {
+    let mut chain = Chain::new();
+    let pool = chain.pool();
+    chain
+        .token_submit(
+            chain.user_lp,
+            &[chain.user_lp, pool.liquidity_pool_id],
+            &[&key(6)],
+            &TokenMessage::Burn {
+                amount: pool.liquidity_pool_supply / 2,
+            },
+        )
+        .expect("direct LP burn succeeds");
+    let liquidity = chain.balance(chain.user_lp);
+    let supply = chain.lp_supply();
+    let expected_a = amm_core::mul_div_floor(pool.reserve_a, liquidity, supply);
+    let expected_b = amm_core::mul_div_floor(pool.reserve_b, liquidity, supply);
+    let (before_a, before_b) = (chain.balance(chain.user_a), chain.balance(chain.user_b));
+    chain
+        .call(
+            chain.pool,
+            &[&key(6)],
+            &Message::RemoveLiquidity {
+                user_holding_a: chain.user_a,
+                user_holding_b: chain.user_b,
+                user_holding_lp: chain.user_lp,
+                remove_liquidity_amount: liquidity,
+                min_amount_to_remove_token_a: expected_a,
+                min_amount_to_remove_token_b: expected_b,
+                deadline: u64::MAX,
+            },
+        )
+        .expect("remaining holder withdraws the donated share");
+    assert_eq!(
+        chain.balance(chain.user_a),
+        before_a.checked_add(expected_a).expect("A credit")
+    );
+    assert_eq!(
+        chain.balance(chain.user_b),
+        before_b.checked_add(expected_b).expect("B credit")
+    );
+    assert_eq!(chain.balance(chain.user_lp), 0);
+    assert_eq!(chain.pool().liquidity_pool_supply, MINIMUM_LIQUIDITY);
+    chain.assert_reserves();
+}
+
+#[test]
 fn swaps_refuse_missing_signatures_slippage_wrong_tokens_and_undeclared_vaults_atomically() {
     let mut chain = Chain::new();
     let before = chain.snapshot();

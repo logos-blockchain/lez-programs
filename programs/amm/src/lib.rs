@@ -1,6 +1,6 @@
 //! Constant-product AMM on LEZ's actor interface.
 //!
-//! Config and pool actors own their state. A pool reads the config and token holdings
+//! Config and pool actors own their state. A pool reads the config, holdings and LP supply
 //! through synchronous, sender-authenticated `StateReply` conversations. It then emits
 //! token messages with narrowly scoped PDA grants. Declaring each vault/destination via
 //! a synchronous read or initialization ensures token credits settle atomically.
@@ -31,6 +31,9 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
     let state = AmmState::decode(&input.pre_state);
     if let Some(AmmState::Pending(pending)) = state {
         return reads::reply(input, *pending);
+    }
+    if let Some(AmmState::ReadingLpSupply(pending)) = state {
+        return reads::lp_supply_reply(input, *pending);
     }
     if let Some(AmmState::Settling(next)) = state {
         assert_eq!(
