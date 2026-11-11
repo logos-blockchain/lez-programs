@@ -71,19 +71,20 @@ Using the `idl-gen` crate (no external toolchain required — this is what CI us
 make idl
 ```
 
-Or individually per program:
+It generates the programs ported to the actor model, listed in the Makefile's
+`IDL_PROGRAMS`, from their core crates. Or individually:
 
 ```bash
-cargo run -p idl-gen -- programs/<program>/methods/guest/src/bin/<program>.rs > artifacts/<program>-idl.json
+cargo run -p idl-gen -- programs/<program>/core --message Message --state <StateType> --events event > artifacts/<program>-idl.json
 ```
 
-Alternatively, using the `spel` CLI (requires the SPEL toolchain):
+Alternatively, using the `spel` CLI (same output):
 
 ```bash
-spel generate-idl programs/<program>/methods/guest/src/bin/<program>.rs > artifacts/<program>-idl.json
+spel generate-idl programs/<program>/core --message Message --state <StateType> --events event > artifacts/<program>-idl.json
 ```
 
-Generated IDL files live in `artifacts/`. CI checks that every program under `*/methods/guest/src/bin/` has a corresponding `artifacts/<program>-idl.json` that matches the source.
+Generated IDL files live in `artifacts/`. CI runs `make idl` and fails if `artifacts/` changes. Unported programs keep their v1 IDLs until their ports. `tools/idl-gen` pins spel's actor-model generator from its `refactor/lez-v0.4.x` branch.
 
 ## Deployment
 

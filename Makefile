@@ -30,10 +30,16 @@ test-apps:
 fmt:
 	cargo +nightly fmt --all
 
+# IDLs of the programs ported to the actor model, generated from their core crates as
+# <program>:<state type>. The others keep their v1 IDLs in artifacts/ until their ports.
+IDL_PROGRAMS := token:TokenState nft:NftState
+
 idl:
-	for src in programs/*/methods/guest/src/bin/*.rs; do \
-		program=$$(basename "$$src" .rs); \
-		cargo run -p idl-gen -- "$$src" > "artifacts/$${program}-idl.json" || exit 1; \
+	@for entry in $(IDL_PROGRAMS); do \
+		program=$${entry%%:*}; state=$${entry#*:}; \
+		cargo run -q -p idl-gen -- programs/$$program/core --message Message \
+			--state $$state --events event > "artifacts/$$program-idl.json.tmp" || exit 1; \
+		mv "artifacts/$$program-idl.json.tmp" "artifacts/$$program-idl.json"; \
 	done
 
 changelog:

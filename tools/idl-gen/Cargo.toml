@@ -11,9 +11,5 @@ name = "idl-gen"
 path = "src/main.rs"
 
 [dependencies]
-spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "c6f73ce21e4805f8430f03afdbdedf0b7e479a5e", package = "spel-framework-core", features = ["idl-gen"] }
-# `preserve_order` keeps object keys in struct-declaration order when
-# round-tripping through serde_json::Value (see main.rs), so the only
-# reordering we apply is sorting the `types` array.
-serde_json = { version = "1.0", features = ["preserve_order"] }
-toml = "0.8"
+# The actor-model generator (IDL v2), on spel's refactor/lez-v0.4.x.
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "dbb6aec1822be3fe4cda65ccb331b92ccaeb321f", package = "spel-framework-core", features = ["idl-gen"] }
