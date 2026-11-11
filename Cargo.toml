@@ -11,6 +11,7 @@ members = [
     "programs/twap_oracle/methods",
     "programs/integration_tests",
     "programs/integration_tests/methods",
+    "programs/integration_tests/ata_mocks",
     "tools/risc0-packager",
     "tools/idl-gen",
     # Not yet ported to LEZ's actor model.
@@ -22,9 +23,9 @@ members = [
     # "programs/amm/core",
     # "programs/amm",
     # "programs/amm/methods",
-    # "programs/ata/core",
-    # "programs/ata",
-    # "programs/ata/methods",
+    "programs/ata/core",
+    "programs/ata",
+    "programs/ata/methods",
     # "programs/stablecoin/core",
     # "programs/stablecoin",
     # "programs/stablecoin/methods",
@@ -34,6 +35,7 @@ members = [
 ]
 exclude = [
     "programs/integration_tests/methods/guest",
+    "programs/integration_tests/ata_mocks/guest",
     "programs/token/methods/guest",
     "programs/nft/methods/guest",
     "programs/amm/methods/guest",

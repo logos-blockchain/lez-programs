@@ -29,7 +29,14 @@ path = "tests/nft_private.rs"
 name = "twap_oracle"
 path = "tests/twap_oracle.rs"
 
+[[test]]
+name = "ata"
+path = "tests/ata.rs"
+
 [dependencies]
+ata_core = { workspace = true }
+ata-methods = { path = "../ata/methods" }
+ata-mock-methods = { path = "ata_mocks" }
 borsh = { workspace = true }
 lee = { workspace = true }
 lee_core = { workspace = true, features = ["host", "test_utils"] }

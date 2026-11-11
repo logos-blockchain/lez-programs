@@ -7,6 +7,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
+spel-attrs = { git = "https://github.com/logos-co/spel.git", rev = "0f9e285bfe35b1e32906ddafeaa4d26138cad1b3" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
 borsh = { version = "1.5", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5", default-features = false }
