@@ -66,6 +66,7 @@ dependencies = [
  "risc0-zkvm",
  "ruint",
  "serde",
+ "spel-attrs",
  "token_core",
 ]
 

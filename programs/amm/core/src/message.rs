@@ -9,6 +9,7 @@ use crate::AmmConfig;
 /// Token destinations must be declared so credits settle in this transaction. All holdings
 /// must exist, except the initial LP holding (created with the pool).
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[spel_attrs::message]
 pub enum Message {
     /// Sent to the authorized namespace owner's actor. Creates the config PDA derived
     /// from that owner and `nonce`; deployment ids and fees are immutable afterward.
