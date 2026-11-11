@@ -32,7 +32,7 @@ fmt:
 
 # IDLs of the programs ported to the actor model, generated from their core crates as
 # <program>:<state type>. The others keep their v1 IDLs in artifacts/ until their ports.
-IDL_PROGRAMS := token:TokenState nft:NftState
+IDL_PROGRAMS := token:TokenState nft:NftState amm:AmmState
 
 idl:
 	@for entry in $(IDL_PROGRAMS); do \

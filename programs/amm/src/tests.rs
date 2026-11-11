@@ -52,7 +52,8 @@ fn state_reply_from_another_deployment_is_refused() {
         config: Some(config()),
         pool: None,
         request: Message::SyncReserves,
-        expected,
+        expected_account: expected.account_id,
+        expected_program: expected.program_account_id,
         remaining: vec![],
         holdings: vec![],
     }));
@@ -75,7 +76,8 @@ fn transaction_author_cannot_forge_state_reply() {
         config: Some(config()),
         pool: None,
         request: Message::SyncReserves,
-        expected,
+        expected_account: expected.account_id,
+        expected_program: expected.program_account_id,
         remaining: vec![],
         holdings: vec![],
     }));

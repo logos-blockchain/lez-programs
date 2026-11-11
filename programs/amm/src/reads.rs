@@ -37,7 +37,8 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
         config: None,
         pool,
         request,
-        expected,
+        expected_account: expected.account_id,
+        expected_program: expected.program_account_id,
         remaining: vec![],
         holdings: vec![],
     };
@@ -54,7 +55,10 @@ pub(crate) fn start(input: &ReceiveInput, state: Option<AmmState>, request: Mess
 pub(crate) fn reply(input: &ReceiveInput, mut pending: Pending) -> Response {
     assert_eq!(
         input.from,
-        Some(pending.expected),
+        Some(Actor::new(
+            pending.expected_account,
+            pending.expected_program
+        )),
         "unexpected AMM state reply sender"
     );
     let reply: StateReply = borsh::from_slice(&input.message).expect("state reply must decode");
@@ -135,7 +139,8 @@ fn next(input: &ReceiveInput, mut pending: Pending) -> Response {
             .expect("config was read")
             .token_program_id;
         let expected = Actor::new(account, token);
-        pending.expected = expected;
+        pending.expected_account = expected.account_id;
+        pending.expected_program = expected.program_account_id;
         return Response::set_state(AmmState::Pending(Box::new(pending)).encode())
             .send_sync(expected, &token_core::Message::ReadState);
     }

@@ -118,7 +118,8 @@ pub(crate) fn internal(
                     destination,
                     amount,
                 },
-                expected: input.receiver,
+                expected_account: input.receiver.account_id,
+                expected_program: input.receiver.program_account_id,
                 remaining: vec![],
                 holdings: vec![],
             };
