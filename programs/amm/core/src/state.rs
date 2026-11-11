@@ -1,5 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use lee_core::account::{AccountId, Actor};
+use lee_core::account::AccountId;
 use serde::{Deserialize, Serialize};
 use token_core::TokenHolding;
 
@@ -60,15 +60,17 @@ pub struct PoolDefinition {
     pub reserve_b: u128,
 }
 
-/// Continuation data written only by AMM code. Replies must come from `expected`, including
-/// its program id; transaction authors cannot supply token or configuration snapshots.
+/// Continuation data written only by AMM code. Replies must match both the expected account
+/// and program; transaction authors cannot supply token or configuration snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Pending {
     pub config_id: AccountId,
     pub config: Option<AmmConfig>,
     pub pool: Option<PoolDefinition>,
     pub request: Message,
-    pub expected: Actor,
+    /// Stored explicitly so the IDL describes the full state without external Rust types.
+    pub expected_account: AccountId,
+    pub expected_program: AccountId,
     pub remaining: Vec<AccountId>,
     pub holdings: Vec<Option<TokenHolding>>,
 }

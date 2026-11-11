@@ -1,24 +1,12 @@
 {
-  "version": "0.1.0",
+  "version": "2",
   "name": "amm",
-  "instructions": [
+  "messages": [
     {
-      "name": "initialize",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": true,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "config",
-          "writable": true,
-          "signer": false,
-          "init": true
-        }
-      ],
-      "args": [
+      "name": "Initialize",
+      "tag": 0,
+      "docs": "Sent to the authorized namespace owner's actor. Creates the config PDA derived\nfrom that owner and `nonce`; deployment ids and fees are immutable afterward.",
+      "fields": [
         {
           "name": "nonce",
           "type": {
@@ -29,44 +17,22 @@
           }
         },
         {
-          "name": "token_program_id",
-          "type": "account_id"
-        },
-        {
-          "name": "twap_oracle_program_id",
-          "type": "account_id"
-        },
-        {
-          "name": "authority",
-          "type": "account_id"
-        },
-        {
-          "name": "swap_fee_bps",
-          "type": "u128"
-        },
-        {
-          "name": "protocol_fee_bps",
-          "type": "u128"
+          "name": "config",
+          "type": {
+            "defined": "AmmConfig"
+          }
         }
       ]
     },
     {
-      "name": "update_config",
-      "accounts": [
+      "name": "UpdateConfig",
+      "tag": 1,
+      "docs": "Sent to the authorized current admin's actor, which forwards to `config`.",
+      "fields": [
         {
           "name": "config",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "authority",
-          "writable": false,
-          "signer": true,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "new_authority",
           "type": "account_id"
@@ -74,152 +40,34 @@
       ]
     },
     {
-      "name": "create_price_observations",
-      "accounts": [
+      "name": "NewDefinition",
+      "tag": 2,
+      "docs": "Sent to `config`, which admits the derived pool with its PDA seed. Both deposit\nholdings and the fresh LP holding authorize; the permanent minimum LP lock is\ndeducted from the initial supply before the transaction finishes.",
+      "fields": [
         {
           "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
         {
-          "name": "pool",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "name": "definition_token_a_id",
+          "type": "account_id"
         },
         {
-          "name": "current_tick_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "price_observations",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "window_duration",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "create_oracle_price_account",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "oracle_price_account",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "window_duration",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "new_definition",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "vault_a",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_b",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool_definition_lp",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "lp_lock_holding",
-          "writable": true,
-          "signer": false,
-          "init": true
+          "name": "definition_token_b_id",
+          "type": "account_id"
         },
         {
           "name": "user_holding_a",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_holding_b",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_holding_lp",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "token_a_amount",
           "type": "u128"
@@ -230,75 +78,28 @@
         },
         {
           "name": "deadline",
-          "type": "u64"
+          "type": "u64",
+          "docs": "Last valid block timestamp in milliseconds (inclusive)."
         }
       ]
     },
     {
-      "name": "add_liquidity",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_a",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_b",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool_definition_lp",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
+      "name": "AddLiquidity",
+      "tag": 3,
+      "docs": "Both deposit holdings authorize. The existing LP holding receives minted LPs.",
+      "fields": [
         {
           "name": "user_holding_a",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_holding_b",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_holding_lp",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "min_amount_liquidity",
           "type": "u128"
@@ -318,70 +119,22 @@
       ]
     },
     {
-      "name": "remove_liquidity",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_a",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_b",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool_definition_lp",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
+      "name": "RemoveLiquidity",
+      "tag": 4,
+      "docs": "The LP holding authorizes its burn; the two output holdings only receive.",
+      "fields": [
         {
           "name": "user_holding_a",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_holding_b",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_holding_lp",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "remove_liquidity_amount",
           "type": "u128"
@@ -401,64 +154,18 @@
       ]
     },
     {
-      "name": "swap_exact_input",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_a",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_b",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
+      "name": "SwapExactInput",
+      "tag": 5,
+      "docs": "The input holding authorizes. Its token definition selects the direction.",
+      "fields": [
         {
           "name": "user_input_holding",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_output_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_fee_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "swap_amount_in",
           "type": "u128"
@@ -474,64 +181,18 @@
       ]
     },
     {
-      "name": "swap_exact_output",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_a",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_b",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
+      "name": "SwapExactOutput",
+      "tag": 6,
+      "docs": "Like exact input, with a fixed output and a maximum debit instead.",
+      "fields": [
         {
           "name": "user_input_holding",
-          "writable": true,
-          "signer": true,
-          "init": false
+          "type": "account_id"
         },
         {
           "name": "user_output_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_fee_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "exact_amount_out",
           "type": "u128"
@@ -547,293 +208,634 @@
       ]
     },
     {
-      "name": "sync_reserves",
-      "accounts": [
-        {
-          "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "pool",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_a",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault_b",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": []
+      "name": "SyncReserves",
+      "tag": 7,
+      "docs": "Permissionless: incorporate direct vault donations into reserves and notify the oracle."
     },
     {
-      "name": "withdraw_protocol_fees",
-      "accounts": [
+      "name": "CreatePriceObservations",
+      "tag": 8,
+      "fields": [
+        {
+          "name": "window_duration",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "CreateOraclePriceAccount",
+      "tag": 9,
+      "fields": [
+        {
+          "name": "window_duration",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "WithdrawProtocolFees",
+      "tag": 10,
+      "docs": "Sent to the authorized current admin's actor. The source is derived from\n`(config, token)`; `destination` must already hold that token.",
+      "fields": [
         {
           "name": "config",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
         {
-          "name": "protocol_fee_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "name": "token",
+          "type": "account_id"
         },
         {
           "name": "destination",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "type": "account_id"
         },
-        {
-          "name": "authority",
-          "writable": false,
-          "signer": true,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "amount",
           "type": "u128"
         }
       ]
+    },
+    {
+      "name": "ReadState",
+      "tag": 11,
+      "docs": "Reply to the sender with a `lee_core::program::StateReply`. Busy actors reject reads."
     }
   ],
-  "accounts": [
+  "state": {
+    "defined": "AmmState"
+  },
+  "events": [
     {
-      "name": "PoolDefinition",
+      "name": "Event",
+      "selector": "31bd8cd8cc55bc24",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "definition_token_a_id",
-            "type": "account_id"
-          },
-          {
-            "name": "definition_token_b_id",
-            "type": "account_id"
-          },
-          {
-            "name": "vault_a_id",
-            "type": "account_id"
-          },
-          {
-            "name": "vault_b_id",
-            "type": "account_id"
-          },
-          {
-            "name": "liquidity_pool_id",
-            "type": "account_id"
-          },
-          {
-            "name": "liquidity_pool_supply",
-            "type": "u128"
-          },
-          {
-            "name": "reserve_a",
-            "type": "u128"
-          },
-          {
-            "name": "reserve_b",
-            "type": "u128"
-          }
-        ]
-      }
-    },
-    {
-      "name": "AmmConfig",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "token_program_id",
-            "type": "account_id"
-          },
-          {
-            "name": "twap_oracle_program_id",
-            "type": "account_id"
-          },
-          {
-            "name": "authority",
-            "type": "account_id"
-          },
-          {
-            "name": "swap_fee_bps",
-            "type": "u128"
-          },
-          {
-            "name": "protocol_fee_bps",
-            "type": "u128"
-          }
-        ]
-      }
-    },
-    {
-      "name": "TokenDefinition",
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Fungible",
-            "fields": [
-              {
-                "name": "name",
-                "type": "string"
-              },
-              {
-                "name": "total_supply",
-                "type": "u128"
-              },
-              {
-                "name": "metadata_id",
-                "type": {
-                  "option": "account_id"
-                }
-              },
-              {
-                "name": "authority",
-                "type": {
-                  "option": "account_id"
-                }
-              }
-            ]
-          },
-          {
-            "name": "NonFungible",
-            "fields": [
-              {
-                "name": "name",
-                "type": "string"
-              },
-              {
-                "name": "printable_supply",
-                "type": "u128"
-              },
-              {
-                "name": "metadata_id",
-                "type": "account_id"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "name": "TokenHolding",
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Fungible",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "balance",
-                "type": "u128"
-              }
-            ]
-          },
-          {
-            "name": "NftMaster",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "print_balance",
-                "type": "u128"
-              }
-            ]
-          },
-          {
-            "name": "NftPrintedCopy",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "owned",
-                "type": "bool"
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "name": "TokenMetadata",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "definition_id",
-            "type": "account_id"
-          },
-          {
-            "name": "standard",
-            "type": {
-              "defined": "MetadataStandard"
-            }
-          },
-          {
-            "name": "uri",
-            "type": "string"
-          },
-          {
-            "name": "creators",
-            "type": "string"
-          },
-          {
-            "name": "primary_sale_date",
-            "type": "u64"
-          }
-        ]
+        "defined": "Event"
       }
     }
   ],
   "types": [
     {
-      "name": "MetadataStandard",
+      "name": "AmmConfig",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token_program_id",
+          "type": "account_id",
+          "docs": "Deployed token program account address, shared by every pool in this namespace."
+        },
+        {
+          "name": "twap_oracle_program_id",
+          "type": "account_id",
+          "docs": "Oracle deployment implementing the AMM-facing message contract."
+        },
+        {
+          "name": "authority",
+          "type": "account_id"
+        },
+        {
+          "name": "swap_fee_bps",
+          "type": "u128",
+          "docs": "Swap fee in basis points, strictly below 10,000."
+        },
+        {
+          "name": "protocol_fee_bps",
+          "type": "u128",
+          "docs": "Protocol's fraction of the swap fee in basis points, at most 10,000."
+        }
+      ]
+    },
+    {
+      "name": "AmmState",
       "kind": "enum",
       "variants": [
         {
-          "name": "Simple"
+          "name": "Config",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "AmmConfig"
+              }
+            }
+          ]
         },
         {
-          "name": "Expanded"
+          "name": "Pool",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "PoolDefinition"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Pending",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "Pending"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Settling",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "AmmState"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Event",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "ConfigInitialized",
+          "fields": [
+            {
+              "name": "config",
+              "type": "account_id"
+            }
+          ]
+        },
+        {
+          "name": "AuthorityChanged",
+          "fields": [
+            {
+              "name": "authority",
+              "type": "account_id"
+            }
+          ]
+        },
+        {
+          "name": "PoolCreated",
+          "fields": [
+            {
+              "name": "amount_a",
+              "type": "u128"
+            },
+            {
+              "name": "amount_b",
+              "type": "u128"
+            },
+            {
+              "name": "liquidity",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "LiquidityAdded",
+          "fields": [
+            {
+              "name": "amount_a",
+              "type": "u128"
+            },
+            {
+              "name": "amount_b",
+              "type": "u128"
+            },
+            {
+              "name": "liquidity",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "LiquidityRemoved",
+          "fields": [
+            {
+              "name": "amount_a",
+              "type": "u128"
+            },
+            {
+              "name": "amount_b",
+              "type": "u128"
+            },
+            {
+              "name": "liquidity",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "Swapped",
+          "fields": [
+            {
+              "name": "token_in",
+              "type": "account_id"
+            },
+            {
+              "name": "amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "protocol_fee",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "ReservesSynced",
+          "fields": [
+            {
+              "name": "reserve_a",
+              "type": "u128"
+            },
+            {
+              "name": "reserve_b",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "ProtocolFeesWithdrawn",
+          "fields": [
+            {
+              "name": "token",
+              "type": "account_id"
+            },
+            {
+              "name": "destination",
+              "type": "account_id"
+            },
+            {
+              "name": "amount",
+              "type": "u128"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Message",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Initialize",
+          "fields": [
+            {
+              "name": "nonce",
+              "type": {
+                "array": [
+                  "u8",
+                  32
+                ]
+              }
+            },
+            {
+              "name": "config",
+              "type": {
+                "defined": "AmmConfig"
+              }
+            }
+          ]
+        },
+        {
+          "name": "UpdateConfig",
+          "fields": [
+            {
+              "name": "config",
+              "type": "account_id"
+            },
+            {
+              "name": "new_authority",
+              "type": "account_id"
+            }
+          ]
+        },
+        {
+          "name": "NewDefinition",
+          "fields": [
+            {
+              "name": "config",
+              "type": "account_id"
+            },
+            {
+              "name": "definition_token_a_id",
+              "type": "account_id"
+            },
+            {
+              "name": "definition_token_b_id",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "token_a_amount",
+              "type": "u128"
+            },
+            {
+              "name": "token_b_amount",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64",
+              "docs": "Last valid block timestamp in milliseconds (inclusive)."
+            }
+          ]
+        },
+        {
+          "name": "AddLiquidity",
+          "fields": [
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "min_amount_liquidity",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_to_add_token_a",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_to_add_token_b",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "RemoveLiquidity",
+          "fields": [
+            {
+              "name": "user_holding_a",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_b",
+              "type": "account_id"
+            },
+            {
+              "name": "user_holding_lp",
+              "type": "account_id"
+            },
+            {
+              "name": "remove_liquidity_amount",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_to_remove_token_a",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_to_remove_token_b",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "SwapExactInput",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "swap_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "min_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "SwapExactOutput",
+          "fields": [
+            {
+              "name": "user_input_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "user_output_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "exact_amount_out",
+              "type": "u128"
+            },
+            {
+              "name": "max_amount_in",
+              "type": "u128"
+            },
+            {
+              "name": "deadline",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "SyncReserves"
+        },
+        {
+          "name": "CreatePriceObservations",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "CreateOraclePriceAccount",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "WithdrawProtocolFees",
+          "fields": [
+            {
+              "name": "config",
+              "type": "account_id"
+            },
+            {
+              "name": "token",
+              "type": "account_id"
+            },
+            {
+              "name": "destination",
+              "type": "account_id"
+            },
+            {
+              "name": "amount",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "ReadState"
+        }
+      ]
+    },
+    {
+      "name": "Pending",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "config_id",
+          "type": "account_id"
+        },
+        {
+          "name": "config",
+          "type": {
+            "option": {
+              "defined": "AmmConfig"
+            }
+          }
+        },
+        {
+          "name": "pool",
+          "type": {
+            "option": {
+              "defined": "PoolDefinition"
+            }
+          }
+        },
+        {
+          "name": "request",
+          "type": {
+            "defined": "Message"
+          }
+        },
+        {
+          "name": "expected_account",
+          "type": "account_id",
+          "docs": "Stored explicitly so the IDL describes the full state without external Rust types."
+        },
+        {
+          "name": "expected_program",
+          "type": "account_id"
+        },
+        {
+          "name": "remaining",
+          "type": {
+            "vec": "account_id"
+          }
+        },
+        {
+          "name": "holdings",
+          "type": {
+            "vec": {
+              "option": {
+                "defined": "TokenHolding"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "PoolDefinition",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "config_id",
+          "type": "account_id",
+          "docs": "Namespace whose authenticated config supplies the token/oracle programs and fees."
+        },
+        {
+          "name": "definition_token_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "definition_token_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "vault_a_id",
+          "type": "account_id"
+        },
+        {
+          "name": "vault_b_id",
+          "type": "account_id"
+        },
+        {
+          "name": "liquidity_pool_id",
+          "type": "account_id"
+        },
+        {
+          "name": "liquidity_pool_supply",
+          "type": "u128",
+          "docs": "Includes the permanently locked minimum. Direct LP burns donate to remaining LPs."
+        },
+        {
+          "name": "reserve_a",
+          "type": "u128"
+        },
+        {
+          "name": "reserve_b",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "TokenHolding",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "definition_id",
+          "type": "account_id"
+        },
+        {
+          "name": "balance",
+          "type": "u128"
         }
       ]
     }
-  ],
-  "instruction_type": "amm_core::Instruction"
+  ]
 }

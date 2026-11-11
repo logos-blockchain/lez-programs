@@ -3,6 +3,11 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{account::AccountId, program::ProgramEvent};
 
+/// Event name used by both the runtime selector and the actor IDL generator.
+pub trait AmmEvent: BorshSerialize {
+    const NAME: &'static str;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum Event {
     ConfigInitialized {
@@ -43,11 +48,15 @@ pub enum Event {
     },
 }
 
+impl AmmEvent for Event {
+    const NAME: &'static str = "Event";
+}
+
 impl Event {
     #[must_use]
     pub fn to_program_event(&self) -> ProgramEvent {
         use risc0_zkvm::sha::{Impl, Sha256};
-        let hash = Impl::hash_bytes(b"amm::Event");
+        let hash = Impl::hash_bytes(format!("amm::{}", Self::NAME).as_bytes());
         let (selector, _) = hash.as_bytes().split_at(8);
         ProgramEvent {
             selector: selector.try_into().expect("eight selector bytes"),
