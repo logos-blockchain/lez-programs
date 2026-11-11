@@ -69,6 +69,7 @@ def app(name, *paths):
 
 COMPONENTS = [
     program("token"),
+    program("nft", "token"),
     program("twap_oracle"),
     program("amm", "token", "twap_oracle"),
     program("ata", "token"),

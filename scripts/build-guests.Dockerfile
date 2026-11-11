@@ -3,7 +3,7 @@
 ARG RISC0_DOCKER_CONTAINER_TAG=r0.1.88.0
 FROM risczero/risc0-guest-builder:${RISC0_DOCKER_CONTAINER_TAG} AS build
 ARG RISC0_BUILD_CACHE_ID=lez-programs-risc0-guests
-ARG PROGRAMS="amm ata stablecoin token token_mint_authority twap_oracle"
+ARG PROGRAMS="amm ata nft stablecoin token token_mint_authority twap_oracle"
 
 WORKDIR /src
 COPY . .
