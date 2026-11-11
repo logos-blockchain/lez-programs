@@ -104,11 +104,11 @@ jobs:
 
       - name: Check IDL is up to date
         run: |
-          src="programs/${{ matrix.name }}/methods/guest/src/bin/${{ matrix.name }}.rs"
-          idl="artifacts/${{ matrix.name }}-idl.json"
-          cargo run -q -p idl-gen --release -- "${src}" > "${RUNNER_TEMP}/idl.json"
-          if ! diff -q "${idl}" "${RUNNER_TEMP}/idl.json" > /dev/null 2>&1; then
-            echo "IDL for '${{ matrix.name }}' is missing or out of date — regenerate with: cargo run -p idl-gen -- ${src} > ${idl}"
+          make idl PROGRAM=${{ matrix.name }}
+          if [ -n "$(git status --porcelain -- artifacts/)" ]; then
+            git status --short -- artifacts/
+            git diff -- artifacts/
+            echo "IDL for '${{ matrix.name }}' is missing or out of date: run 'make idl' and commit the result."
             exit 1
           fi
 

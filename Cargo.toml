@@ -8,6 +8,7 @@ members = [
     "programs/nft/methods",
     "programs/integration_tests",
     "tools/risc0-packager",
+    "tools/idl-gen",
     # Not yet ported to LEZ's actor model.
     # Each returns to the workspace with its port:
     # "modules/amm/ffi",
@@ -29,7 +30,6 @@ members = [
     # "programs/token_mint_authority/core",
     # "programs/token_mint_authority",
     # "programs/token_mint_authority/methods",
-    # "tools/idl-gen",
 ]
 exclude = [
     "programs/token/methods/guest",
