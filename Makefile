@@ -41,6 +41,8 @@ idl:
 			--state $$state --events event > "artifacts/$$program-idl.json.tmp" || exit 1; \
 		mv "artifacts/$$program-idl.json.tmp" "artifacts/$$program-idl.json"; \
 	done
+	@cargo run -q -p idl-gen -- programs/ata/core --message Message --state AtaState > artifacts/ata-idl.json.tmp
+	@mv artifacts/ata-idl.json.tmp artifacts/ata-idl.json
 
 changelog:
 	git cliff -o CHANGELOG.md

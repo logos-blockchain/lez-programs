@@ -1,67 +1,15 @@
-use borsh::{BorshDeserialize, BorshSerialize};
-use lee_core::account::{AccountId, AccountWithMetadata};
+//! Associated holdings for fungible tokens and NFTs on LEZ's actor interface.
+//!
+//! Public PDA derivation is unchanged. Use deployed program account ids, not image ids.
+//! Message tags and state layouts are append-only within this protocol.
+
+use lee_core::account::AccountId;
 pub use lee_core::program::PdaSeed;
 
-/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
-/// this type derives.
-///
-/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
-/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
-/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
-/// straight from the IDL. Carrying them here would only mean a type that accepts either
-/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
-/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
-/// the runtime rejects. Without a serde impl that is a compile error instead.
-///
-/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
-/// inserting one shifts the encoding of every variant after it.
-#[derive(BorshSerialize, BorshDeserialize)]
-pub enum Instruction {
-    /// Create the Associated Token Account for (token program, owner, definition).
-    /// Idempotent: no-op if the account already exists.
-    ///
-    /// Required accounts (3):
-    /// - Owner account
-    /// - Token definition account
-    /// - Associated token account (default/uninitialized, or already initialized)
-    ///
-    /// `token_program_id` is explicit so callers can support multiple token programs without
-    /// letting account metadata choose downstream code.
-    Create { token_program_id: AccountId },
-
-    /// Transfer tokens FROM owner's ATA to a recipient token holding account.
-    /// Uses ATA PDA seeds to authorize the chained Token::Transfer call.
-    ///
-    /// Required accounts (3):
-    /// - Owner account (authorized)
-    /// - Sender ATA (owner's token holding)
-    /// - Recipient token holding. Must be:
-    ///   - already initialized (not a default account),
-    ///   - owned by the same token program as the sender ATA,
-    ///   - and point at the same token definition as the sender.
-    ///
-    /// `token_program_id` is explicit so callers can support multiple token programs without
-    /// letting account metadata choose downstream code.
-    Transfer {
-        token_program_id: AccountId,
-        amount: u128,
-    },
-
-    /// Burn tokens FROM owner's ATA.
-    /// Uses PDA seeds to authorize the ATA in the chained Token::Burn call.
-    ///
-    /// Required accounts (3):
-    /// - Owner account (authorized)
-    /// - Owner's ATA (the holding to burn from)
-    /// - Token definition account
-    ///
-    /// `token_program_id` is explicit so callers can support multiple token programs without
-    /// letting account metadata choose downstream code.
-    Burn {
-        token_program_id: AccountId,
-        amount: u128,
-    },
-}
+mod message;
+mod state;
+pub use message::*;
+pub use state::*;
 
 pub fn compute_ata_seed(
     token_program_id: AccountId,
@@ -85,22 +33,4 @@ pub fn compute_ata_seed(
 
 pub fn get_associated_token_account_id(ata_program_id: &AccountId, seed: &PdaSeed) -> AccountId {
     AccountId::for_public_pda(ata_program_id, seed)
-}
-
-/// Verify the ATA's address matches `(ata_program_id, token_program_id, owner, definition)` and
-/// return the [`PdaSeed`] for use in chained calls.
-pub fn verify_ata_and_get_seed(
-    ata_account: &AccountWithMetadata,
-    owner: &AccountWithMetadata,
-    token_program_id: AccountId,
-    definition_id: AccountId,
-    ata_program_id: AccountId,
-) -> PdaSeed {
-    let seed = compute_ata_seed(token_program_id, owner.account_id, definition_id);
-    let expected_id = get_associated_token_account_id(&ata_program_id, &seed);
-    assert_eq!(
-        ata_account.account_id, expected_id,
-        "ATA account ID does not match expected derivation"
-    );
-    seed
 }

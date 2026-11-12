@@ -1,76 +1,180 @@
+use ata_core::{AtaState, Holding, Internal, TransferKind, TransferRequest};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response, StateReply, SyncMessage},
 };
-use token_core::TokenHolding;
+use nft_core::NftState;
+use token_core::TokenState;
 
-pub fn transfer_from_associated_token_account(
-    owner: AccountWithMetadata,
-    sender_ata: AccountWithMetadata,
-    recipient: AccountWithMetadata,
-    ata_program_id: AccountId,
-    token_program_id: AccountId,
-    amount: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_eq!(
-        sender_ata.account.program_owner, token_program_id,
-        "Sender ATA must be owned by expected token program"
-    );
-    let sender_definition_id = TokenHolding::try_from(&sender_ata.account.data)
-        .expect("Sender ATA must hold a valid token")
-        .definition_id();
-    let sender_seed = ata_core::verify_ata_and_get_seed(
-        &sender_ata,
-        &owner,
-        token_program_id,
-        sender_definition_id,
-        ata_program_id,
-    );
+use crate::holding_call;
 
-    // The recipient contract: ATA::Transfer requires a recipient token holding that is already
-    // initialized, owned by the same token program as the sender ATA, and that points at the same
-    // token definition as the sender. Anything else fails here rather than being silently
-    // materialized by the downstream token transfer writing into a default recipient, so
-    // integrators get an ATA-level failure rather than having to reverse-engineer
-    // token/runtime semantics.
-    assert_ne!(
-        recipient.account,
-        Account::default(),
-        "Recipient token holding must be initialized"
-    );
-    assert_eq!(
-        recipient.account.program_owner, token_program_id,
-        "Recipient must be owned by the same token program as the sender ATA"
-    );
-    let recipient_definition_id = TokenHolding::try_from(&recipient.account.data)
-        .expect("Recipient must hold a valid token")
-        .definition_id();
-    assert_eq!(
-        recipient_definition_id, sender_definition_id,
-        "Recipient and sender token definitions do not match"
-    );
-
-    let sender_ata_id = sender_ata.account_id;
-    let recipient_id = recipient.account_id;
-
-    // The balances move in the chained call, executed by the token program that owns
-    // these holdings; this program reports them unchanged but must still report them.
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::unchanged(sender_ata),
-        AccountStateDiff::unchanged(recipient),
-    ];
-
-    // `pda_seeds` is what authorizes the callee over the sender ATA — the call carries
-    // account ids, not pre-states, so there is no flag to set.
-    let chained_call = ChainedCall::new(
-        token_program_id,
-        vec![sender_ata_id, recipient_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: amount,
-        },
+fn source(input: &ReceiveInput, request: &TransferRequest) -> AccountId {
+    ata_core::get_associated_token_account_id(
+        &input.receiver.program_account_id,
+        &ata_core::compute_ata_seed(request.asset_program, request.owner, request.definition),
     )
-    .with_pda_seeds(vec![sender_seed]);
-    (state_diffs, vec![chained_call])
+}
+
+fn read(account: AccountId, request: &TransferRequest) -> SyncMessage {
+    let actor = Actor::new(account, request.asset_program);
+    match request.kind {
+        TransferKind::Token { .. } => SyncMessage::new(actor, &token_core::Message::ReadState),
+        TransferKind::Nft => SyncMessage::new(actor, &nft_core::Message::ReadState),
+    }
+}
+
+pub(crate) fn start(input: &ReceiveInput, request: TransferRequest) -> Response {
+    let first = read(source(input, &request), &request);
+    Response::set_state(AtaState::ReadingSource(request).encode())
+        .send(first)
+        .send_sync(input.receiver, &Internal::AssertIdle)
+}
+
+fn snapshot(
+    input: &ReceiveInput,
+    account: AccountId,
+    program: AccountId,
+    definition: AccountId,
+    kind: TransferKind,
+) -> Holding {
+    assert_eq!(
+        input.from,
+        Some(Actor::new(account, program)),
+        "unexpected ATA state reply sender"
+    );
+    let reply: StateReply =
+        borsh::from_slice(&input.message).expect("asset state reply must decode");
+    let (actual_definition, holding) = match kind {
+        TransferKind::Token { .. } => match TokenState::decode(&reply.state) {
+            Some(TokenState::Holding(holding)) => {
+                (holding.definition_id, Holding::Token(holding.balance))
+            }
+            Some(TokenState::Definition(_)) | None => panic!("expected initialized token holding"),
+        },
+        TransferKind::Nft => match NftState::decode(&reply.state) {
+            Some(NftState::Master(holding)) => (
+                holding.definition_id,
+                Holding::Master(holding.print_balance),
+            ),
+            Some(NftState::Copy(holding)) => (holding.definition_id, Holding::Copy(holding.owned)),
+            Some(NftState::Definition(_)) | None => panic!("expected initialized NFT holding"),
+        },
+    };
+    assert_eq!(
+        actual_definition, definition,
+        "holding has another definition"
+    );
+    holding
+}
+
+pub(crate) fn reply(input: &ReceiveInput, state: AtaState) -> Response {
+    match state {
+        AtaState::ReadingSource(request) => {
+            let source = snapshot(
+                input,
+                source(input, &request),
+                request.asset_program,
+                request.definition,
+                request.kind,
+            );
+            let next = read(input.receiver.account_id, &request);
+            Response::set_state(AtaState::ReadingRecipient { request, source }.encode()).send(next)
+        }
+        AtaState::ReadingRecipient {
+            request,
+            source: before_source,
+        } => {
+            let before_recipient = snapshot(
+                input,
+                input.receiver.account_id,
+                request.asset_program,
+                request.definition,
+                request.kind,
+            );
+            let (expected, call) = match request.kind {
+                TransferKind::Token { amount } => {
+                    let Holding::Token(balance) = before_recipient else {
+                        unreachable!("token snapshot")
+                    };
+                    // Both holdings and owner authorization have already been validated.
+                    // A zero credit cannot distinguish deferred delivery from settlement.
+                    if amount == 0 {
+                        return Response::set_state(Vec::new());
+                    }
+                    let balance = if source(input, &request) == input.receiver.account_id {
+                        balance
+                    } else {
+                        balance
+                            .checked_add(amount)
+                            .expect("recipient balance overflow")
+                    };
+                    (
+                        Holding::Token(balance),
+                        holding_call(
+                            input,
+                            request.owner,
+                            request.asset_program,
+                            request.definition,
+                            &token_core::Message::Transfer {
+                                to: input.receiver.account_id,
+                                amount,
+                            },
+                        ),
+                    )
+                }
+                TransferKind::Nft => {
+                    assert!(
+                        matches!(before_recipient, Holding::Master(0) | Holding::Copy(false)),
+                        "recipient already holds an NFT"
+                    );
+                    assert!(
+                        matches!(before_source, Holding::Master(n) if n > 0)
+                            || before_source == Holding::Copy(true),
+                        "source holds no NFT"
+                    );
+                    (
+                        before_source,
+                        holding_call(
+                            input,
+                            request.owner,
+                            request.asset_program,
+                            request.definition,
+                            &nft_core::Message::Transfer {
+                                to: input.receiver.account_id,
+                            },
+                        ),
+                    )
+                }
+            };
+            Response::set_state(
+                AtaState::VerifyingRecipient {
+                    asset_program: request.asset_program,
+                    definition: request.definition,
+                    expected,
+                }
+                .encode(),
+            )
+            .send(call)
+            .send(read(input.receiver.account_id, &request))
+        }
+        AtaState::VerifyingRecipient {
+            asset_program,
+            definition,
+            expected,
+        } => {
+            let kind = match expected {
+                Holding::Token(_) => TransferKind::Token { amount: 0 },
+                Holding::Master(_) | Holding::Copy(_) => TransferKind::Nft,
+            };
+            let actual = snapshot(
+                input,
+                input.receiver.account_id,
+                asset_program,
+                definition,
+                kind,
+            );
+            assert_eq!(actual, expected, "ATA transfer did not settle atomically");
+            Response::set_state(Vec::new())
+        }
+    }
 }
