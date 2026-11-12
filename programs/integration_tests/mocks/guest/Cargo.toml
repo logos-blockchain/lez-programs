@@ -1,0 +1,62 @@
+[package]
+name = "oracle-mock-guest"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[profile.release]
+debug = 0
+strip = "symbols"
+
+[lints.rust]
+rust_2018_idioms = { level = "deny", priority = -1 }
+# deny (not forbid) so a targeted per-item #[allow] remains possible if ever needed
+unsafe_code = "deny"
+
+[lints.clippy]
+# Deny only the groups where a new lint should always be a hard error.
+# style/pedantic lints default to warn so toolchain upgrades don't break the
+# build unexpectedly — they can be evaluated and addressed at our own pace.
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
+
+# Generated-code / placeholder blockers.
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_used = "deny"
+
+# Lint suppression hygiene.
+allow_attributes = "warn"
+allow_attributes_without_reason = "deny"
+
+# Determinism, panic-safety, and arithmetic correctness.
+arithmetic_side_effects = "deny"
+indexing_slicing = "deny"
+
+# Cast discipline.
+as_conversions = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"
+
+# API and enum evolution.
+large_enum_variant = "deny"
+wildcard_enum_match_arm = "deny"
+
+# Too noisy for this codebase unless enforced selectively.
+module_name_repetitions = "allow"
+similar_names = "allow"
+
+[[bin]]
+name = "oracle_mock"
+path = "src/bin/oracle_mock.rs"
+
+[dependencies]
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e" }
+risc0-zkvm = { version = "=3.0.5", default-features = false }
+amm_core = { path = "../../../amm/core" }
+borsh = { version = "1.5", features = ["derive"] }

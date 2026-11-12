@@ -7,8 +7,7 @@ edition = "2021"
 workspace = true
 
 [dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-spel-framework-macros = { git = "https://github.com/logos-co/spel.git", rev = "c6f73ce21e4805f8430f03afdbdedf0b7e479a5e", package = "spel-framework-macros" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e" }
 token_core = { path = "../../token/core" }
 borsh = { version = "1.5", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -17,4 +16,4 @@ alloy-primitives = { version = "1", default-features = false }
 # Pin ruint (transitive via alloy-primitives) below 1.18, which raised its MSRV to rustc 1.90.
 # The risc0 guest toolchain ships rustc 1.88, so 1.18+ fails the guest build. 1.17.0 (MSRV 1.85)
 # is the newest compatible release. Remove this pin once the risc0 toolchain advances past 1.90.
-ruint = { version = "=1.17.0", default-features = false }
+ruint = { version = "=1.17.0", default-features = false, features = ["std"] }
