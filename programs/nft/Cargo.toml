@@ -8,10 +8,10 @@ workspace = true
 
 [dependencies]
 # Not `workspace = true`: that would inherit the `host` feature into the guest build.
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
 nft_core = { path = "core" }
 borsh = { version = "1.5", features = ["derive"] }
 
 [dev-dependencies]
 # `host` derives `Debug`/`PartialEq` on `Response`, for assertions.
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "616256b9c9efd2c28d4f7683b7b5d2348df7314e", features = ["host"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["host"] }

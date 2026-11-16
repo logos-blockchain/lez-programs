@@ -98,7 +98,7 @@ Generated IDL files live in `artifacts/`. CI runs `make idl` and fails if `artif
 
 **Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> --program <PROGRAM_ID> --fee-payer <FEE_PAYER> -- <INSTRUCTION> ...` fails, ensure `seq_poll_timeout` is set in `$LEE_WALLET_HOME_DIR/wallet_config.json`.
 
-Since LEZ v0.2.5, `--program` is the program's header account id (spel rejects a binary path), and every transaction is charged: pass `--fee-payer` with a funded wallet account, or the first signer pays. spel prints `Transaction confirmed` even when the program rejected the instruction, so verify the result with `spel --idl <IDL> inspect <ACCOUNT_ID> --type <TYPE>`. `docs/testnet-runbook.md` has complete examples.
+Since LEZ v0.2.5, `--program` is the program's header account id (spel rejects a binary path), and every transaction is charged: pass `--fee-payer` with a funded wallet account, or the first signer pays. Since LEZ v0.4.0-rc3 the wallet simulates each send and refuses one that would revert (it would still pay its fee); `spel send` then prints `Refused in simulation, so not sent: <reason>` and exits `2`, the same code as an included no-op. Check the exit code, and verify state with `spel inspect`. `docs/testnet-runbook.md` has complete examples.
 
 For testnet and mainnet deployments, build guest binaries with the release profile in each guest manifest:
 
