@@ -8,8 +8,8 @@ The token program is fungible only. NFTs are a separate program, `programs/nft`,
 IDL and runbook ([`docs/nft/README.md`](../nft/README.md)).
 
 **Verified against:** the token program on `refactor/lez-v0.4.x`, LEZ's actor model
-(`moudy/lez-books` @ `616256b9c`), and the `spel` CLI from spel's `refactor/lez-v0.4.x`
-(`dbb6aec`), on a local sequencer. `scripts/e2e-token-nft.sh` runs the same flows.
+(`v0.4.0-rc3`), and the `spel` CLI from spel's `refactor/lez-v0.4.x`
+(`c90ca0b`), on a local sequencer. `scripts/e2e-token-nft.sh` runs the same flows.
 
 > **A program is its address.** Every deploy gets a new address, and it is a different
 > program: token state lives on an account per program, so definitions and holdings created
@@ -163,18 +163,19 @@ read it when an account has state under several programs.
 
 ### Outcomes
 
-LEZ includes a refused transaction in a block, leaves state unchanged, and reports no outcome
-or error. `spel send` reads every declared actor before and after and prints what changed:
+The wallet simulates every transaction first. One that would be refused isn't sent (it would
+still pay its fee): `spel send` prints `Refused in simulation, so not sent: <reason>`. Otherwise
+it reads every declared actor before and after inclusion and prints what changed:
 
 | exit | meaning |
 |---|---|
 | `0` | included, state changed |
-| `2` | included, nothing changed: the program refused the message (or it was a no-op) |
+| `2` | nothing changed: refused in simulation (not sent, reason printed), or included as a no-op |
 | `1` | not sent: bad arguments, unknown account, a signer whose key the wallet lacks, … |
 
-A refusal can't say why. The usual causes: an undeclared actor, a missing signature, or the
-program's own checks (balance, authority, a holding of another token). `--dry-run` prints
-the access list and signers without sending.
+The reason is the program's panic message (`insufficient balance`, `sender is not the mint
+authority`, …) or the LEZ rule the transaction broke (an undeclared actor: `… neither a declared
+public actor nor private`). `--dry-run` prints the access list and signers without sending.
 
 ## 4. Create a token
 
@@ -232,8 +233,8 @@ spel --program token send --fee-payer <FEE_PAYER> --root alice --signer alice --
   transfer --to bob --amount 300
 ```
 
-- `--to` must already hold this token (section 5). Otherwise the credit fails and the whole
-  transaction rolls back, the debit included (exit `2`).
+- `--to` must already hold this token (section 5). Otherwise the credit fails, which would roll
+  back the debit too, so it is refused (exit `2`).
 - More than the balance is refused.
 - The recipient doesn't sign.
 

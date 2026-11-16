@@ -10,8 +10,8 @@ holdings that must be initialized before they receive, and the same `spel` workf
 runbook repeats what you need and points to the token runbook for the general parts.
 
 **Verified against:** the NFT program on `refactor/lez-v0.4.x`, LEZ's actor model
-(`moudy/lez-books` @ `616256b9c`), and the `spel` CLI from spel's `refactor/lez-v0.4.x`
-(`dbb6aec`), on a local sequencer. `scripts/e2e-token-nft.sh` runs the main flows.
+(`v0.4.0-rc3`), and the `spel` CLI from spel's `refactor/lez-v0.4.x`
+(`c90ca0b`), on a local sequencer. `scripts/e2e-token-nft.sh` runs the main flows.
 
 > **A program is its address.** Every deploy gets a new address, and it is a different
 > program: NFT state lives on an account per program, so definitions and holdings created
@@ -124,8 +124,8 @@ As in the token program ([token runbook §3](../token/README.md#3-the-model)):
 - `--signer` is explicit. The definition and the master sign at creation; a new holding signs
   its initialization; the sending holding signs transfer, print and burn. Recipients never
   sign.
-- A refused transaction is still included: `spel send` exits `0` when state changed, `2`
-  when nothing changed (refused, or a no-op), `1` when nothing was sent.
+- `spel send` exits `0` when state changed, `2` when nothing changed (refused in simulation and
+  not sent, with the reason printed; or a no-op), `1` on an error.
 
 ## 3. Create an NFT
 
@@ -173,7 +173,7 @@ spel --program nft send --fee-payer <FEE_PAYER> --root alice --signer alice -- p
 ```
 
 - `--to` must be an initialized holding of this NFT that holds nothing (section 4). Otherwise
-  the credit fails and the transaction rolls back (exit `2`).
+  the credit fails, so the print is refused (exit `2`).
 - A master at `print_balance` 1 refuses to print.
 - The recipient doesn't sign.
 
@@ -267,5 +267,6 @@ events yet.
   partial transfer.
 - **`burn` needs `--actor <definition>`.** Otherwise it is refused and nothing burns.
 - **One NFT per account per program.** A second NFT needs a second account.
-- **Inclusion isn't success.** Check `spel send`'s exit code; `2` means refused.
+- **Check the exit code.** `2` from `spel send` means nothing changed: refused (with the
+  reason) or a no-op.
 - **Redeploy ⇒ new program.** NFTs from an earlier deployment don't exist for the new one.
