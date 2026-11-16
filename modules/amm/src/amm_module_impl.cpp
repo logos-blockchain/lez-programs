@@ -135,8 +135,7 @@ bool jsonAmountToDecimal(const json& j, std::string& out) {
     return false;
 }
 
-// json string/bool arrays -> std vectors, and a u32-word array -> the
-// little-endian bytes the wallet module's byte-string `instruction` expects.
+// Convert plan arrays to the wallet module's typed arguments.
 std::vector<std::string> jsonStrVec(const json& arr) {
     std::vector<std::string> out;
     if (!arr.is_array()) return out;
@@ -155,7 +154,7 @@ std::vector<bool> jsonBoolVec(const json& arr) {
     return out;
 }
 
-// A plan's `instruction` is the borsh encoding of the program's Instruction, one
+// A plan's `message` is the borsh encoding of the program's Message, one
 // JSON number per byte. Returns {} on a non-array or any element outside 0..=255.
 std::vector<uint8_t> jsonInstructionBytes(const json& arr) {
     std::vector<uint8_t> out;
@@ -317,22 +316,21 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     const auto obj = json::parse(account_json, nullptr, /*allow_exceptions=*/false);
     if (!obj.is_object()) return result;
 
-    const std::string owner = jStr(obj, "program_owner");
-    const std::string balance = jStr(obj, "balance");
     const std::string nonce = jStr(obj, "nonce");
-    const std::string data = jStr(obj, "data");
-    if (!isHexLen(owner, 64) || !isHexLen(balance, 32) || !isHexLen(nonce, 32)
-        || !isHexEven(data)) {
-        return result;
+    const auto actors = obj.find("actor_states");
+    if (!isHexLen(nonce, 32) || actors == obj.end() || !actors->is_array()) return result;
+    const std::string program = ammProgramId();
+    std::string data;
+    for (const auto& actor : *actors) {
+        if (!actor.is_object() || !isHexLen(jStr(actor, "program"), 64)
+            || !isHexEven(jStr(actor, "data"))) return result;
+        if (jStr(actor, "program") == program) data = jStr(actor, "data");
     }
-
+    result["programId"] = program;
     result["status"] = "ok";
-    result["account"] = {
-        {"program_owner", owner},
-        {"balance", balance},
-        {"nonce", nonce},
-        {"data", data},
-    };
+    result["account"] = obj;
+    // Convenience projection used by pool quote requests; full actor map goes to Rust.
+    result["account"]["data"] = data;
     return result;
 }
 
@@ -509,7 +507,7 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("transferOwnership: SUBMIT programId=" << program_id
@@ -519,7 +517,8 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("transferOwnership: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -567,7 +566,7 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("withdrawProtocolFees: SUBMIT programId=" << program_id
@@ -577,7 +576,8 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("withdrawProtocolFees: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -648,16 +648,8 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction =
-        jsonInstructionBytes(plan.value("instruction", json::array()));
+        jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
-
-    // Surface a stable error code when the target PDA already exists instead of failing at submit.
-    const size_t target_index = observations ? 3 : 2;
-    if (accounts.size() > target_index) {
-        const json existing = readPublicAccount(accounts[target_index]);
-        if (jStr(existing, "status") == "ok")
-            return error("already_exists");
-    }
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
               << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());
@@ -665,7 +657,8 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("oracleSetup: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -885,7 +878,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("swapExactInput: SUBMIT programId=" << program_id
@@ -897,7 +890,8 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("swapExactInput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -982,7 +976,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("swapExactOutput: SUBMIT programId=" << program_id
@@ -994,7 +988,8 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("swapExactOutput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1115,7 +1110,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("createPool: SUBMIT programId=" << program_id
@@ -1125,7 +1120,8 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("createPool: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1281,7 +1277,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("addLiquidity: SUBMIT programId=" << program_id
@@ -1291,7 +1287,8 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("addLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1442,7 +1439,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("removeLiquidity: SUBMIT programId=" << program_id
@@ -1452,7 +1449,8 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("removeLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1511,7 +1509,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("syncReserves: SUBMIT programId=" << program_id
@@ -1521,7 +1519,8 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("syncReserves: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);

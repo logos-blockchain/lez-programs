@@ -60,6 +60,7 @@
     # (Also builds from the Logos nix cache, so `ring` isn't compiled locally — it
     # fails under the nix cc-wrapper on Apple Silicon.)
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
+    amm_lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=cc73ebfe0857705cfc1c3b29743fb6c8c6aebd82";
 
   };
 
@@ -296,7 +297,7 @@
       ammModuleOutputs = logos-module-builder.lib.mkLogosModule {
         src = ./modules/amm;
         configFile = ./modules/amm/metadata.json;
-        flakeInputs = inputs;
+        flakeInputs = inputs // { lez_core = inputs.amm_lez_core; };
         externalLibInputs = {
           amm_ffi = { input = self; packages.default = "amm_ffi"; };
         };

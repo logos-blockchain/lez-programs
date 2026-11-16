@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use lee_core::account::AccountId;
 use serde_json::{json, Value};
-use token_core::TokenDefinition;
+use token_core::{TokenDefinition, TokenState};
 
 use super::{
     config::load_config,
@@ -86,13 +86,13 @@ fn fungible_definition(
     token_program: AccountId,
 ) -> Option<(String, u128)> {
     let (id, account) = decode_account(read?).ok()?;
-    if id != token_id || account.program_owner != token_program {
+    if id != token_id {
         return None;
     }
-    match TokenDefinition::try_from(&account.data) {
-        Ok(TokenDefinition::Fungible {
+    match borsh::from_slice::<TokenState>(account.data.actor_state(token_program).as_ref()) {
+        Ok(TokenState::Definition(TokenDefinition {
             name, total_supply, ..
-        }) => Some((name, total_supply)),
+        })) => Some((name, total_supply)),
         _ => None,
     }
 }

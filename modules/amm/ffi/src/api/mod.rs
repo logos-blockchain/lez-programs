@@ -8,6 +8,7 @@ mod holding;
 mod liquidity;
 mod oracle;
 mod pair;
+mod plan;
 mod quote;
 mod request;
 mod swap;
@@ -29,7 +30,7 @@ pub use request::{
 };
 use serde_json::Value;
 
-pub use crate::account::{AccountRead, WalletAccount};
+pub use crate::account::{AccountRead, WalletAccount, WalletActorState};
 
 /// JSON response shared by direct Rust callers and transport adapters.
 pub type AmmResponse = Value;
