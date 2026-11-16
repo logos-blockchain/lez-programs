@@ -12,8 +12,7 @@
 //! guest's `assert pool uninitialized`.
 
 use amm_core::{
-    isqrt_product, mul_div_floor, spot_price_q64_64, PoolDefinition, FEE_BPS_DENOMINATOR,
-    MINIMUM_LIQUIDITY,
+    isqrt_product, mul_div_floor, spot_price_q64_64, FEE_BPS_DENOMINATOR, MINIMUM_LIQUIDITY,
 };
 use lee_core::account::AccountId;
 use serde_json::{json, Value};
@@ -25,7 +24,7 @@ use super::{
     CreatePoolQuoteRequest, RemoveLiquidityPlanRequest, RemoveLiquidityQuoteRequest,
     SyncReservesPlanRequest,
 };
-use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
+use crate::account::{account_id_from_hex, parse_program_id};
 
 /// Parses a required, strictly-positive base-unit amount. Empty / non-digit /
 /// zero inputs surface as stable codes so the UI can flag the offending field.
@@ -67,22 +66,6 @@ fn canonical_triples(
     } else {
         (token_b, token_a, amount_b, amount_a, holding_b, holding_a)
     }
-}
-
-/// The tx-submission envelope shared by the create and add plans: the fixed IDL account ids
-/// as hex, their signer flags, and the borsh-encoded instruction bytes.
-fn plan_response(
-    program_id: &str,
-    account_ids: impl IntoIterator<Item = AccountId>,
-    signing_requirements: &[bool],
-    instruction: Vec<u8>,
-) -> Value {
-    json!({
-        "programId": program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    })
 }
 
 /// Prices a create-pool deposit — dual mode, matching the legacy create quote (minus its
@@ -180,37 +163,18 @@ pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, 
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::NewDefinition {
+    let message = amm_core::Message::NewDefinition {
+        config: pair.config,
+        definition_token_a_id: canonical_a,
+        definition_token_b_id: canonical_b,
+        user_holding_a: user_a,
+        user_holding_b: user_b,
+        user_holding_lp: user_lp,
         token_a_amount: canonical_amount_a,
         token_b_amount: canonical_amount_b,
         deadline,
-    })
-    .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // Fixed IDL account order for NewDefinition; only the user holdings (a, b, LP) sign.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pair.vault_a,
-        pair.vault_b,
-        pair.lp_definition,
-        pair.lp_lock_holding,
-        user_a,
-        user_b,
-        user_lp,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [
-        false, false, false, false, false, false, true, true, true, false, false,
-    ];
-
-    Ok(plan_response(
-        &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
-        instruction,
-    ))
+    };
+    super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
 /// Prices an `AddLiquidity` into an existing pool. Mirrors the swap quotes: decode the
@@ -241,7 +205,7 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
     // Decode the pool; absent / undecodable / empty ⇒ nothing to add to.
     let pool = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
         .filter(|pool| pool.liquidity_pool_supply != 0)
         .ok_or_else(|| String::from("no_pool"))?;
 
@@ -345,7 +309,7 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
     // Vaults + LP definition come from the pool's stored ids (the guest asserts against them).
     let Some(pool) = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
     else {
         return Err(String::from("no_pool"));
     };
@@ -366,37 +330,20 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
             return Err(String::from("pair_mismatch"));
         };
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::AddLiquidity {
+    let message = amm_core::Message::AddLiquidity {
+        user_holding_a: user_a,
+        user_holding_b: user_b,
+        user_holding_lp: user_lp,
         min_amount_liquidity: min_lp,
         max_amount_to_add_token_a: max_pool_a,
         max_amount_to_add_token_b: max_pool_b,
         deadline,
-    })
-    .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // Fixed IDL account order for AddLiquidity; only the user holdings (a, b, LP) sign.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        pool.liquidity_pool_id,
-        user_a,
-        user_b,
-        user_lp,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [
-        false, false, false, false, false, true, true, true, false, false,
-    ];
-
-    Ok(plan_response(
-        &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
-        instruction,
-    ))
+    };
+    let mut pair = pair;
+    pair.vault_a = pool.vault_a_id;
+    pair.vault_b = pool.vault_b_id;
+    pair.lp_definition = pool.liquidity_pool_id;
+    super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
 /// Prices removing liquidity: burning `lp_amount` of the pool returns the proportional
@@ -424,7 +371,7 @@ pub(super) fn remove_liquidity_quote(
     // Decode the pool; absent / undecodable / zero-supply ⇒ nothing to remove from.
     let pool = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
         .filter(|pool| pool.liquidity_pool_supply != 0)
         .ok_or_else(|| String::from("no_pool"))?;
     if pool.reserve_a == 0 || pool.reserve_b == 0 {
@@ -524,7 +471,7 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
     // Vaults + LP definition come from the pool's stored ids (the guest asserts against them).
     let Some(pool) = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
     else {
         return Err(String::from("no_pool"));
     };
@@ -543,37 +490,20 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
             return Err(String::from("pair_mismatch"));
         };
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::RemoveLiquidity {
+    let message = amm_core::Message::RemoveLiquidity {
+        user_holding_a: user_a,
+        user_holding_b: user_b,
+        user_holding_lp: user_lp,
         remove_liquidity_amount: lp_amount,
         min_amount_to_remove_token_a: min_pool_a,
         min_amount_to_remove_token_b: min_pool_b,
         deadline,
-    })
-    .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // Fixed IDL account order for RemoveLiquidity; only user_holding_lp (burned) signs.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        pool.liquidity_pool_id,
-        user_a,
-        user_b,
-        user_lp,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [
-        false, false, false, false, false, false, false, true, false, false,
-    ];
-
-    Ok(plan_response(
-        &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
-        instruction,
-    ))
+    };
+    let mut pair = pair;
+    pair.vault_a = pool.vault_a_id;
+    pair.vault_b = pool.vault_b_id;
+    pair.lp_definition = pool.liquidity_pool_id;
+    super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
 /// Builds the `SyncReserves` submission — a permissionless keeper op that refreshes the pool's
@@ -601,40 +531,28 @@ pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Val
     // created outside the FFI can store a non-canonical order — see add/remove/swap plans).
     let Some(pool) = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
     else {
         return Err(String::from("no_pool"));
     };
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::SyncReserves)
-        .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // Fixed IDL account order for SyncReserves; nothing signs (permissionless keeper op).
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        pair.current_tick,
-        pair.clock,
-    ];
-    let signing_requirements = [false, false, false, false, false, false];
-
-    Ok(plan_response(
-        &request.amm_program_id,
-        account_ids,
-        &signing_requirements,
-        instruction,
-    ))
+    let message = amm_core::Message::SyncReserves;
+    let mut pair = pair;
+    pair.vault_a = pool.vault_a_id;
+    pair.vault_b = pool.vault_b_id;
+    pair.lp_definition = pool.liquidity_pool_id;
+    super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
 #[cfg(test)]
 mod tests {
-    use amm_core::{compute_config_pda, compute_pool_pda, compute_vault_pda, AmmConfig};
-    use lee_core::account::{Account, AccountId, Data};
+    use amm_core::{
+        compute_config_pda, compute_pool_pda, compute_vault_pda, AmmConfig, PoolDefinition,
+    };
+    use lee_core::account::{Account, AccountId, ActorState};
 
     use super::*;
-    use crate::account::{account_read, AccountRead};
+    use crate::account::{account_id_hex, account_read, AccountRead};
 
     fn quote_request(token_a: AccountId, token_b: AccountId) -> CreatePoolQuoteRequest {
         CreatePoolQuoteRequest {
@@ -648,6 +566,7 @@ mod tests {
 
     fn read_failed() -> AccountRead {
         AccountRead {
+            program_id: "00".repeat(32),
             id: String::new(),
             status: String::from("read_failed"),
             account: None,
@@ -665,17 +584,19 @@ mod tests {
     fn valid_config(amm: AccountId) -> AccountRead {
         let token_program = parse_program_id(&"01".repeat(32)).unwrap();
         let twap_program = parse_program_id(&"02".repeat(32)).unwrap();
-        let account = Account {
-            program_owner: amm,
-            data: Data::from(&AmmConfig {
-                token_program_id: token_program,
-                twap_oracle_program_id: twap_program,
-                authority: AccountId::new([0x09; 32]),
-                swap_fee_bps: 30,
-                protocol_fee_bps: 0,
-            }),
-            ..Account::default()
-        };
+        let account = Account::default().with_actor_state(
+            amm,
+            ActorState::from(
+                borsh::to_vec(&amm_core::AmmState::Config(AmmConfig {
+                    token_program_id: token_program,
+                    twap_oracle_program_id: twap_program,
+                    authority: AccountId::new([0x09; 32]),
+                    swap_fee_bps: 30,
+                    protocol_fee_bps: 0,
+                }))
+                .unwrap(),
+            ),
+        );
         account_read(config_id(amm), &account)
     }
 
@@ -808,20 +729,20 @@ mod tests {
         assert_eq!(ids[1], account_id_hex(pool));
         // Canonical vaults, in canonical order.
         assert_eq!(
-            ids[2],
+            ids[3],
             account_id_hex(compute_vault_pda(amm, pool, canonical_a))
         );
         assert_eq!(
-            ids[3],
+            ids[4],
             account_id_hex(compute_vault_pda(amm, pool, canonical_b))
         );
         // user_holding_a is the CANONICAL token-a holding = display token_b's holding.
-        assert_eq!(ids[6], account_id_hex(holding_b));
-        assert_eq!(ids[7], account_id_hex(holding_a));
-        assert_eq!(ids[8], account_id_hex(lp));
+        assert_eq!(ids[7], account_id_hex(holding_b));
+        assert_eq!(ids[8], account_id_hex(holding_a));
+        assert_eq!(ids[9], account_id_hex(lp));
         assert_eq!(
             signers,
-            vec![false, false, false, false, false, false, true, true, true, false, false]
+            vec![false, false, false, false, false, false, false, true, true, true, false, false]
         );
 
         // The decisive check: the encoded instruction must carry token_a_amount =
@@ -829,14 +750,20 @@ mod tests {
         // for THAT token (display token_b), not display token_a's 1_000_000. Comparing
         // against the re-encoded expected instruction proves balances follow their
         // tokens through the swap.
-        let expected = borsh::to_vec(&amm_core::Instruction::NewDefinition {
+        let expected = borsh::to_vec(&amm_core::Message::NewDefinition {
+            config: config_id(amm),
+            definition_token_a_id: canonical_a,
+            definition_token_b_id: canonical_b,
+            user_holding_a: holding_b,
+            user_holding_b: holding_a,
+            user_holding_lp: lp,
             token_a_amount: 4_000_000,
             token_b_amount: 1_000_000,
             deadline: 1_000,
         })
         .unwrap();
         let expected_words: Vec<u64> = expected.iter().map(|word| u64::from(*word)).collect();
-        assert_eq!(value["instruction"], serde_json::json!(expected_words));
+        assert_eq!(value["message"], serde_json::json!(expected_words));
     }
 
     #[test]
@@ -858,7 +785,7 @@ mod tests {
     }
 
     fn pool_hex(pool: &PoolDefinition) -> String {
-        hex::encode(borsh::to_vec(pool).unwrap())
+        hex::encode(borsh::to_vec(&amm_core::AmmState::Pool(pool.clone())).unwrap())
     }
 
     #[test]
@@ -866,12 +793,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
 
         // Display == canonical. maxB is generous, so token A's cap binds and token B is
@@ -921,12 +849,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         let req =
             |token_a: AccountId, token_b: AccountId, max_a: &str, max_b: &str, data: String| {
@@ -952,10 +881,11 @@ mod tests {
         );
         // Zero-supply pool.
         let empty = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 0,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         assert_eq!(
             add_liquidity_quote(req(def_a, def_b, "1", "1", pool_hex(&empty))),
@@ -1010,6 +940,7 @@ mod tests {
         let vault_b = AccountId::new([0xB1; 32]); // vault for token_b
         let lp_def = AccountId::new([0xCC; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: token_a, // stored NON-canonically (token_a first)
             definition_token_b_id: token_b,
             vault_a_id: vault_a,
@@ -1047,13 +978,16 @@ mod tests {
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect::<Vec<String>>();
-            (ids, value["instruction"].clone())
+            (ids, value["message"].clone())
         };
 
         // The instruction the guest must receive: token_a's cap into vault_a (token_a), token_b's
         // cap into vault_b — regardless of the caller's argument order.
         let expected_instruction = {
-            let words = borsh::to_vec(&amm_core::Instruction::AddLiquidity {
+            let words = borsh::to_vec(&amm_core::Message::AddLiquidity {
+                user_holding_a: holding_a,
+                user_holding_b: holding_b,
+                user_holding_lp: lp,
                 min_amount_liquidity: 500,
                 max_amount_to_add_token_a: 1_000_000, // token_a's cap
                 max_amount_to_add_token_b: 4_000_000, // token_b's cap
@@ -1063,19 +997,19 @@ mod tests {
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
         };
         let assert_aligned = |ids: &[String], instruction: &serde_json::Value| {
-            assert_eq!(ids[0], account_id_hex(config_id(amm)));
+            assert_eq!(ids[1], account_id_hex(config_id(amm)));
             assert_eq!(
-                ids[1],
+                ids[0],
                 account_id_hex(compute_pool_pda(amm, config_id(amm), token_a, token_b))
             );
-            assert_eq!(ids[2], account_id_hex(vault_a));
-            assert_eq!(ids[3], account_id_hex(vault_b));
-            assert_eq!(ids[4], account_id_hex(lp_def));
+            assert_eq!(ids[3], account_id_hex(vault_a));
+            assert_eq!(ids[4], account_id_hex(vault_b));
+            assert_eq!(ids[5], account_id_hex(lp_def));
             // user_holding_a is token_a's holding — the token vault_a holds — NOT the
             // is_canonical_pair canonical-a (token_b) holding.
-            assert_eq!(ids[5], account_id_hex(holding_a));
-            assert_eq!(ids[6], account_id_hex(holding_b));
-            assert_eq!(ids[7], account_id_hex(lp));
+            assert_eq!(ids[6], account_id_hex(holding_a));
+            assert_eq!(ids[7], account_id_hex(holding_b));
+            assert_eq!(ids[8], account_id_hex(lp));
             assert_eq!(instruction, &expected_instruction);
         };
 
@@ -1145,12 +1079,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
 
         // Display == canonical. Burning 10% of supply returns 10% of each reserve.
@@ -1197,12 +1132,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         let req = |token_a: AccountId, token_b: AccountId, lp: &str, data: String| {
             RemoveLiquidityQuoteRequest {
@@ -1225,10 +1161,11 @@ mod tests {
             Err(String::from("no_pool"))
         );
         let empty = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 0,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         assert_eq!(
             remove_liquidity_quote(req(def_a, def_b, "1", pool_hex(&empty))),
@@ -1258,12 +1195,13 @@ mod tests {
         );
         // A lopsided pool where one side's withdrawal floors to zero.
         let lopsided = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 1,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         assert_eq!(
             remove_liquidity_quote(req(def_a, def_b, "1", pool_hex(&lopsided))),
@@ -1293,6 +1231,7 @@ mod tests {
         let vault_b = AccountId::new([0xB1; 32]);
         let lp_def = AccountId::new([0xCC; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: token_a,
             definition_token_b_id: token_b,
             vault_a_id: vault_a,
@@ -1337,7 +1276,7 @@ mod tests {
                 .collect::<Vec<String>>();
             (
                 ids,
-                value["instruction"].clone(),
+                value["message"].clone(),
                 value["signingRequirements"].clone(),
             )
         };
@@ -1345,7 +1284,10 @@ mod tests {
         // The instruction the guest must receive: token_a's floor with vault_a's token,
         // token_b's floor with vault_b's — regardless of the caller's argument order.
         let expected_instruction = {
-            let words = borsh::to_vec(&amm_core::Instruction::RemoveLiquidity {
+            let words = borsh::to_vec(&amm_core::Message::RemoveLiquidity {
+                user_holding_a: holding_a,
+                user_holding_b: holding_b,
+                user_holding_lp: lp,
                 remove_liquidity_amount: 100_000,
                 min_amount_to_remove_token_a: 90_000, // token_a's floor
                 min_amount_to_remove_token_b: 180_000, // token_b's floor
@@ -1356,21 +1298,21 @@ mod tests {
         };
         // Only user_holding_lp (index 7) signs — a/b just receive.
         let expected_signers = serde_json::json!([
-            false, false, false, false, false, false, false, true, false, false,
+            false, false, false, false, false, false, false, false, true, false, false,
         ]);
         let assert_aligned =
             |ids: &[String], instruction: &serde_json::Value, signers: &serde_json::Value| {
-                assert_eq!(ids[0], account_id_hex(config_id(amm)));
+                assert_eq!(ids[1], account_id_hex(config_id(amm)));
                 assert_eq!(
-                    ids[1],
+                    ids[0],
                     account_id_hex(compute_pool_pda(amm, config_id(amm), token_a, token_b))
                 );
-                assert_eq!(ids[2], account_id_hex(vault_a));
-                assert_eq!(ids[3], account_id_hex(vault_b));
-                assert_eq!(ids[4], account_id_hex(lp_def));
-                assert_eq!(ids[5], account_id_hex(holding_a));
-                assert_eq!(ids[6], account_id_hex(holding_b));
-                assert_eq!(ids[7], account_id_hex(lp));
+                assert_eq!(ids[3], account_id_hex(vault_a));
+                assert_eq!(ids[4], account_id_hex(vault_b));
+                assert_eq!(ids[5], account_id_hex(lp_def));
+                assert_eq!(ids[6], account_id_hex(holding_a));
+                assert_eq!(ids[7], account_id_hex(holding_b));
+                assert_eq!(ids[8], account_id_hex(lp));
                 assert_eq!(instruction, &expected_instruction);
                 assert_eq!(signers, &expected_signers);
             };
@@ -1446,6 +1388,7 @@ mod tests {
         let vault_a = AccountId::new([0xA1; 32]);
         let vault_b = AccountId::new([0xB1; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: token_a,
             definition_token_b_id: token_b,
             vault_a_id: vault_a,
@@ -1470,24 +1413,24 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect::<Vec<String>>();
-        assert_eq!(ids.len(), 6);
-        assert_eq!(ids[0], account_id_hex(config_id(amm)));
+        assert_eq!(ids.len(), 7);
+        assert_eq!(ids[1], account_id_hex(config_id(amm)));
         assert_eq!(
-            ids[1],
+            ids[0],
             account_id_hex(compute_pool_pda(amm, config_id(amm), token_a, token_b))
         );
-        assert_eq!(ids[2], account_id_hex(vault_a)); // pool's stored vaults
-        assert_eq!(ids[3], account_id_hex(vault_b));
+        assert_eq!(ids[3], account_id_hex(vault_a)); // pool's stored vaults
+        assert_eq!(ids[4], account_id_hex(vault_b));
         // ids[4] current_tick, ids[5] clock — order-independent PDAs.
         assert_eq!(
             value["signingRequirements"],
-            serde_json::json!([false, false, false, false, false, false])
+            serde_json::json!([false, false, false, false, false, false, false])
         );
         let expected_instruction = {
-            let words = borsh::to_vec(&amm_core::Instruction::SyncReserves).unwrap();
+            let words = borsh::to_vec(&amm_core::Message::SyncReserves).unwrap();
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
         };
-        assert_eq!(value["instruction"], expected_instruction);
+        assert_eq!(value["message"], expected_instruction);
     }
 
     #[test]

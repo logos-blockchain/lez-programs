@@ -1,12 +1,14 @@
 use std::str::FromStr;
 
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{Account, AccountId, ActorState, Nonce};
 use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountRead {
     pub id: String,
+    #[serde(default)]
+    pub program_id: String,
     pub status: String,
     #[serde(default)]
     pub account: Option<WalletAccount>,
@@ -14,10 +16,34 @@ pub struct AccountRead {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct WalletAccount {
-    pub program_owner: String,
-    pub balance: String,
     pub nonce: String,
+    pub actor_states: Vec<WalletActorState>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct WalletActorState {
+    pub program: String,
     pub data: String,
+}
+
+pub(crate) fn decode_config(bytes: &[u8]) -> Result<amm_core::AmmConfig, String> {
+    match borsh::from_slice::<amm_core::AmmState>(bytes) {
+        Ok(amm_core::AmmState::Config(config)) => Ok(config),
+        _ => Err("invalid_config".into()),
+    }
+}
+
+pub(crate) fn decode_pool(bytes: &[u8]) -> Result<amm_core::PoolDefinition, String> {
+    match borsh::from_slice::<amm_core::AmmState>(bytes) {
+        Ok(amm_core::AmmState::Pool(pool)) => Ok(pool),
+        _ => Err("no_pool".into()),
+    }
+}
+
+pub(crate) fn actor_bytes(read: &AccountRead) -> Result<Vec<u8>, String> {
+    let (_, account) = decode_account(read)?;
+    let program = parse_program_id(&read.program_id)?;
+    Ok(account.data.actor_state(program).as_ref().to_vec())
 }
 
 pub(crate) fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String> {
@@ -45,11 +71,6 @@ pub(crate) fn parse_hex_32(value: &str, label: &str) -> Result<[u8; 32], String>
 /// deployed at the image-id bijection address has the same hex as before.
 pub(crate) fn parse_program_id(value: &str) -> Result<AccountId, String> {
     Ok(AccountId::new(parse_hex_32(value, "program id")?))
-}
-
-#[cfg(test)]
-pub(crate) fn program_id_hex(program_id: AccountId) -> String {
-    account_id_hex(program_id)
 }
 
 pub(crate) fn program_id_base58(program_id: AccountId) -> String {
@@ -92,45 +113,46 @@ pub(crate) fn decode_account(read: &AccountRead) -> Result<(AccountId, Account),
         .account
         .as_ref()
         .ok_or_else(|| String::from("successful account read has no account"))?;
-    let program_owner = parse_program_id(&source.program_owner)?;
-    let balance = parse_le_u128(&source.balance, "account balance")?;
-    let nonce = parse_le_u128(&source.nonce, "account nonce")?;
-    if source.data.len() % 2 != 0
-        || !source
-            .data
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(String::from(
-            "account data must be lowercase even-length hexadecimal",
-        ));
+    let mut account = Account {
+        nonce: Nonce(parse_le_u128(&source.nonce, "account nonce")?),
+        ..Account::default()
+    };
+    for actor in &source.actor_states {
+        let program = parse_program_id(&actor.program)?;
+        if account.data.actor_states.contains_key(&program) {
+            return Err("duplicate actor state".into());
+        }
+        let bytes = hex::decode(&actor.data).map_err(|_| "invalid actor data")?;
+        let state = ActorState::from(bytes);
+        account.data.set_actor_state(program, state);
     }
-    let data =
-        hex::decode(&source.data).map_err(|error| format!("invalid account data: {error}"))?;
-    let data =
-        Data::try_from(data).map_err(|error| format!("account data is too large: {error}"))?;
-
-    Ok((
-        account_id,
-        Account {
-            program_owner,
-            balance,
-            data,
-            nonce: Nonce(nonce),
-        },
-    ))
+    Ok((account_id, account))
 }
 
 #[cfg(test)]
 pub(crate) fn account_read(id: AccountId, account: &Account) -> AccountRead {
     AccountRead {
         id: account_id_hex(id),
-        status: String::from("ok"),
+        program_id: account
+            .data
+            .actor_states
+            .keys()
+            .next()
+            .copied()
+            .map(account_id_hex)
+            .unwrap_or_default(),
+        status: "ok".into(),
         account: Some(WalletAccount {
-            program_owner: program_id_hex(account.program_owner),
-            balance: hex::encode(account.balance.to_le_bytes()),
             nonce: hex::encode(account.nonce.0.to_le_bytes()),
-            data: hex::encode(account.data.as_ref()),
+            actor_states: account
+                .data
+                .actor_states
+                .iter()
+                .map(|(program, data)| WalletActorState {
+                    program: account_id_hex(*program),
+                    data: hex::encode(data.as_ref()),
+                })
+                .collect(),
         }),
     }
 }

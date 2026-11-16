@@ -4,18 +4,11 @@
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder/0.3.3";
 
-    # Core wallet module dependency. The input name must match the
-    # metadata.json `dependencies` entry so the builder resolves it as a module
-    # dependency. Same rev the repo-root flake and the apps/amm flake pin:
-    # lez_core 0.4.2 (v0.2.5-rc2 wallet-ffi). See the root flake.nix for the
-    # full rationale.
-    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
-    # LEZ v0.2.5-rc2 plus the risc0 zkr download-URL fix; see the root flake.nix.
-    lez_core.inputs.logos-execution-zone.url = "github:logos-blockchain/logos-execution-zone?rev=6477ce33c311f82b962daae1583fb647b9894b39";
+    # Actor-aware wallet API for LEZ 0.4 (lez_core 0.6.0).
+    lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=cc73ebfe0857705cfc1c3b29743fb6c8c6aebd82";
 
     # The repo-root flake supplies the amm_ffi crate. amm_ffi is a Cargo
-    # workspace member (it path-depends on amm_core / token_core /
-    # twap_oracle_core under programs/*), so it can only be built with the whole
+    # workspace member (it path-depends on amm_core / token_core under programs/*), so it can only be built with the whole
     # workspace as source — which the root flake does via `self`. Reference the
     # root flake here and pull amm_ffi from it, so this module builds standalone
     # (module_path=modules/amm) under the release CI's `nix build .#lgx-portable`.

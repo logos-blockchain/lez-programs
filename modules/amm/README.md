@@ -279,8 +279,30 @@ plugin).
 
 ## QtRO / byte-string note
 
-`send_generic_public_transaction` takes `instruction` as a byte string
-(`std::vector<uint8_t>`). This module sends the plan's u32 words as their
-little-endian bytes and references the program by its id hex (not the raw ELF).
-It requires the wallet module built with the byte-string `instruction` param —
-the fork pinned as the `lez_core` input.
+`send_generic_public_transaction` takes `message` as a byte string
+(`std::vector<uint8_t>`). This module passes the Borsh bytes directly, together
+with a root mention index and the deployed program ID for each actor mention.
+It requires the actor-aware wallet pinned by the module flake (`lez_core` 0.6.0).
+
+## LEZ 0.4 actor interface
+
+The module uses LEZ `v0.4.0-rc3` and the actor-aware `lez_core` 0.6.0 wallet
+interface. Existing app operations keep their names. Rust transaction plans now
+return `message` (Borsh `amm_core::Message` bytes), `rootMention`, `accountIds`,
+`actorProgramIds`, and `signingRequirements`. The three arrays are aligned;
+account IDs may repeat for different programs on the same account. The wallet
+receives all actor mentions, including token recipients needed for immediate
+public settlement. Creation routes to the config actor, pool operations to the
+pool actor, and administrative operations to the signed authority's AMM actor.
+
+Account reads use `{ nonce, actor_states: [{ program, data }] }`, with hexadecimal
+values as returned by the wallet. An `AccountRead` also carries `programId` to
+select the AMM actor for pool resolution and fee quotes. Token lookup selects the
+configured token deployment independently, so unrelated actor states on the same
+account do not hide its holdings. Pool snapshots contain the tagged
+`AmmState::Pool` encoding, not an untagged `PoolDefinition`.
+
+The AMM program still uses the recording Oracle mock contract. Oracle setup
+messages target the pool's Oracle actor; they do not create legacy per-window
+Oracle PDAs or provide production TWAP prices. This port supports public wallet
+transactions. Private transaction planning is outside this module's scope.
