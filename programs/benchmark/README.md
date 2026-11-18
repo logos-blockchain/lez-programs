@@ -193,10 +193,10 @@ margin for runtime variation; 2048 keeps `RecordTick` at roughly half the limit.
 
 ### ✅ Linked observation pages — if full resolution is required
 
-Already sketched in `twap-oracle-observation-capacity.md`: keep a small fixed-size "head" account
-plus older page accounts. `RecordTick` then commits only the small head, so per-call cost is bounded
-regardless of total history. More moving parts (page PDAs, chain-walking readers); reserve it for
-when a single reduced-capacity account genuinely can't hold enough resolution.
+Keep a small fixed-size "head" account plus older page accounts. `RecordTick` then commits only the
+small head, so per-call cost is bounded regardless of total history. More moving parts (page PDAs,
+chain-walking readers); reserve it for when a single reduced-capacity account genuinely can't hold
+enough resolution.
 
 ### ❌ Byte-patching `RecordTick` to skip the Borsh round-trip — does NOT fix this
 
