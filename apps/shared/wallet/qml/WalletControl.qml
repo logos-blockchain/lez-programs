@@ -140,11 +140,21 @@ Item {
     function openWallet() {
         if (!root.wallet || root.busy)
             return
+        if (root.wallet.openExistingWithPassword) {
+            unlockWalletDialog.open()
+            return
+        }
+        root.submitOpenWallet("")
+    }
+
+    function submitOpenWallet(password) {
         root.busy = true
         root.waitingForWallet = true
         root.cancellationRequested = false
         try {
-            root.watchResult(root.wallet.openExisting(), function(ok) {
+            const call = root.wallet.openExistingWithPassword
+                ? root.wallet.openExistingWithPassword(password) : root.wallet.openExisting()
+            root.watchResult(call, function(ok) {
                 if (!ok) {
                     root.waitingForWallet = false
                     root.busy = false
@@ -792,6 +802,65 @@ Item {
                     text: qsTr("Add account")
                     enabled: !root.busy
                     onClicked: createAccountDialog.open()
+                }
+            }
+        }
+    }
+
+    Popup {
+        id: unlockWalletDialog
+        objectName: "unlockWalletDialog"
+        modal: true
+        dim: true
+        parent: Overlay.overlay
+        width: Math.max(0, Math.min(420, parent ? parent.width - 32 : 420))
+        x: parent ? Math.max(0, Math.round((parent.width - width) / 2)) : 0
+        y: parent ? Math.max(0, Math.round((parent.height - height) / 2)) : 0
+        padding: 20
+        onOpened: unlockPassword.forceActiveFocus()
+        onClosed: unlockPassword.clear()
+
+        background: Rectangle {
+            color: "#18181b"
+            border.color: "#3f3f46"
+            border.width: 1
+            radius: 8
+        }
+        contentItem: ColumnLayout {
+            spacing: 16
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Unlock wallet")
+                color: "#f4f4f5"
+                font.bold: true
+                font.pixelSize: 17
+            }
+            TextField {
+                id: unlockPassword
+                objectName: "unlockWalletPasswordField"
+                Layout.fillWidth: true
+                placeholderText: qsTr("Wallet password")
+                echoMode: TextInput.Password
+                Keys.onReturnPressed: unlockButton.clicked()
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Button {
+                    Layout.fillWidth: true
+                    text: qsTr("Cancel")
+                    onClicked: unlockWalletDialog.close()
+                }
+                Button {
+                    id: unlockButton
+                    objectName: "unlockWalletButton"
+                    Layout.fillWidth: true
+                    text: qsTr("Unlock")
+                    enabled: unlockPassword.text.length > 0
+                    onClicked: {
+                        const password = unlockPassword.text
+                        unlockWalletDialog.close()
+                        root.submitOpenWallet(password)
+                    }
                 }
             }
         }

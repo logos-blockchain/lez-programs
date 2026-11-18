@@ -407,6 +407,32 @@ nlohmann::json AmmModuleImpl::readConfig() {
     return readPublicAccount(config_id);
 }
 
+nlohmann::json AmmModuleImpl::readLpSupply(const json& config, const json& pool) {
+    const FfiResult resolved = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
+    if (!resolved.ok || jStr(resolved.value, "status") != "ok")
+        return json{{"error", "no_pool"}};
+    const std::string lp_id = normalizeAccountId(jStr(resolved.value, "lpDefinitionId"));
+    if (lp_id.empty())
+        return json{{"error", "lp_supply_unavailable"}};
+    const json definition = readPublicAccount(lp_id);
+    const FfiResult tokens = call(amm_resolve_tokens, json{
+        {"ammProgramId", ammProgramId()},
+        {"config", config},
+        {"tokenIds", json::array({lp_id})},
+        {"walletAccounts", json::array()},
+        {"tokenDefinitions", json::array({definition})},
+    });
+    if (!tokens.ok || jStr(tokens.value, "status") != "ok")
+        return json{{"error", "lp_supply_unavailable"}};
+    const auto rows = tokens.value.find("tokens");
+    if (rows == tokens.value.end() || !rows->is_array() || rows->size() != 1)
+        return json{{"error", "lp_supply_unavailable"}};
+    const std::string supply = jStr(rows->at(0), "totalSupply");
+    if (supply.empty())
+        return json{{"error", "lp_supply_unavailable"}};
+    return json{{"supply", supply}};
+}
+
 LogosMap AmmModuleImpl::setConfigId(const LogosMap& request) {
     const std::string raw = jStr(request, "configId");
     const std::string normalized = normalizeAccountId(raw);
@@ -1247,6 +1273,9 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     if (slippage_bps < 0 || slippage_bps >= 10000)
         return error("invalid_slippage");
 
+    const json lp = readLpSupply(config, pool);
+    if (!jStr(lp, "error").empty())
+        return error(jStr(lp, "error"));
     const FfiResult quoteResult = call(amm_add_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
@@ -1254,6 +1283,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
         {"maxAmountB", max_b_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
+        {"lpSupply", jStr(lp, "supply")},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
@@ -1415,12 +1445,16 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     if (slippage_bps < 0 || slippage_bps >= 10000)
         return error("invalid_slippage");
 
+    const json lp = readLpSupply(config, pool);
+    if (!jStr(lp, "error").empty())
+        return error(jStr(lp, "error"));
     const FfiResult quoteResult = call(amm_remove_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
         {"lpAmount", lp_amount_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
+        {"lpSupply", jStr(lp, "supply")},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
@@ -1695,4 +1729,3 @@ LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open
         for (const auto& row : *it) out.push_back(row);
     return out;
 }
-

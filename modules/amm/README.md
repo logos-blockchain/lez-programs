@@ -302,6 +302,11 @@ configured token deployment independently, so unrelated actor states on the same
 account do not hide its holdings. Pool snapshots contain the tagged
 `AmmState::Pool` encoding, not an untagged `PoolDefinition`.
 
+Add/remove liquidity quotes read the pool's LP token definition through the configured
+token actor and use its current supply, which may differ from the pool snapshot after a
+direct burn. They fail if the definition cannot be read. Quotes are snapshots and can
+still become stale before execution.
+
 The AMM program still uses the recording Oracle mock contract. Oracle setup
 messages target the pool's Oracle actor; they do not create legacy per-window
 Oracle PDAs or provide production TWAP prices. This port supports public wallet

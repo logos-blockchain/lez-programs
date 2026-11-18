@@ -20,12 +20,15 @@ std::string resolveFeePayer(const std::string& payer,
                             const std::vector<bool>& signers) {
     if (payer.empty())
         return {};
+    bool mentioned = false;
+    bool signs = false;
     for (size_t i = 0; i < accounts.size(); ++i) {
-        const bool signs = i < signers.size() && signers[i];
-        if (lowercase(accounts[i]) == payer && !signs)
-            return {};
+        if (lowercase(accounts[i]) == payer) {
+            mentioned = true;
+            signs = signs || (i < signers.size() && signers[i]);
+        }
     }
-    return payer;
+    return !mentioned || signs ? payer : std::string{};
 }
 
 }  // namespace amm_module::detail

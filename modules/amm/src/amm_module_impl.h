@@ -331,6 +331,8 @@ private:
     // `pool_read_failed` or `pool_address_occupied` for a readPoolAccount result that
     // must stop the caller; empty for an AMM-owned or uninitialized pool.
     static std::string poolAccountError(const nlohmann::json& pool);
+    // Read the current LP definition through the token actor selected by the config.
+    nlohmann::json readLpSupply(const nlohmann::json& config, const nlohmann::json& pool);
 
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.

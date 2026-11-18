@@ -124,6 +124,13 @@ bool AmmUiBackend::openExisting()
     return opened;
 }
 
+bool AmmUiBackend::openExistingWithPassword(QString password)
+{
+    const bool opened = m_walletController->open(password);
+    syncWalletState();
+    return opened;
+}
+
 void AmmUiBackend::cancelSync()
 {
     m_walletController->cancelSync();

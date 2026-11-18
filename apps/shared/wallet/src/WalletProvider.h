@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QByteArray>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -28,6 +29,7 @@ struct WalletPaths {
     // this path). It need not exist — the wallet starts from empty stats and
     // recalibrates; it just lives alongside config/storage in the wallet home.
     QString statistics;
+    QString password;
 };
 
 struct WalletAccountRead {
@@ -110,6 +112,10 @@ struct WalletTransaction {
     // Funded public wallet account paying the fee: a signer, or a separate
     // account that co-signs. Required; never a non-signing participant.
     QString feePayerId;
+    // Actor-model transactions carry a root mention and a program for each account mention.
+    quint64 rootMention = 0;
+    QStringList actorProgramIds;
+    QByteArray message;
 };
 
 struct WalletSubmission {
