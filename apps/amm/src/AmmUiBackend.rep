@@ -72,6 +72,7 @@ class AmmUiBackend
 
     // Re-open the existing on-disk wallet after a disconnect.
     SLOT(bool openExisting())
+    SLOT(bool openExistingWithPassword(QString password))
     // Close this app's wallet view (lock); does not delete the wallet and, in
     // Basecamp, does not close the wallet other apps share.
     SLOT(void cancelSync())

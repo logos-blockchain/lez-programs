@@ -208,6 +208,8 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
         .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
         .filter(|pool| pool.liquidity_pool_supply != 0)
         .ok_or_else(|| String::from("no_pool"))?;
+    let lp_supply = positive_amount(Some(&request.lp_supply))
+        .map_err(|_| String::from("lp_supply_unavailable"))?;
 
     // Orient the caller's (display) max amounts to the pool's canonical (a, b) order so
     // the math lines up with the guest; `reversed` also flips the results back to display.
@@ -235,8 +237,8 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
     let actual_a = ideal_a.min(max_canonical_a);
     let actual_b = ideal_b.min(max_canonical_b);
     let delta_lp = std::cmp::min(
-        mul_div_floor(pool.liquidity_pool_supply, actual_a, pool.reserve_a),
-        mul_div_floor(pool.liquidity_pool_supply, actual_b, pool.reserve_b),
+        mul_div_floor(lp_supply, actual_a, pool.reserve_a),
+        mul_div_floor(lp_supply, actual_b, pool.reserve_b),
     );
     if actual_a == 0 || actual_b == 0 || delta_lp == 0 {
         return Err(String::from("amount_too_low"));
@@ -374,14 +376,15 @@ pub(super) fn remove_liquidity_quote(
         .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
         .filter(|pool| pool.liquidity_pool_supply != 0)
         .ok_or_else(|| String::from("no_pool"))?;
+    let lp_supply = positive_amount(Some(&request.lp_supply))
+        .map_err(|_| String::from("lp_supply_unavailable"))?;
     if pool.reserve_a == 0 || pool.reserve_b == 0 {
         return Err(String::from("no_pool"));
     }
 
     // The pool permanently locks MINIMUM_LIQUIDITY at creation, so a burn can only draw on the
     // supply beyond it — the guest asserts `remove_amount <= supply - MINIMUM_LIQUIDITY`.
-    let unlocked = pool
-        .liquidity_pool_supply
+    let unlocked = lp_supply
         .checked_sub(MINIMUM_LIQUIDITY)
         .filter(|unlocked| *unlocked > 0)
         .ok_or_else(|| String::from("no_pool"))?;
@@ -401,8 +404,8 @@ pub(super) fn remove_liquidity_quote(
     };
 
     // Guest math: floor(reserve · lp / supply) per side.
-    let withdraw_a = mul_div_floor(pool.reserve_a, lp_amount, pool.liquidity_pool_supply);
-    let withdraw_b = mul_div_floor(pool.reserve_b, lp_amount, pool.liquidity_pool_supply);
+    let withdraw_a = mul_div_floor(pool.reserve_a, lp_amount, lp_supply);
+    let withdraw_b = mul_div_floor(pool.reserve_b, lp_amount, lp_supply);
     if withdraw_a == 0 || withdraw_b == 0 {
         return Err(String::from("amount_too_low"));
     }
@@ -805,6 +808,7 @@ mod tests {
         // Display == canonical. maxB is generous, so token A's cap binds and token B is
         // ratio-matched down to 20_000 (proving the ideal→actual clamp).
         let ab = add_liquidity_quote(AddLiquidityQuoteRequest {
+            lp_supply: "1000000".into(),
             token_a_id: account_id_hex(def_a),
             token_b_id: account_id_hex(def_b),
             max_amount_a: String::from("10000"),
@@ -827,6 +831,7 @@ mod tests {
 
         // Reverse display order: the actual amounts and the price flip to display order.
         let ba = add_liquidity_quote(AddLiquidityQuoteRequest {
+            lp_supply: "1000000".into(),
             token_a_id: account_id_hex(def_b),
             token_b_id: account_id_hex(def_a),
             max_amount_a: String::from("100000"),
@@ -860,6 +865,7 @@ mod tests {
         let req =
             |token_a: AccountId, token_b: AccountId, max_a: &str, max_b: &str, data: String| {
                 AddLiquidityQuoteRequest {
+                    lp_supply: "1000000".into(),
                     token_a_id: account_id_hex(token_a),
                     token_b_id: account_id_hex(token_b),
                     max_amount_a: max_a.into(),
@@ -911,6 +917,7 @@ mod tests {
         // Slippage at/above 100%.
         assert_eq!(
             add_liquidity_quote(AddLiquidityQuoteRequest {
+                lp_supply: "1000000".into(),
                 token_a_id: account_id_hex(def_a),
                 token_b_id: account_id_hex(def_b),
                 max_amount_a: String::from("10000"),
@@ -1090,6 +1097,7 @@ mod tests {
 
         // Display == canonical. Burning 10% of supply returns 10% of each reserve.
         let ab = remove_liquidity_quote(RemoveLiquidityQuoteRequest {
+            lp_supply: "1000000".into(),
             token_a_id: account_id_hex(def_a),
             token_b_id: account_id_hex(def_b),
             lp_amount: String::from("100000"),
@@ -1110,6 +1118,7 @@ mod tests {
 
         // Reverse display order: withdrawals, minimums, and the price all flip to display order.
         let ba = remove_liquidity_quote(RemoveLiquidityQuoteRequest {
+            lp_supply: "1000000".into(),
             token_a_id: account_id_hex(def_b),
             token_b_id: account_id_hex(def_a),
             lp_amount: String::from("100000"),
@@ -1142,6 +1151,7 @@ mod tests {
         };
         let req = |token_a: AccountId, token_b: AccountId, lp: &str, data: String| {
             RemoveLiquidityQuoteRequest {
+                lp_supply: "1000000".into(),
                 token_a_id: account_id_hex(token_a),
                 token_b_id: account_id_hex(token_b),
                 lp_amount: lp.into(),
@@ -1185,6 +1195,7 @@ mod tests {
         // Slippage at/above 100%.
         assert_eq!(
             remove_liquidity_quote(RemoveLiquidityQuoteRequest {
+                lp_supply: "1000000".into(),
                 token_a_id: account_id_hex(def_a),
                 token_b_id: account_id_hex(def_b),
                 lp_amount: String::from("100000"),

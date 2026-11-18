@@ -502,6 +502,20 @@ fn direct_lp_burns_reduce_the_supply_used_to_mint_new_liquidity() {
             .checked_sub(burned)
             .expect("burned supply")
     );
+    let quote = amm_ffi::api::add_liquidity_quote(
+        serde_json::from_value(serde_json::json!({
+            "tokenAId": hex::encode(pool.definition_token_a_id.value()),
+            "tokenBId": hex::encode(pool.definition_token_b_id.value()),
+            "maxAmountA": pool.reserve_a.to_string(),
+            "maxAmountB": pool.reserve_b.to_string(),
+            "slippageBps": 0,
+            "poolData": hex::encode(AmmState::Pool(pool.clone()).encode()),
+            "lpSupply": actual_supply.to_string(),
+        }))
+        .expect("quote request"),
+    )
+    .expect("add quote");
+    assert_eq!(quote["minimumLp"], actual_supply.to_string());
     let before_lp = chain.balance(chain.user_lp);
     // Doubling reserves should mint exactly the current outstanding supply,
     // preserving the donation from the direct burn for existing LP holders.
@@ -548,6 +562,20 @@ fn direct_lp_burns_donate_to_remaining_liquidity_holders() {
     let supply = chain.lp_supply();
     let expected_a = amm_core::mul_div_floor(pool.reserve_a, liquidity, supply);
     let expected_b = amm_core::mul_div_floor(pool.reserve_b, liquidity, supply);
+    let quote = amm_ffi::api::remove_liquidity_quote(
+        serde_json::from_value(serde_json::json!({
+            "tokenAId": hex::encode(pool.definition_token_a_id.value()),
+            "tokenBId": hex::encode(pool.definition_token_b_id.value()),
+            "lpAmount": liquidity.to_string(),
+            "slippageBps": 0,
+            "poolData": hex::encode(AmmState::Pool(pool.clone()).encode()),
+            "lpSupply": supply.to_string(),
+        }))
+        .expect("quote request"),
+    )
+    .expect("remove quote");
+    assert_eq!(quote["minimumAmountA"], expected_a.to_string());
+    assert_eq!(quote["minimumAmountB"], expected_b.to_string());
     let (before_a, before_b) = (chain.balance(chain.user_a), chain.balance(chain.user_b));
     chain
         .call(

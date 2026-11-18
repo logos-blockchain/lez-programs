@@ -318,6 +318,9 @@ private:
     // omitted when the read has no data (uninitialized/nonexistent).
     nlohmann::json readPublicAccount(const std::string& account_id);
 
+    // Read the current LP definition through the token actor selected by the config.
+    nlohmann::json readLpSupply(const nlohmann::json& config, const nlohmann::json& pool);
+
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.
     nlohmann::json walletAccountReads(bool wallet_open);

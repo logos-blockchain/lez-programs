@@ -20,6 +20,7 @@ set(LOGOS_WALLET_GENERATED_DIR
     "${CMAKE_CURRENT_SOURCE_DIR}/generated_code"
     CACHE PATH "Path to generated Logos SDK sources"
 )
+set(LOGOS_WALLET_ACTOR_API ON)
 add_subdirectory("${LOGOS_WALLET_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/shared-wallet")
 
 # ui_qml module with a hand-written C++ backend (QtRO .rep view contract +

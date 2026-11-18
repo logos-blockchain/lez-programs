@@ -236,6 +236,8 @@ pub struct CreatePoolPlanRequest {
 /// Prices an `AddLiquidity` into an existing pool — the add counterpart of
 /// `CreatePoolQuoteRequest`. The two max amounts are the caller's caps (display order);
 /// `pool_data` is the hex Borsh `AmmState::Pool` (empty ⇒ no pool), same as the swap quotes.
+/// `lp_supply` is the latest LP token definition supply, which may differ from the pool snapshot
+/// after a direct LP burn.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AddLiquidityQuoteRequest {
@@ -248,6 +250,8 @@ pub struct AddLiquidityQuoteRequest {
     #[serde(default)]
     pub slippage_bps: u32,
     pub pool_data: String,
+    /// Current LP definition supply, read from the configured token actor.
+    pub lp_supply: String,
 }
 
 /// Builds the `AddLiquidity` submission — the add counterpart of `CreatePoolPlanRequest`.
@@ -276,7 +280,8 @@ pub struct AddLiquidityPlanRequest {
 
 /// Prices burning `lp_amount` of an existing pool's LP. `slippage_bps` sets the
 /// `minimumAmount*Raw` floors the submit enforces (the guest requires both nonzero and
-/// `withdraw >= min`). `pool_data` is the hex Borsh `AmmState::Pool` (empty ⇒ no pool).
+/// `withdraw >= min`). `pool_data` is the hex Borsh `AmmState::Pool` (empty ⇒ no pool), and
+/// `lp_supply` is the latest LP token definition supply.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveLiquidityQuoteRequest {
@@ -286,6 +291,8 @@ pub struct RemoveLiquidityQuoteRequest {
     #[serde(default)]
     pub slippage_bps: u32,
     pub pool_data: String,
+    /// Current LP definition supply, read from the configured token actor.
+    pub lp_supply: String,
 }
 
 /// Builds the `RemoveLiquidity` submission — the remove counterpart of

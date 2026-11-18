@@ -7,6 +7,7 @@ endif()
 
 option(LOGOS_WALLET_BUILD_QML "Build the Logos.Wallet QML module" ON)
 option(LOGOS_WALLET_BUILD_ACCESS "Build the generated-SDK wallet adapter" ON)
+option(LOGOS_WALLET_ACTOR_API "Use the LEZ actor-model wallet API" OFF)
 set(LOGOS_WALLET_GENERATED_DIR "" CACHE PATH "Path to generated Logos SDK sources")
 
 if(LOGOS_WALLET_BUILD_ACCESS
@@ -38,6 +39,9 @@ if(LOGOS_WALLET_BUILD_ACCESS)
         POSITION_INDEPENDENT_CODE ON
     )
     target_compile_features(logos_wallet_access PUBLIC cxx_std_17)
+    if(LOGOS_WALLET_ACTOR_API)
+        target_compile_definitions(logos_wallet_access PRIVATE LOGOS_WALLET_ACTOR_API)
+    endif()
     target_include_directories(logos_wallet_access
         PUBLIC
             "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src>"
@@ -157,6 +161,17 @@ if(BUILD_TESTING)
         Qt6::Test
     )
     add_test(NAME logos_wallet_access COMMAND logos_wallet_access_test)
+
+    qt_add_executable(logos_wallet_actor_test
+        tests/cpp/LogosWalletActorTest.cpp
+        src/WalletProvider.cpp
+        src/LogosWalletProvider.cpp
+    )
+    target_compile_features(logos_wallet_actor_test PRIVATE cxx_std_17)
+    target_compile_definitions(logos_wallet_actor_test PRIVATE LOGOS_WALLET_ACTOR_API)
+    target_include_directories(logos_wallet_actor_test PRIVATE tests/cpp/fixtures src)
+    target_link_libraries(logos_wallet_actor_test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+    add_test(NAME logos_wallet_actor COMMAND logos_wallet_actor_test)
 
     if(LOGOS_WALLET_BUILD_QML)
         find_package(Qt6 6.8 REQUIRED COMPONENTS QuickTest)

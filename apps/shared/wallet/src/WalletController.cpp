@@ -107,7 +107,7 @@ void WalletController::openOnStartup()
     beginOpen(config, storage);
 }
 
-bool WalletController::beginOpen(const QString& config, const QString& storage)
+bool WalletController::beginOpen(const QString& config, const QString& storage, const QString& password)
 {
     if (m_state.isWalletOpen
         || m_state.syncStatus == QStringLiteral("opening")
@@ -137,7 +137,7 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
 
     const QString statistics = QFileInfo(config).absolutePath()
         + QStringLiteral("/statistics.json");
-    m_wallet.connectAsync({ config, storage, statistics },
+    m_wallet.connectAsync({ config, storage, statistics, password },
         [this, generation, config, storage](WalletSession session) {
             if (generation != m_operationGeneration)
                 return;
@@ -245,14 +245,14 @@ QString WalletController::createWallet(const QString& configPath,
     return creation.mnemonic;
 }
 
-bool WalletController::open()
+bool WalletController::open(const QString& password)
 {
     const QString config = m_state.configPath.isEmpty()
         ? defaultConfigPath() : m_state.configPath;
     const QString storage = m_state.storagePath.isEmpty()
         ? defaultStoragePath() : m_state.storagePath;
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, false);
-    return beginOpen(config, storage);
+    return beginOpen(config, storage, password);
 }
 
 void WalletController::cancelSync()

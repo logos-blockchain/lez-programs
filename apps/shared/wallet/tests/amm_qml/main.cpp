@@ -11,6 +11,7 @@
 class AmmWalletReplica : public AmmUiBackendReplica
 {
     Q_OBJECT
+    Q_PROPERTY(QString lastPassword MEMBER m_lastPassword)
 
 public:
     explicit AmmWalletReplica(QObject* parent = nullptr)
@@ -27,6 +28,12 @@ public:
         return true;
     }
 
+    Q_INVOKABLE bool openExistingWithPassword(const QString& password)
+    {
+        m_lastPassword = password;
+        return openExisting();
+    }
+
     Q_INVOKABLE void completeOpen(bool success, const QString& error = {})
     {
         deliverProperty("syncError", error);
@@ -37,6 +44,7 @@ public:
     }
 
 private:
+    QString m_lastPassword;
     void deliverProperty(const char* name, const QVariant& value)
     {
         const QMetaObject& contract = AmmUiBackendReplica::staticMetaObject;

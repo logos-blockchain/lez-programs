@@ -170,7 +170,7 @@
         # generate the modules().amm_module wrapper). The wallet module stays a
         # direct dep too, so both the UI and amm_module resolve the one shared
         # wallet instance.
-        flakeInputs = inputs // { amm_module = ammModuleOutputs; };
+        flakeInputs = inputs // { amm_module = ammModuleOutputs; lez_core = inputs.amm_lez_core; };
         # The UI links no external lib of its own — the AMM brain (amm_ffi) is
         # linked by amm_module, which the UI reaches via modules().amm_module.
         externalLibInputs = { };

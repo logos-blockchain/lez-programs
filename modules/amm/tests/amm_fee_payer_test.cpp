@@ -43,6 +43,13 @@ LOGOS_TEST(signer_may_pay_for_itself) {
     LOGOS_ASSERT_EQ(resolveFeePayer(id('a'), accounts, signers), id('a'));
 }
 
+LOGOS_TEST(signed_account_may_pay_when_another_actor_on_it_does_not_sign) {
+    const std::vector<std::string> accounts = {id('a'), id('b'), id('a')};
+    const std::vector<bool> signers = {true, false, false};
+
+    LOGOS_ASSERT_EQ(resolveFeePayer(id('a'), accounts, signers), id('a'));
+}
+
 LOGOS_TEST(planned_ids_match_case_insensitively) {
     const std::vector<std::string> accounts = {std::string(64, 'B')};
 

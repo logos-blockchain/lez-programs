@@ -31,6 +31,13 @@ Item {
             const control = createTemporaryObject(controlComponent, root, { wallet: backend })
             verify(control)
             mouseClick(findChild(control, "walletConnectButton"))
+            const dialog = findChild(control, "unlockWalletDialog")
+            tryCompare(dialog, "opened", true)
+            const password = findChild(control, "unlockWalletPasswordField")
+            password.text = "test-password"
+            mouseClick(findChild(control, "unlockWalletButton"))
+            compare(backend.lastPassword, "test-password")
+            compare(password.text, "")
             return { backend, control }
         }
 

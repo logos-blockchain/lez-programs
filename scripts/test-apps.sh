@@ -42,6 +42,7 @@ run() {
 # Run the wallet binaries directly: their ctest environment replaces the QML
 # import path set above, which drops Qt Quick Controls.
 run "wallet C++" "${build_dir}/wallet/logos_wallet_access_test"
+run "wallet actor C++" "${build_dir}/wallet/logos_wallet_actor_test"
 run "wallet QML" "${build_dir}/wallet/logos_wallet_qml_test"
 run "wallet AMM QML" "${build_dir}/wallet/logos_wallet_amm_qml_test"
 run "AMM C++" ctest --test-dir "${build_dir}/amm" --output-on-failure
