@@ -511,8 +511,6 @@ pub const PRICE_FRACTIONAL_BITS: u32 = 64;
 /// never overflows for any valid tick. The tick is clamped to `[MIN_TICK, MAX_TICK]` and the
 /// result saturates at `u128::MAX` for the (practically unreachable) ticks above ~443 636 whose
 /// ratio would exceed `2^64`.
-///
-/// See `docs/twap-oracle-tick-to-price-conversion.md` for the full derivation.
 #[must_use]
 pub fn tick_to_oracle_price(tick: i32) -> u128 {
     use alloy_primitives::U256;

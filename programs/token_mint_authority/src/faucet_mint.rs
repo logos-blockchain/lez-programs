@@ -38,7 +38,6 @@ use token_mint_authority_core::{
 /// would otherwise materialize a holding at *any* unowned address the caller names,
 /// making it token-program-owned permanently and denying it to every other program.
 /// The `else` branch below restores the v0.2.4 rule locally.
-/// See `docs/lez-v0.2.5-changes.md` §4.
 ///
 /// # Panics
 /// - `recipient` is not authorized.

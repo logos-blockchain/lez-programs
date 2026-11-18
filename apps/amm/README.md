@@ -281,7 +281,7 @@ provide the same entry shape after filtering to the active network.
 The swap fee is not a pool field — it is instance-wide (`AmmConfig.swapFeeBps`),
 read from the config. (An instance may also set a `protocolFeeBps` — a cut of the
 swap fee routed to the protocol; it is an admin/instance concern and is not
-surfaced in the UI. See [AMM protocol fees](../../docs/amm-protocol-fees.md).)
+surfaced in the UI.)
 Adding more pairs is purely a config edit — no app change:
 
 ```json

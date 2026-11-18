@@ -522,7 +522,6 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
     // (bstr). Passing a QVariantList<u32> makes the module's QtRO glue mangle it,
     // so the guest reads a garbage Instruction variant. Send the little-endian
     // bytes of the u32 words instead — same encoding the AMM swap path uses.
-    // See docs/amm-swap-qtro-serialization-bug.md.
     QByteArray instructionBytes;
     instructionBytes.reserve(
         static_cast<int>(transaction.instruction.size() * sizeof(quint32)));
