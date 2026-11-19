@@ -17,6 +17,7 @@ use amm_core::{
     compute_protocol_fee_pda, compute_vault_pda,
 };
 use lee_core::account::{AccountId, Actor};
+use twap_oracle_core::PriceSource;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -53,7 +54,9 @@ fn main() {
             "lp_lock_holding      {}",
             compute_lp_lock_holding_pda(amm, pool)
         );
-        println!("oracle_actor         {:?}", Actor::new(pool, twap));
+        let current_tick = PriceSource::program(Actor::new(pool, amm)).current_tick_account_id();
+        println!("current_tick_account {current_tick}");
+        println!("oracle_actor         {:?}", Actor::new(current_tick, twap));
         // Protocol-fee holdings are per (config, token definition) — the input token's holding is
         // the one a swap credits and `WithdrawProtocolFees` drains.
         println!(

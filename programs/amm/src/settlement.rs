@@ -1,8 +1,9 @@
-use amm_core::{compute_pool_pda_seed, oracle, AmmConfig, AmmState, Internal, PoolDefinition};
+use amm_core::{AmmConfig, AmmState, Internal, PoolDefinition};
 use lee_core::{
     account::{AccountId, Actor},
     program::{PdaSeed, ReceiveInput, Response, SyncMessage},
 };
+use twap_oracle_core::{compute_current_tick_account_pda_seed, Message as OracleMessage};
 
 pub(crate) fn token_call(
     config: &AmmConfig,
@@ -16,18 +17,15 @@ pub(crate) fn token_call(
 pub(crate) fn oracle_call(
     input: &ReceiveInput,
     config: &AmmConfig,
-    pool: &PoolDefinition,
-    message: &oracle::Message,
+    message: &OracleMessage,
 ) -> SyncMessage {
-    SyncMessage::new(
-        Actor::new(input.receiver.account_id, config.twap_oracle_program_id),
-        message,
-    )
-    .with_pda_seeds([compute_pool_pda_seed(
-        pool.config_id,
-        pool.definition_token_a_id,
-        pool.definition_token_b_id,
-    )])
+    let seed = compute_current_tick_account_pda_seed(input.receiver.account_id);
+    let tick = AccountId::for_public_pda(&input.receiver.program_account_id, &seed);
+    // Admit the tick PDA at creation. Subsequent calls authenticate the sending pool actor.
+    let admission =
+        matches!(message, OracleMessage::CreateCurrentTickAccount { .. }).then_some(seed);
+    SyncMessage::new(Actor::new(tick, config.twap_oracle_program_id), message)
+        .with_pda_seeds(admission)
 }
 
 pub(crate) fn finish(input: &ReceiveInput, state: AmmState, mut response: Response) -> Response {
@@ -45,8 +43,7 @@ pub(crate) fn pool(
     let response = response.send(oracle_call(
         input,
         config,
-        &pool,
-        &oracle::Message::UpdateCurrentTick { price },
+        &OracleMessage::UpdateCurrentTick { price },
     ));
     finish(input, AmmState::Pool(pool), response)
 }

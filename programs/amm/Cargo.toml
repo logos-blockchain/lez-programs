@@ -10,6 +10,7 @@ workspace = true
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
 amm_core = { path = "core" }
 token_core = { path = "../token/core" }
+twap_oracle_core = { path = "../twap_oracle/core" }
 borsh = { version = "1.5", features = ["derive"] }
 
 [dev-dependencies]

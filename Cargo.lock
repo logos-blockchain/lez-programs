@@ -99,6 +99,7 @@ dependencies = [
  "borsh",
  "lee_core",
  "token_core",
+ "twap_oracle_core",
 ]
 
 [[package]]
@@ -2205,7 +2206,6 @@ dependencies = [
  "lee_core",
  "nft-methods",
  "nft_core",
- "oracle-mock-methods",
  "programs",
  "token-methods",
  "token_core",
@@ -2739,16 +2739,6 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
-name = "oracle-mock-methods"
-version = "0.1.0"
-dependencies = [
- "amm_core",
- "borsh",
- "lee_core",
- "risc0-build",
-]
 
 [[package]]
 name = "parity-scale-codec"

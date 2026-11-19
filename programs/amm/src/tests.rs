@@ -32,6 +32,39 @@ fn input(state: Option<AmmState>, message: &impl borsh::BorshSerialize) -> Recei
 }
 
 #[test]
+fn only_oracle_tick_creation_grants_the_tick_seed() {
+    use twap_oracle_core::{compute_current_tick_account_pda_seed, Message as Oracle, PriceSource};
+
+    let pool = input(None, &Message::SyncReserves);
+    let target = Actor::new(
+        PriceSource::program(pool.receiver).current_tick_account_id(),
+        ORACLE,
+    );
+    let seed = compute_current_tick_account_pda_seed(pool.receiver.account_id);
+    let create = crate::settlement::oracle_call(
+        &pool,
+        &config(),
+        &Oracle::CreateCurrentTickAccount {
+            initial_price: 1 << 64,
+        },
+    );
+    assert_eq!(create.to, target);
+    assert_eq!(create.pda_seeds, [seed].into());
+    for message in [
+        Oracle::UpdateCurrentTick { price: 1 << 64 },
+        Oracle::CreatePriceAccounts {
+            window_duration: 2_048,
+            base_asset: TOKEN,
+            quote_asset: OWNER,
+        },
+    ] {
+        let call = crate::settlement::oracle_call(&pool, &config(), &message);
+        assert_eq!(call.to, target);
+        assert!(call.pda_seeds.is_empty());
+    }
+}
+
+#[test]
 #[should_panic(expected = "AMM owner or authority must authorize")]
 fn namespace_creation_requires_authorization() {
     let _ = handle_message(&input(

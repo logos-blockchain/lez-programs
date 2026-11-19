@@ -12,7 +12,6 @@ members = [
     "programs/amm/core",
     "programs/amm",
     "programs/amm/methods",
-    "programs/integration_tests/mocks",
     "programs/integration_tests",
     "programs/integration_tests/methods",
     "tools/risc0-packager",
@@ -35,7 +34,6 @@ members = [
 ]
 exclude = [
     "programs/integration_tests/methods/guest",
-    "programs/integration_tests/mocks/guest",
     "programs/token/methods/guest",
     "programs/nft/methods/guest",
     "programs/amm/methods/guest",

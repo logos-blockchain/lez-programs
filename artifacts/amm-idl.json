@@ -215,6 +215,7 @@
     {
       "name": "CreatePriceObservations",
       "tag": 8,
+      "docs": "Create both TWAP observations and price accounts for this pool and window.\nUse either setup message once per window.",
       "fields": [
         {
           "name": "window_duration",
@@ -225,6 +226,7 @@
     {
       "name": "CreateOraclePriceAccount",
       "tag": 9,
+      "docs": "Alias for `CreatePriceObservations`. The Oracle creates both accounts atomically.",
       "fields": [
         {
           "name": "window_duration",
@@ -286,7 +288,7 @@
         {
           "name": "twap_oracle_program_id",
           "type": "account_id",
-          "docs": "Oracle deployment implementing the AMM-facing message contract."
+          "docs": "TWAP Oracle deployment that maintains this instance's pool feeds."
         },
         {
           "name": "authority",
