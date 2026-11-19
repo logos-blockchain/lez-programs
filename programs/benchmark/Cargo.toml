@@ -11,10 +11,14 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["host"] }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
+# `MAX_GAS_EXEC`: the cap on a transaction's `gas_limit` and on a block's execution gas.
+fee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
+# LEZ's system programs, prebuilt (`artifacts`): the benchmark deploys its clock.
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["artifacts"] }
 borsh = "1"
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
 twap_oracle_core = { path = "../twap_oracle/core" }
 twap-oracle-methods = { path = "../twap_oracle/methods" }
 # `prove` exposes `ExecutorImpl`/`Session` (the cycle split); we only execute, never prove.
