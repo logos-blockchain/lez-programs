@@ -161,6 +161,37 @@ Item {
             compare(fixture.store.drafts.length, 1)
         }
 
+        function test_createAnotherStartsOverAfterSubmission() {
+            const fixture = createFixture()
+            const createAnother = findChild(fixture.page, "tokenCreateAnotherButton")
+            verify(createAnother, "Object exists")
+            verify(!createAnother.visible)
+
+            mouseClick(fixture.prepareButton)
+            fixture.runtime.finishSuccess()
+            tryCompare(fixture.page, "prepared", true)
+            tryCompare(createAnother, "visible", true)
+            verify(!findChild(fixture.page, "tokenBackToAccountsButton").enabled)
+
+            mouseClick(createAnother)
+
+            compare(fixture.page.prepared, false)
+            compare(fixture.page.step, 0)
+            compare(findChild(fixture.page, "tokenDefinitionTargetField").text, "")
+            compare(findChild(fixture.page, "tokenHoldingTargetField").text, "")
+            compare(findChild(fixture.page, "tokenNameField").text, "Fixed supply token")
+
+            findChild(fixture.page, "tokenDefinitionTargetField").text = "c".repeat(64)
+            findChild(fixture.page, "tokenHoldingTargetField").text = "d".repeat(64)
+            fixture.page.step = 2
+            tryCompare(fixture.prepareButton, "enabled", true)
+            mouseClick(fixture.prepareButton)
+            compare(fixture.backend.createCalls, 2)
+            fixture.runtime.finishSuccess()
+            tryCompare(fixture.page, "prepared", true)
+            compare(fixture.store.drafts.length, 2)
+        }
+
         function test_waitsForWalletSynchronizationBeforeSubmit() {
             const fixture = createFixture()
             fixture.backend.syncStatus = "syncing"
