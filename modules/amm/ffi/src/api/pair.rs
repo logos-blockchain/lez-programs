@@ -18,7 +18,7 @@ pub(super) struct PairIds {
     pub(super) lp_definition: AccountId,
     pub(super) lp_lock_holding: AccountId,
     pub(super) token_program: AccountId,
-    /// The configured TWAP oracle program — the price/observation PDAs are seeded by it.
+    /// Program of the Oracle actor on the pool account.
     pub(super) twap_oracle_program: AccountId,
 }
 

@@ -15,6 +15,8 @@ class LogosWalletActorTest : public QObject {
 private slots:
     void opensAndCreatesWithPassword();
     void readsActorAccountAndFallsBackToBalance();
+    void readsDecimalNonces_data();
+    void readsDecimalNonces();
     void submitsActorTransaction();
 };
 
@@ -29,10 +31,19 @@ void LogosWalletActorTest::opensAndCreatesWithPassword()
     LogosWalletProvider provider(&modules);
     QVERIFY(provider.connect(paths).ok());
     QCOMPARE(modules.lez_core.openedPassword, QStringLiteral("secret"));
-    QVERIFY(!modules.lez_core.openedForceRpc);
+    QVERIFY(modules.lez_core.openedForceRpc);
+    modules.lez_core.openResult = 25;
+    QCOMPARE(provider.connect(paths).failure, WalletFailure::WrongPassword);
+    modules.lez_core.openResult = 0;
+    modules.lez_core.openedForceRpc = false;
+    bool connected = false;
+    provider.connectAsync(paths, [&connected](WalletSession session) { connected = session.ok(); });
+    QTRY_VERIFY(connected);
+    QVERIFY(modules.lez_core.openedForceRpc);
     provider.disconnect();
     QVERIFY(provider.createWallet(paths, "new-secret").ok());
     QCOMPARE(modules.lez_core.createdPassword, QStringLiteral("new-secret"));
+    QVERIFY(modules.lez_core.createdForceRpc);
 }
 
 void LogosWalletActorTest::readsActorAccountAndFallsBackToBalance()
@@ -41,7 +52,7 @@ void LogosWalletActorTest::readsActorAccountAndFallsBackToBalance()
     modules.lez_core.sequencerAddress = "sequencer";
     modules.lez_core.accounts = { QVariantMap { {"account_id", account}, {"is_public", true} } };
     modules.lez_core.publicAccounts[account] = QStringLiteral(
-        R"({"nonce":"00000000000000000000000000000000","actor_states":[{"program":")")
+        R"({"nonce":"0","actor_states":[{"program":")")
         + program + QStringLiteral(R"(","data":"00ff"}]})");
     modules.lez_core.balances[account] = "42";
     LogosWalletProvider provider(&modules);
@@ -50,8 +61,31 @@ void LogosWalletActorTest::readsActorAccountAndFallsBackToBalance()
     QVERIFY(provider.readPublicAccount(account).ok());
     QCOMPARE(session.snapshot.accounts.at(0).balance, QStringLiteral("42"));
     modules.lez_core.publicAccounts[account] = QStringLiteral(
-        R"({"nonce":"00000000000000000000000000000000","actor_states":[{"program":"invalid","data":"00"}]})");
+        R"({"nonce":"0","actor_states":[{"program":"invalid","data":"00"}]})");
     QVERIFY(!provider.readPublicAccount(account).ok());
+}
+
+void LogosWalletActorTest::readsDecimalNonces_data()
+{
+    QTest::addColumn<QString>("nonce");
+    QTest::addColumn<bool>("valid");
+    QTest::newRow("max u128") << QStringLiteral("340282366920938463463374607431768211455") << true;
+    QTest::newRow("overflow") << QStringLiteral("340282366920938463463374607431768211456") << false;
+    QTest::newRow("hex") << QStringLiteral("ff") << false;
+    QTest::newRow("empty") << QString() << false;
+}
+
+void LogosWalletActorTest::readsDecimalNonces()
+{
+    QFETCH(QString, nonce);
+    QFETCH(bool, valid);
+    LogosModules modules;
+    modules.lez_core.sequencerAddress = "sequencer";
+    modules.lez_core.publicAccounts[account] =
+        QStringLiteral(R"({"nonce":"%1","actor_states":[]})").arg(nonce);
+    LogosWalletProvider provider(&modules);
+    QVERIFY(provider.connect({}).ok());
+    QCOMPARE(provider.readPublicAccount(account).ok(), valid);
 }
 
 void LogosWalletActorTest::submitsActorTransaction()

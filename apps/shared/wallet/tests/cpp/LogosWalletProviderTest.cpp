@@ -82,6 +82,7 @@ private slots:
     void exposesStableAccountModelRoles();
     void fakeProviderImplementsConsumerContract();
     void controllerOwnsUiWalletFlow();
+    void controllerLeavesEncryptedWalletLockedOnStartup();
     void controllerPreservesStatisticsPathForWalletLifecycle();
     void controllerRejectsDuplicateOpenWhileStarting();
     void controllerCanRetryAfterOpenFailure();
@@ -871,6 +872,26 @@ void LogosWalletProviderTest::controllerOwnsUiWalletFlow()
     QCOMPARE(controller.accountModel()->count(), 0);
     QVERIFY(stateChanged.count() >= 4);
 
+    settings.clear();
+}
+
+void LogosWalletProviderTest::controllerLeavesEncryptedWalletLockedOnStartup()
+{
+    const QString application = QStringLiteral("WalletPasswordStartupTest");
+    QSettings settings(QStringLiteral("Logos"), application);
+    settings.clear();
+    FakeWalletProvider provider;
+    provider.connectResult.failure = WalletFailure::WrongPassword;
+    WalletController controller(provider, application);
+    controller.start();
+    QTRY_COMPARE(provider.connectCalls, 1);
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("closed"));
+    QVERIFY(controller.state().walletExists);
+    QVERIFY(controller.state().syncError.isEmpty());
+
+    QVERIFY(controller.open(QStringLiteral("incorrect")));
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("error"));
+    QCOMPARE(controller.state().syncError, QStringLiteral("wrong_password"));
     settings.clear();
 }
 

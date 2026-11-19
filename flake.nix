@@ -303,7 +303,6 @@
         };
         tests = {
           dir = ./modules/amm/tests;
-          mockCLibs = [ "amm_ffi" ];
         };
       };
       ammModulePkgs = ammModuleOutputs.packages or { };

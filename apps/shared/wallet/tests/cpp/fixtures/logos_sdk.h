@@ -63,11 +63,12 @@ public:
     QString openedStorage;
     QString openedStatistics;
     QString openedPassword;
-    bool openedForceRpc = true;
+    bool openedForceRpc = false;
     QString createdConfig;
     QString createdStorage;
     QString createdStatistics;
     QString createdPassword;
+    bool createdForceRpc = false;
     QStringList submittedAccountIds;
     QList<bool> submittedSigningRequirements;
     QByteArray submittedInstruction;
@@ -150,8 +151,9 @@ public:
     }
 
     void create_newAsync(const QString& config, const QString& storage, const QString& password,
-                         bool, std::function<void(QString)> callback, Timeout timeout = Timeout())
+                         bool forceRpc, std::function<void(QString)> callback, Timeout timeout = Timeout())
     {
+        createdForceRpc = forceRpc;
         create_newAsync(config, storage, QString(), password, std::move(callback), timeout);
     }
 

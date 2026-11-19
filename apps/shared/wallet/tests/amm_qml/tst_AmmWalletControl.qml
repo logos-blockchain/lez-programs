@@ -25,7 +25,7 @@ Item {
         name: "AmmWalletControl"
         when: windowShown
 
-        function createControl() {
+        function createControl(walletPassword = "test-password") {
             const backend = createTemporaryObject(backendComponent, root)
             verify(backend)
             const control = createTemporaryObject(controlComponent, root, { wallet: backend })
@@ -34,15 +34,20 @@ Item {
             const dialog = findChild(control, "unlockWalletDialog")
             tryCompare(dialog, "opened", true)
             const password = findChild(control, "unlockWalletPasswordField")
-            password.text = "test-password"
+            password.text = walletPassword
             mouseClick(findChild(control, "unlockWalletButton"))
-            compare(backend.lastPassword, "test-password")
+            compare(backend.lastPassword, walletPassword)
             compare(password.text, "")
             return { backend, control }
         }
 
-        function test_acceptedOpenRemainsBusyUntilCompletion() {
-            const fixture = createControl()
+        function test_acceptedOpenRemainsBusyUntilCompletion_data() {
+            return [{ tag: "encrypted", password: "test-password" },
+                    { tag: "unencrypted", password: "" }]
+        }
+
+        function test_acceptedOpenRemainsBusyUntilCompletion(data) {
+            const fixture = createControl(data.password)
             compare(fixture.control.busy, true)
             compare(fixture.control.waitingForWallet, true)
             compare(fixture.control.synchronizing, true)

@@ -20,7 +20,7 @@ amm_qml=$(nix build ./apps/amm#packages.x86_64-linux.default --no-link --print-o
 qt_qml=$(nix-store --query --requisites "$amm_qml" | rg -m1 -- '-qtdeclarative-[0-9]')
 qt_svg=$(nix-store --query --requisites "$amm_qml" | rg -m1 -- '-qtsvg-[0-9]')
 export QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software QT_PLUGIN_PATH="$qt_svg/lib/qt-6/plugins"
-amm_import="$amm_qml/lib/qml"
+amm_import="$amm_qml/lib"
 test -f "$amm_import/Logos/Wallet/qmldir"
 "$qt_qml/bin/qmltestrunner" -import "$qt_qml/lib/qt-6/qml" -import "$logos_qml/lib" -import "$amm_import" -input apps/shared/wallet/tests/qml
 "$qt_qml/bin/qmltestrunner" -import "$qt_qml/lib/qt-6/qml" -import "$logos_qml/lib" -import "$amm_import" -input apps/amm/tests/qml
@@ -33,7 +33,7 @@ affected Rust checks:
 ```bash
 RISC0_DEV_MODE=1 cargo +1.94.0 test -p amm_program
 cargo +1.94.0 build -p idl-gen --release
-./target/release/idl-gen programs/amm/methods/guest/src/bin/amm.rs > /tmp/amm-idl.json
+./target/release/idl-gen programs/amm/core --message Message --state AmmState --events event > /tmp/amm-idl.json
 diff artifacts/amm-idl.json /tmp/amm-idl.json
 ```
 
@@ -51,7 +51,7 @@ transaction ID is displayed.
   scales either deposit from the minimum that mints more than
   `MINIMUM_LIQUIDITY`.
 - Active Pool flow keeps the reserve ratio and previews expected LP output.
-- `new_definition` and `add_liquidity` account lists match the committed AMM IDL
-  order.
+- Create and add plans encode the IDL's `NewDefinition` and `AddLiquidity`
+  messages and select the config and pool actors, respectively, as the root mention.
 - Submit re-quotes and surfaces `quote_changed` when the request no longer
   matches the preview hash.

@@ -12,6 +12,7 @@ enum class WalletFailure {
     WalletMissing,
     WalletUnavailable,
     OpenFailed,
+    WrongPassword,
     CreateFailed,
     SaveFailed,
     ReadFailed,
@@ -35,6 +36,7 @@ struct WalletPaths {
 struct WalletAccountRead {
     QString accountId;
     QString status = QStringLiteral("read_failed");
+    // Legacy account fields. Actor-wallet reads expose accountId and status.
     QString programOwner;
     QString balanceHex;
     QString nonceHex;

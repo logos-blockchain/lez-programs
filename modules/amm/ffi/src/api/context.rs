@@ -80,7 +80,7 @@ pub(super) fn resolve_tokens(request: ResolveTokensRequest) -> Result<Value, Str
 
 /// Decodes a token definition read as a fungible `(name, total_supply)`, or `None` when it is
 /// unreadable, owned by a different program, its id mismatches, or it isn't fungible.
-fn fungible_definition(
+pub(super) fn fungible_definition(
     read: Option<&AccountRead>,
     token_id: AccountId,
     token_program: AccountId,

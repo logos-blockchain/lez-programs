@@ -77,7 +77,8 @@ private:
     QString defaultStoragePath() const;
 
     void openOnStartup();
-    bool beginOpen(const QString& config, const QString& storage, const QString& password = {});
+    bool beginOpen(const QString& config, const QString& storage,
+                   const QString& password, bool onStartup = false);
     void applySnapshot(const WalletSnapshot& snapshot, bool newSession = false);
     void selectFeePayer(const QVector<WalletAccount>& accounts);
     void applySyncProgress(const WalletSyncProgress& progress);

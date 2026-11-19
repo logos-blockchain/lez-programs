@@ -5,6 +5,13 @@ use super::{
 };
 use crate::account::{account_id_from_hex, parse_program_id};
 
+fn checked_window(window: u64) -> Result<u64, String> {
+    if window < amm_core::oracle::MIN_WINDOW_DURATION {
+        return Err("invalid_window".into());
+    }
+    Ok(window)
+}
+
 /// Resolves the config, pool and Oracle deployment for setup messages.
 fn resolve(
     request_amm_program_id: &str,
@@ -22,8 +29,7 @@ fn resolve(
         .map_err(|_| String::from("config_unavailable"))
 }
 
-/// Builds the `CreatePriceObservations` submission: creates the pool's TWAP observations account
-/// for `window_duration_ms`. The AMM supplies prices from its pool state.
+/// Builds the AMM message that forwards an observations request to the pool's Oracle actor.
 pub(super) fn create_price_observations_plan(
     request: CreatePriceObservationsPlanRequest,
 ) -> Result<Value, String> {
@@ -33,19 +39,14 @@ pub(super) fn create_price_observations_plan(
         &request.token_b_id,
         &request.config,
     )?;
-    let window = request.window_duration_ms;
-    if window < amm_core::oracle::MIN_WINDOW_DURATION {
-        return Err("invalid_window".into());
-    }
     let message = amm_core::Message::CreatePriceObservations {
-        window_duration: window,
+        window_duration: checked_window(request.window_duration_ms)?,
     };
 
     super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
-/// Builds the `CreateOraclePriceAccount` submission: creates the pool's TWAP oracle price account
-/// for `window_duration_ms`. A chained call into the configured oracle — no caller pricing.
+/// Builds the AMM message that forwards the window and pool-derived price to its Oracle actor.
 pub(super) fn create_oracle_price_account_plan(
     request: CreateOraclePriceAccountPlanRequest,
 ) -> Result<Value, String> {
@@ -55,10 +56,8 @@ pub(super) fn create_oracle_price_account_plan(
         &request.token_b_id,
         &request.config,
     )?;
-    let window = request.window_duration_ms;
-
     let message = amm_core::Message::CreateOraclePriceAccount {
-        window_duration: window,
+        window_duration: checked_window(request.window_duration_ms)?,
     };
 
     super::plan::pool_plan(&request.amm_program_id, pair, message)

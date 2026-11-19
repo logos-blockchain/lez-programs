@@ -839,7 +839,7 @@ Item {
                 id: unlockPassword
                 objectName: "unlockWalletPasswordField"
                 Layout.fillWidth: true
-                placeholderText: qsTr("Wallet password")
+                placeholderText: qsTr("Leave blank for an unencrypted wallet")
                 echoMode: TextInput.Password
                 Keys.onReturnPressed: unlockButton.clicked()
             }
@@ -855,7 +855,6 @@ Item {
                     objectName: "unlockWalletButton"
                     Layout.fillWidth: true
                     text: qsTr("Unlock")
-                    enabled: unlockPassword.text.length > 0
                     onClicked: {
                         const password = unlockPassword.text
                         unlockWalletDialog.close()

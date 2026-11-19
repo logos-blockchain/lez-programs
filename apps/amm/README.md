@@ -13,8 +13,9 @@ wallet FFI through `m_logos->lez_core.*` and exposes an async QtRO
 surface (`src/AmmUiBackend.rep`) plus an account list model to the QML view.
 
 **Onboarding is non-invasive.** The app opens straight to the Trade screen; the
-navbar shows **Connect** or **Connected** + the account selector. **Connect**
-opens an existing wallet, or adopts the shared wallet, without a password prompt.
+navbar shows **Connect** or **Connected** + the account selector. The app can
+adopt an open shared wallet. To open an existing wallet, choose **Connect**
+and enter the storage password. Use an empty password for unencrypted storage.
 If no wallet exists, it opens the wallet-creation dialog, which asks for a
 password and confirmation, then displays the recovery phrase while the new
 wallet syncs. Until the first sync finishes, the navbar shows its progress and
@@ -27,8 +28,8 @@ Account/keystore sharing follows the runtime:
 
 - **Standalone** (`nix run .#amm-ui`): own core-module instance, but the canonical
   `~/.lee/wallet` keystore is shared with the LEZ wallet UI and any other LEZ
-  app on the machine. A previously-created wallet auto-opens on launch unless
-  this app was explicitly disconnected.
+  app on the machine. On launch the app tries an empty password unless it was
+  explicitly disconnected. Encrypted storage requires the password at **Connect**.
 - **Inside Basecamp**: the core wallet module is a single shared instance, so on
   startup the backend **adopts** the already-open wallet through
   `LogosWalletProvider::connectAsync()`, surfacing **shared** accounts across apps.
@@ -37,22 +38,8 @@ Account/keystore sharing follows the runtime:
 **Disconnect** clears this app's account list, blocks its transaction submission
 paths, and skips automatic connection on subsequent launches until **Connect**
 is used. Cancelling the first sync does the same. It leaves the shared wallet
-open for other apps; it does not lock the
-wallet or erase its signing keys. Reconnecting requires no password. The current
-`lez_core` API exposes neither a password-taking `open` nor a wallet lock/close
-operation.
-
-The pinned wallet backend currently ignores the creation password and stores
-wallet keys in unencrypted JSON (see its [storage implementation](https://github.com/logos-blockchain/logos-execution-zone/blob/d8596eb734bf9c9ce801afb92df06098a2eb098a/lez/wallet/src/storage.rs#L32-L85)).
-The password field therefore provides no encryption or unlock protection. Protect
-access to the wallet home with operating-system file permissions.
-
-> Follow-up: the app reconstructs the wallet paths itself because the
-> `lez_core` module only exposes path-taking `create_new`/`open`.
-> LEZ's wallet FFI now provides path-free variants (`wallet_ffi_create_new_default`,
-> `wallet_ffi_open_default`, plus `wallet_ffi_default_config_path` /
-> `_storage_path` / `wallet_ffi_wallet_exists_default`). Once the module surfaces
-> those over QtRO, the app can drop its `defaultWalletHome/Config/Storage` logic.
+open for other apps. The creation password encrypts the new wallet's storage.
+[LEZ wallet storage](https://github.com/logos-blockchain/logos-execution-zone/blob/1806e873ea2ac0e1b608aa7cf2f9b6e1fb12db21/lez/wallet/src/storage/mod.rs)
 
 ## Setup
 
@@ -80,7 +67,8 @@ launch it with its named attribute:
 nix run .#amm-ui
 ```
 
-This builds and runs the application in development mode. The Logos bridge is unavailable in standalone mode, but the UI layout and mock data are fully functional.
+This launches the development UI with its AMM and wallet modules. Live operations
+use the sequencer in the wallet configuration.
 
 Build just the AMM core module with `nix build .#amm-module`, or its underlying
 logic crate with `nix build .#amm_ffi`. (Each UI is exposed under its own
@@ -89,27 +77,22 @@ default.)
 
 ## Running inside Logos Basecamp
 
-This app is a UI plugin that depends on the **core wallet module**
-`lez_core` (see the Wallet / chain integration section above). Both
-have to be installed into Basecamp — the UI plugin alone will show the AMM tab
-but fail to open it with `Failed to load core dependencies for amm_ui`.
+Basecamp needs three packages to open the AMM tab. Install the wallet module
+(`lez_core` 0.6.0), the AMM core module (`amm_module`), and the UI (`amm_ui`).
 
 ### 1. Build the LGX packages
 
+From the repository root, build the three development packages. The
+`amm_lez_core` input selects the exact wallet revision used by both AMM packages.
+
 ```bash
-# The AMM UI plugin — development variant (requires nix store at runtime)
-nix build '.#lgx' --out-link result-lgx
-
-# Portable variant (self-contained, works without nix)
-nix build '.#lgx-portable' --out-link result-lgx-portable
-
-# The core wallet module it depends on. These are the same immutable upstream
-# revisions used by this app's flake, including the merged macOS Metal fix.
-nix build 'github:logos-blockchain/logos-execution-zone-module?rev=d70225ced646934d2294fd9e8f8b03615c104b80#lgx' \
-  --override-input logos-execution-zone \
-  'github:logos-blockchain/logos-execution-zone?rev=a7e06a660940a00093b1760560d37ff84aff5a05' \
-  --out-link result-core
+nix build --inputs-from . 'amm_lez_core#lgx' --out-link result-wallet
+nix build '.#amm-module-lgx' --out-link result-amm
+nix build '.#amm-ui-lgx' --out-link result-ui
 ```
+
+For a portable Basecamp installation, replace `lgx` with `lgx-portable` in all
+three package names and use the `LogosBasecamp` data directory.
 
 ### 2. Install into Basecamp
 
@@ -122,14 +105,14 @@ BASECAMP_DIR="$HOME/Library/Application Support/Logos/LogosBasecampDev"
 # Linux:
 # BASECAMP_DIR="$HOME/.local/share/Logos/LogosBasecampDev"
 
-# Install the core wallet module first (into the modules dir), then the UI plugin
+# Install wallet and AMM core modules, then the UI plugin.
 lgpm --modules-dir "$BASECAMP_DIR/modules" \
-  install --file result-core/*.lgx
+  install --file result-wallet/*.lgx
+lgpm --modules-dir "$BASECAMP_DIR/modules" \
+  install --file result-amm/*.lgx
 lgpm --ui-plugins-dir "$BASECAMP_DIR/plugins" \
-  install --file result-lgx/*.lgx
+  install --file result-ui/*.lgx
 ```
-
-> **Note:** Use matching variants throughout — dev with dev, portable with portable. Mixing variants causes loading failures. The portable build uses the `LogosBasecamp` data directory instead of `LogosBasecampDev`.
 
 ### 3. Launch Basecamp
 
@@ -147,14 +130,9 @@ The AMM UI appears as a new tab in the Basecamp sidebar.
 
 ### Installing via the Basecamp UI
 
-Alternatively, use the built-in package manager. Install both packages — the
-core module from `result-core/` and the UI plugin from `result-lgx/`:
-
-1. Launch Basecamp
-2. Open Package Manager
-3. Select "Install from file"
-4. Choose the core module `.lgx` from `result-core/`, then the UI plugin `.lgx`
-   from `result-lgx/`
+In Basecamp, open **Package Manager** and use **Install from file** for each
+`.lgx`: first the wallet in `result-wallet/`, then the AMM core in `result-amm/`,
+then the UI in `result-ui/`.
 
 The **Swap** and **Liquidity** views use the registry snapshot described below.
 A registry can supply tokens, pools and the selected network's AMM program and
@@ -229,10 +207,9 @@ the AMM instance:
 AMM_PROGRAM_ID=<deployed-amm-program-id> AMM_CONFIG_ID=<amm-config-id> nix run .#amm-ui
 ```
 
-`apps/amm/tests/testnet/setup-amm-testnet.sh` prints both after deploying. The
-app reads the on-chain AMM config account to discover the TWAP oracle program
-id for the pool's current-tick PDA. Without a program id the Swap view stays
-disabled (no pool can be resolved).
+Use the IDs from the deployment on your selected sequencer. The module reads
+the token and Oracle program IDs from the AMM config. The Oracle actor uses
+the pool account. Without a program ID the Swap view stays disabled.
 
 > **Golden rule:** a redeploy creates a new header account, so a new program id
 > and *every* derived PDA. After any redeploy, update `AMM_PROGRAM_ID` (and
@@ -363,10 +340,8 @@ selects two tokens, enters a sell amount, submits a swap end-to-end, and then
 verifies the pool reserves actually changed on-chain (read back from the
 sequencer via the app's `resolvePoolAccount`).
 
-> **For the fully isolated, script-driven test flow** (a dedicated wallet from a
-> fixed mnemonic + auto-created pool + isolated token config, touching nothing in
-> your local setup), see **[`apps/amm/tests/README.md`](tests/README.md)**. The
-> steps below run the test against *your own* local wallet/config instead.
+Use an initialized LEZ 0.4 pool and wallet for the steps below. The older
+testnet setup script expects a separate current-tick account from the pre-actor AMM.
 
 The test framework itself — the `test()` / `run()` / `app.*` API that the tests
 import from `test-framework/framework.mjs` — comes from the

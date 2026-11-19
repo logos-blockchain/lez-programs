@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
@@ -306,9 +307,7 @@ std::string AmmModuleImpl::feePayerFor(const std::string& fee_payer_id,
 }
 
 nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
-    // Matches the app-side accountReadJson: WalletAccountRead defaults status to
-    // "read_failed" and only flips to "ok" when every field is well-formed hex;
-    // the `account` key is present only for an ok read.
+    // lez_core returns a decimal nonce and hex-encoded actor states.
     json result = {{"id", account_id}, {"status", "read_failed"}};
 
     const std::string account_json =
@@ -318,7 +317,8 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
 
     const std::string nonce = jStr(obj, "nonce");
     const auto actors = obj.find("actor_states");
-    if (!isHexLen(nonce, 32) || actors == obj.end() || !actors->is_array()) return result;
+    if (nonce.empty() || nonce.find_first_not_of("0123456789") != std::string::npos
+        || actors == obj.end() || !actors->is_array()) return result;
     const std::string program = ammProgramId();
     std::string data;
     for (const auto& actor : *actors) {
@@ -375,30 +375,17 @@ nlohmann::json AmmModuleImpl::readConfig() {
     return readPublicAccount(config_id);
 }
 
-nlohmann::json AmmModuleImpl::readLpSupply(const json& config, const json& pool) {
-    const FfiResult resolved = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
-    if (!resolved.ok || jStr(resolved.value, "status") != "ok")
-        return json{{"error", "no_pool"}};
-    const std::string lp_id = normalizeAccountId(jStr(resolved.value, "lpDefinitionId"));
-    if (lp_id.empty())
-        return json{{"error", "lp_supply_unavailable"}};
-    const json definition = readPublicAccount(lp_id);
-    const FfiResult tokens = call(amm_resolve_tokens, json{
-        {"ammProgramId", ammProgramId()},
-        {"config", config},
-        {"tokenIds", json::array({lp_id})},
-        {"walletAccounts", json::array()},
-        {"tokenDefinitions", json::array({definition})},
+nlohmann::json AmmModuleImpl::resolvePool(const json& config, const json& pool,
+                                          const std::string& lp_id) {
+    json definition;
+    if (!jStr(pool.value("account", json::object()), "data").empty())
+        definition = readPublicAccount(lp_id);
+    const FfiResult resolved = call(amm_resolve_pool, json{
+        {"config", config}, {"pool", pool}, {"lpDefinition", definition},
     });
-    if (!tokens.ok || jStr(tokens.value, "status") != "ok")
-        return json{{"error", "lp_supply_unavailable"}};
-    const auto rows = tokens.value.find("tokens");
-    if (rows == tokens.value.end() || !rows->is_array() || rows->size() != 1)
-        return json{{"error", "lp_supply_unavailable"}};
-    const std::string supply = jStr(rows->at(0), "totalSupply");
-    if (supply.empty())
-        return json{{"error", "lp_supply_unavailable"}};
-    return json{{"supply", supply}};
+    if (!resolved.ok)
+        return json{{"status", "error"}, {"error", "bad_config"}};
+    return resolved.value;
 }
 
 LogosMap AmmModuleImpl::setConfigId(const LogosMap& request) {
@@ -466,17 +453,12 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     }
 
     const json pool = readPublicAccount(jStr(pairResult.value, "poolId"));
-    // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
-    // needs the config account to read it (it is no longer a pool field).
-    const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
-    if (!resolveResult.ok)
-        return failed("bad_config");  // amm_resolve_pool op failed
     // resolve_pool returns status:"error"/no_pool for a missing pool (pass through) or
     // status:"ok" with the decoded state. It labels reserves/vaults in the pool's STORED
     // order (reserveA is defAHex's); orient them to the CALLER's requested order so reserveA /
     // vaultAId are token_a's — the stored order needn't match (it can be non-canonical, e.g.
     // the testnet setup's pool). Callers then read A/B as their own token-a/token-b directly.
-    json resolved = resolveResult.value;
+    json resolved = resolvePool(config, pool, jStr(pairResult.value, "lpDefinitionId"));
     if (jStr(resolved, "status") == "ok" && jStr(resolved, "defAHex") != token_a) {
         resolved["reserveA"].swap(resolved["reserveB"]);
         resolved["defAHex"].swap(resolved["defBHex"]);
@@ -630,7 +612,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // The plan derives the feed PDAs from the config's twap_oracle_program_id + the pool.
+    // The config identifies the Oracle actor for this pool.
     const json config = readConfig();
     if (config.is_null())
         return error("config_missing");
@@ -640,8 +622,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (token_a.empty() || token_b.empty())
         return error("invalid_token_id");
 
-    // windowDurationMs may arrive as a JSON number (UI) or a decimal string (CLI); the FFI wants
-    // a u64. A zero / unparsable window is rejected — each window is a distinct feed PDA.
+    // Accept unsigned integer values and decimal strings for CLI callers.
     const json window_json = request.value("windowDurationMs", json());
     uint64_t window = 0;
     if (window_json.is_number_unsigned()) {
@@ -649,11 +630,11 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     } else if (window_json.is_number_integer() && window_json.get<int64_t>() > 0) {
         window = window_json.get<uint64_t>();
     } else if (window_json.is_string()) {
-        try {
-            window = std::stoull(window_json.get<std::string>());
-        } catch (...) {
-            window = 0;
-        }
+        const auto& digits = window_json.get_ref<const std::string&>();
+        const char* end = digits.data() + digits.size();
+        const auto parsed = std::from_chars(digits.data(), end, window);
+        if (parsed.ec != std::errc{} || parsed.ptr != end)
+            return error("invalid_window");
     }
     if (window == 0)
         return error("invalid_window");
@@ -1086,9 +1067,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_create_pool_plan needs the config account for the twap program id the
-    // current-tick PDA derives from; a bad/absent config surfaces from the plan as
-    // config_unavailable (no bespoke check here — same as the swap plans).
+    // The config identifies the token and Oracle programs used by the pool.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1212,9 +1191,9 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     if (slippage_bps < 0 || slippage_bps >= 10000)
         return error("invalid_slippage");
 
-    const json lp = readLpSupply(config, pool);
-    if (!jStr(lp, "error").empty())
-        return error(jStr(lp, "error"));
+    const json resolved = resolvePool(config, pool, jStr(poolId.value, "lpDefinitionId"));
+    if (jStr(resolved, "status") != "ok")
+        return error(jStr(resolved, "error"));
     const FfiResult quoteResult = call(amm_add_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
@@ -1222,7 +1201,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
         {"maxAmountB", max_b_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
-        {"lpSupply", jStr(lp, "supply")},
+        {"lpSupply", jStr(resolved, "liquiditySupply")},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
@@ -1245,8 +1224,6 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_add_liquidity_plan needs the config account for the twap program id the
-    // current-tick PDA derives from; a bad/absent config surfaces from the plan.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1380,16 +1357,16 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     if (slippage_bps < 0 || slippage_bps >= 10000)
         return error("invalid_slippage");
 
-    const json lp = readLpSupply(config, pool);
-    if (!jStr(lp, "error").empty())
-        return error(jStr(lp, "error"));
+    const json resolved = resolvePool(config, pool, jStr(poolId.value, "lpDefinitionId"));
+    if (jStr(resolved, "status") != "ok")
+        return error(jStr(resolved, "error"));
     const FfiResult quoteResult = call(amm_remove_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
         {"lpAmount", lp_amount_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
-        {"lpSupply", jStr(lp, "supply")},
+        {"lpSupply", jStr(resolved, "liquiditySupply")},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
@@ -1411,8 +1388,6 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_remove_liquidity_plan needs the config account for the twap program id the
-    // current-tick PDA derives from; a bad/absent config surfaces from the plan.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1504,8 +1479,6 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_sync_reserves_plan needs the config account for the twap program id the current-tick
-    // PDA derives from; a bad/absent config surfaces from the plan.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");

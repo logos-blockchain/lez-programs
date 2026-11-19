@@ -1,25 +1,27 @@
+use std::collections::HashSet;
+
 use amm_core::{compute_protocol_fee_pda, AmmConfig, Message};
-use lee_core::account::AccountId;
+use lee_core::account::{AccountId, Actor};
 use serde_json::{json, Value};
 
 use super::pair::PairIds;
 use crate::account::{account_id_hex, parse_program_id};
 
-/// Ordered actor mentions. The root is always first; repeated actors merge authorization.
+/// Actors are selected individually, but the wallet requires one authorization per account.
+#[derive(Default)]
 struct Plan {
-    actors: Vec<(AccountId, AccountId, bool)>,
+    actors: Vec<Actor>,
+    signers: HashSet<AccountId>,
 }
 
 impl Plan {
     fn add(&mut self, account: AccountId, program: AccountId, authorized: bool) {
-        if let Some(actor) = self
-            .actors
-            .iter_mut()
-            .find(|a| a.0 == account && a.1 == program)
-        {
-            actor.2 |= authorized;
-        } else {
-            self.actors.push((account, program, authorized));
+        if authorized {
+            self.signers.insert(account);
+        }
+        let actor = Actor::new(account, program);
+        if !self.actors.contains(&actor) {
+            self.actors.push(actor);
         }
     }
 
@@ -27,9 +29,9 @@ impl Plan {
         json!({
             "programId": program,
             "rootMention": 0,
-            "accountIds": self.actors.iter().map(|a| account_id_hex(a.0)).collect::<Vec<_>>(),
-            "actorProgramIds": self.actors.iter().map(|a| account_id_hex(a.1)).collect::<Vec<_>>(),
-            "signingRequirements": self.actors.iter().map(|a| a.2).collect::<Vec<_>>(),
+            "accountIds": self.actors.iter().map(|a| account_id_hex(a.account_id)).collect::<Vec<_>>(),
+            "actorProgramIds": self.actors.iter().map(|a| account_id_hex(a.program_account_id)).collect::<Vec<_>>(),
+            "signingRequirements": self.actors.iter().map(|a| self.signers.contains(&a.account_id)).collect::<Vec<_>>(),
             "message": message,
         })
     }
@@ -38,7 +40,7 @@ impl Plan {
 pub(super) fn pool_plan(program: &str, pair: PairIds, message: Message) -> Result<Value, String> {
     let amm = parse_program_id(program)?;
     let bytes = borsh::to_vec(&message).map_err(|e| e.to_string())?;
-    let mut plan = Plan { actors: Vec::new() };
+    let mut plan = Plan::default();
     let root = if matches!(message, Message::NewDefinition { .. }) {
         pair.config
     } else {
@@ -123,7 +125,7 @@ pub(super) fn admin_plan(
 ) -> Result<Value, String> {
     let amm = parse_program_id(program)?;
     let bytes = borsh::to_vec(&message).map_err(|e| e.to_string())?;
-    let mut plan = Plan { actors: Vec::new() };
+    let mut plan = Plan::default();
     plan.add(config.authority, amm, true);
     plan.add(config_id, amm, false);
     if let Message::WithdrawProtocolFees {

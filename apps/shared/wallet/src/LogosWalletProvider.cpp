@@ -21,6 +21,11 @@
 
 namespace {
 constexpr int WALLET_FFI_SUCCESS = 0;
+#ifdef LOGOS_WALLET_ACTOR_API
+// The app uses the sequencer configured in wallet_config.json.
+constexpr bool USE_RPC_SEQUENCER = true;
+constexpr int WALLET_FFI_WRONG_PASSWORD = 25;
+#endif
 constexpr int CAPABILITY_WARMUP_RETRY_MS = 50;
 constexpr int CAPABILITY_WARMUP_MAX_ATTEMPTS = 100;
 // Wallet creation calibrates the configured sequencers before returning. The
@@ -28,6 +33,17 @@ constexpr int CAPABILITY_WARMUP_MAX_ATTEMPTS = 100;
 // fresh wallet on a live network.
 constexpr int WALLET_CREATE_TIMEOUT_MS = 120000;
 constexpr quint64 SNAPSHOT_SYNC_CHUNK_BLOCKS = 512;
+
+WalletFailure walletOpenFailure(int result)
+{
+    if (result == WALLET_FFI_SUCCESS)
+        return WalletFailure::None;
+#ifdef LOGOS_WALLET_ACTOR_API
+    if (result == WALLET_FFI_WRONG_PASSWORD)
+        return WalletFailure::WrongPassword;
+#endif
+    return WalletFailure::OpenFailed;
+}
 
 bool isHex(const QString& value, qsizetype size, bool lowercaseOnly = true)
 {
@@ -136,8 +152,13 @@ WalletAccountRead parsePublicAccount(const QString& accountId,
     const QString nonce = account.value(QStringLiteral("nonce")).toString();
     const QJsonValue actors = account.value(QStringLiteral("actor_states"));
     if (actors.isArray()) {
-        if (!isHex(nonce, 32))
+        // The actor wallet serializes nonces as decimal u128 strings.
+        if (nonce.isEmpty() || balanceLess(QStringLiteral("340282366920938463463374607431768211455"), nonce))
             return read;
+        for (const QChar digit : nonce) {
+            if (digit < QLatin1Char('0') || digit > QLatin1Char('9'))
+                return read;
+        }
         for (const auto& value : actors.toArray()) {
             if (!value.isObject())
                 return read;
@@ -148,7 +169,6 @@ WalletAccountRead parsePublicAccount(const QString& accountId,
                 return read;
         }
         read.status = QStringLiteral("ok");
-        read.nonceHex = nonce;
         return read;
     }
     const QString owner = account.value(QStringLiteral("program_owner")).toString();
@@ -221,13 +241,14 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
         if (!QFileInfo::exists(paths.storage))
             return failedSession(WalletFailure::WalletMissing);
 #ifdef LOGOS_WALLET_ACTOR_API
-        if (m_impl->logos->lez_core.open(paths.config, paths.storage, paths.password, false)
+        const auto result = m_impl->logos->lez_core.open(
+            paths.config, paths.storage, paths.password, USE_RPC_SEQUENCER);
 #else
-        if (m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics)
+        const auto result = m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics);
 #endif
-            != WALLET_FFI_SUCCESS) {
-            return failedSession(WalletFailure::OpenFailed);
-        }
+        const WalletFailure failure = walletOpenFailure(result);
+        if (failure != WalletFailure::None)
+            return failedSession(failure);
     }
 
     m_connected = true;
@@ -329,15 +350,14 @@ void LogosWalletProvider::openAfterCapabilityAsync(
         }
         m_impl->logos->lez_core.openAsync(
 #ifdef LOGOS_WALLET_ACTOR_API
-            paths.config, paths.storage, paths.password, false,
+            paths.config, paths.storage, paths.password, USE_RPC_SEQUENCER,
 #else
             paths.config, paths.storage, paths.statistics,
 #endif
             [this, alive, generation, finishOpen](int result) {
                 if (!alive || generation != m_generation)
                     return;
-                (*finishOpen)(false, result == WALLET_FFI_SUCCESS
-                    ? WalletFailure::None : WalletFailure::OpenFailed);
+                (*finishOpen)(false, walletOpenFailure(result));
             });
     };
 
@@ -386,7 +406,7 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
                      &waitForCreation, &QEventLoop::quit);
     m_impl->logos->lez_core.create_newAsync(
 #ifdef LOGOS_WALLET_ACTOR_API
-        paths.config, paths.storage, password, false,
+        paths.config, paths.storage, password, USE_RPC_SEQUENCER,
 #else
         paths.config, paths.storage, paths.statistics, password,
 #endif
