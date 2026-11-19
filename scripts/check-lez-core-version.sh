@@ -45,7 +45,9 @@ expected = json.load(open(sys.argv[1]))["version"]
 stale = []
 for path in sys.argv[2:]:
     for dependency in json.load(open(path)).get("dependencies", []):
-        if isinstance(dependency, dict) and dependency.get("name") == "lez_core":
+        if dependency == "lez_core":
+            stale.append(f"{path}: missing lez_core version")
+        elif isinstance(dependency, dict) and dependency.get("name") == "lez_core":
             if dependency.get("version") != expected:
                 stale.append(f"{path}: {dependency.get('version')}")
 if stale:
