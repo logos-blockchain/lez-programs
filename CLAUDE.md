@@ -154,7 +154,8 @@ programs/
     methods/            # Host-side zkVM method embedding
     methods/guest/      # Guest binary on actor_entrypoint!(raw ..) (separate workspace)
   integration_tests/
-    tests/              # End-to-end tests through the zkVM (token, amm, ata)
+    tests/              # Through the real guests on a V03State (token, nft, twap_oracle)
+    methods/guest/      # Test-only guests: a price source standing in for the AMM
 apps/
   amm/                  # QML-based UI for the AMM program (Nix flake)
 ```
