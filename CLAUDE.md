@@ -148,11 +148,11 @@ programs/
     src/                # Program logic: open_position, repay_debt, withdraw_collateral
     methods/            # Host-side zkVM method embedding
     methods/guest/      # Guest binary (separate workspace)
-  twap_oracle/
-    core/src/lib.rs     # Data types & Instruction enum
-    src/                # Program logic: noop (price account initialization)
+  twap_oracle/          # Ported to the actor model
+    core/src/           # OracleState, Message/Internal, ReadPrice/PriceReply, addresses, events, price math
+    src/                # Router and one module per operation; the current-tick actor reads the clock
     methods/            # Host-side zkVM method embedding
-    methods/guest/      # Guest binary (separate workspace)
+    methods/guest/      # Guest binary on actor_entrypoint!(raw ..) (separate workspace)
   integration_tests/
     tests/              # End-to-end tests through the zkVM (token, amm, ata)
 apps/
