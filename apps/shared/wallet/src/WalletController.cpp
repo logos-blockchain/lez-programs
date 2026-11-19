@@ -104,10 +104,11 @@ void WalletController::openOnStartup()
 
     const QString config = defaultConfigPath();
     const QString storage = defaultStoragePath();
-    beginOpen(config, storage);
+    beginOpen(config, storage, {}, true);
 }
 
-bool WalletController::beginOpen(const QString& config, const QString& storage, const QString& password)
+bool WalletController::beginOpen(const QString& config, const QString& storage,
+                                 const QString& password, bool onStartup)
 {
     if (m_state.isWalletOpen
         || m_state.syncStatus == QStringLiteral("opening")
@@ -138,15 +139,16 @@ bool WalletController::beginOpen(const QString& config, const QString& storage, 
     const QString statistics = QFileInfo(config).absolutePath()
         + QStringLiteral("/statistics.json");
     m_wallet.connectAsync({ config, storage, statistics, password },
-        [this, generation, config, storage](WalletSession session) {
+        [this, generation, config, storage, onStartup](WalletSession session) {
             if (generation != m_operationGeneration)
                 return;
-            if (session.failure == WalletFailure::WalletMissing) {
+            const bool locked = onStartup && session.failure == WalletFailure::WrongPassword;
+            if (session.failure == WalletFailure::WalletMissing || locked) {
                 m_state.isWalletOpen = false;
                 m_state.initialSync = false;
                 m_state.syncStatus = QStringLiteral("closed");
                 m_state.syncError.clear();
-                m_state.walletExists = false;
+                m_state.walletExists = locked;
                 emit stateChanged();
                 return;
             }

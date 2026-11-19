@@ -1030,7 +1030,7 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
     let config_read = json!({
         "id": hex_id(chain.config), "programId": hex_id(chain.amm), "status": "ok",
         "account": {
-            "nonce": hex::encode(config.nonce.0.to_le_bytes()),
+            "nonce": config.nonce.0.to_string(),
             "actor_states": [{"program": hex_id(chain.amm), "data": hex::encode(config.data.actor_state(chain.amm))}]
         }
     });
@@ -1055,14 +1055,15 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
             .zip(&programs)
             .map(|(id, p)| Actor::new(parse(id), parse(p)))
             .collect();
+        // The wallet rejects an account mentioned with different authorizations.
+        let mut authorization = std::collections::HashMap::new();
+        for (id, flag) in ids.iter().zip(&flags) {
+            assert_eq!(authorization.entry(parse(id)).or_insert(*flag), flag);
+        }
         let keys: Vec<_> = (1..=6).map(key).collect();
         let signers: Vec<_> = keys
             .iter()
-            .filter(|k| {
-                ids.iter()
-                    .zip(&flags)
-                    .any(|(id, sign)| *sign && parse(id) == account(k))
-            })
+            .filter(|k| authorization.get(&account(k)) == Some(&true))
             .collect();
         let bytes: Vec<u8> =
             serde_json::from_value(plan["message"].clone()).expect("message bytes");
@@ -1140,8 +1141,20 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
         )
         .expect("oracle plan"),
     );
+    // The authority signs as the AMM actor and receives the fee at its token actor.
+    let authority = account(&key(1));
+    chain
+        .token_submit(
+            authority,
+            &[authority, chain.a],
+            &[&key(1)],
+            &TokenMessage::InitializeHolding {
+                definition: chain.a,
+            },
+        )
+        .expect("authority holding initialized");
     request["tokenDefinitionId"] = json!(hex_id(chain.a));
-    request["destinationId"] = json!(hex_id(chain.user_a));
+    request["destinationId"] = json!(hex_id(authority));
     request["amount"] = json!("1");
     execute(
         &mut chain,
@@ -1150,6 +1163,7 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
         )
         .expect("fee plan"),
     );
+    assert_eq!(chain.balance(authority), 1);
     request["newAuthorityId"] = json!(hex_id(account(&key(6))));
     execute(
         &mut chain,

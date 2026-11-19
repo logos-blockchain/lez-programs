@@ -295,22 +295,20 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
     let config_id = config_id();
     let token_def = AccountId::new([3; 32]);
     let destination = AccountId::new([8; 32]);
-    let plan = withdraw_protocol_fees_plan(WithdrawProtocolFeesPlanRequest {
+    let request = WithdrawProtocolFeesPlanRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
         token_definition_id: account_id_hex(token_def),
         destination_id: account_id_hex(destination),
         amount: "500".into(),
-    })
-    .unwrap();
+    };
+    let plan = withdraw_protocol_fees_plan(request.clone()).unwrap();
 
-    // Accounts: [config, protocol-fee PDA (for token_def), destination, admin authority (signs)].
-    // The admin is [7; 32] (the config_account fixture's authority); the protocol-fee holding is
-    // the instance-wide PDA for token_def; `amount` is instruction data, not an account.
+    let authority = AccountId::new([7; 32]);
     assert_eq!(
         plan["accountIds"],
         json!([
-            account_id_hex(AccountId::new([7; 32])),
+            account_id_hex(authority),
             account_id_hex(config_id),
             account_id_hex(compute_protocol_fee_pda(AMM_PROGRAM, config_id, token_def)),
             account_id_hex(destination),
@@ -332,6 +330,23 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
         panic!("expected WithdrawProtocolFees");
     };
     assert_eq!(amount, 500);
+
+    let self_plan = withdraw_protocol_fees_plan(WithdrawProtocolFeesPlanRequest {
+        destination_id: account_id_hex(authority),
+        ..request
+    })
+    .unwrap();
+    assert_eq!(self_plan["accountIds"][0], account_id_hex(authority));
+    assert_eq!(self_plan["actorProgramIds"][0], account_id_hex(AMM_PROGRAM));
+    assert_eq!(self_plan["accountIds"][3], account_id_hex(authority));
+    assert_eq!(
+        self_plan["actorProgramIds"][3],
+        account_id_hex(TOKEN_PROGRAM)
+    );
+    assert_eq!(
+        self_plan["signingRequirements"],
+        json!([true, false, false, true])
+    );
 }
 
 #[test]
@@ -340,16 +355,24 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
     let token_b = AccountId::new([1; 32]);
     let config_id = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
-    let window = 3_600_000_u64;
+    let window = amm_core::oracle::MIN_WINDOW_DURATION;
 
-    let plan = create_price_observations_plan(CreatePriceObservationsPlanRequest {
+    let request = CreatePriceObservationsPlanRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
         token_a_id: account_id_hex(token_a),
         token_b_id: account_id_hex(token_b),
         window_duration_ms: window,
-    })
-    .unwrap();
+    };
+    assert_eq!(
+        create_price_observations_plan(CreatePriceObservationsPlanRequest {
+            window_duration_ms: window - 1,
+            ..request.clone()
+        })
+        .unwrap_err(),
+        "invalid_window"
+    );
+    let plan = create_price_observations_plan(request).unwrap();
 
     assert_eq!(plan["rootMention"], 0);
     assert_eq!(plan["accountIds"][0], account_id_hex(pool));
@@ -381,16 +404,24 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
     let token_b = AccountId::new([1; 32]);
     let config_id = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
-    let window = 900_000_u64;
+    let window = amm_core::oracle::MIN_WINDOW_DURATION;
 
-    let plan = create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
+    let request = CreateOraclePriceAccountPlanRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
         token_a_id: account_id_hex(token_a),
         token_b_id: account_id_hex(token_b),
         window_duration_ms: window,
-    })
-    .unwrap();
+    };
+    assert_eq!(
+        create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
+            window_duration_ms: window - 1,
+            ..request.clone()
+        })
+        .unwrap_err(),
+        "invalid_window"
+    );
+    let plan = create_oracle_price_account_plan(request).unwrap();
 
     assert_eq!(plan["rootMention"], 0);
     assert_eq!(plan["accountIds"][0], account_id_hex(pool));
@@ -528,19 +559,14 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     })
     .unwrap();
 
-    // Slots 2 and 3 are vault_a / vault_b — in the pool's stored order, not the
-    // canonical order. (A domain error would leave accountIds absent, so these
-    // also assert the plan succeeded.)
+    // The vault mentions follow the pool's stored token order.
     assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_a_id));
     assert_eq!(plan["accountIds"][4], account_id_hex(pool.vault_b_id));
-    // Guard: the stored vault_a genuinely differs from the canonical derivation
-    // (the pre-fix bug would have emitted this one in slot 2).
     assert_ne!(
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
-    // Slot 8 is the 9th account the guest now requires: the INPUT token's instance-wide
-    // protocol-fee holding PDA. Only the input holding (slot 4) signs; the protocol PDA does not.
+    // Both protocol-fee holdings are mentioned. The input holding authorizes the debit.
     assert_eq!(plan["accountIds"].as_array().unwrap().len(), 11);
     assert_eq!(
         plan["accountIds"][8],
@@ -624,7 +650,7 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
-    // Slot 8 is the input token's protocol-fee holding PDA (the 9th account); only slot 4 signs.
+    // The exact-output plan declares the same protocol-fee holdings as the exact-input plan.
     assert_eq!(plan["accountIds"].as_array().unwrap().len(), 11);
     assert_eq!(
         plan["accountIds"][8],

@@ -126,17 +126,16 @@ pub(super) fn create_pool_quote(request: CreatePoolQuoteRequest) -> Result<Value
 /// Builds the `NewDefinition` submission for creating a pool.
 ///
 /// The pool PDA is order-independent (`compute_pool_pda_seed` sorts the pair
-/// internally), but `derive_pair` yields the vaults / current-tick in **canonical**
-/// order (`vault_a` = the larger token id's vault). The guest, in turn, derives
+/// internally). This planner derives the vaults in canonical order
+/// (`vault_a` is the larger token id's vault). The guest derives
 /// `vault_a` from `user_holding_a`'s definition and transfers `token_a_amount` out
 /// of it — so the `(vault_a, user_holding_a, token_a_amount)` triple must all name
 /// the same token or balances land in the wrong vault. This op therefore
 /// canonicalizes the pair and moves its amounts / user holdings **as one unit**, so
 /// `user_a` is the canonical token-a holding, `canonical_amount_a` its deposit, and
-/// `pair.vault_a` its vault. Returns the fixed 11-account IDL order with only the
-/// three user holdings (a, b, LP) signing. Recoverable failures fail closed as `Err`
-/// (`same_token_pair`, `config_unavailable`, bad amounts) so the caller never
-/// submits an empty plan.
+/// `pair.vault_a` its vault. The config AMM actor receives the message. The two
+/// deposit holdings and initial LP holding authorize their token actors. Errors
+/// such as `same_token_pair` or `config_unavailable` stop submission.
 pub(super) fn create_pool_plan(request: CreatePoolPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
@@ -277,14 +276,11 @@ pub(super) fn add_liquidity_quote(request: AddLiquidityQuoteRequest) -> Result<V
     }))
 }
 
-/// Builds the `AddLiquidity` submission for an existing pool. Same canonicalization as
-/// `create_pool_plan` — the `(token, max_amount, holding)` triples move together so `user_a`
-/// / `max_canonical_a` line up with the pool's canonical `vault_a`. Vaults and the LP
-/// definition come from the pool's STORED ids (`pool_data`), which the guest asserts against
-/// (like the swap plans). Emits the fixed 10-account IDL order with only the three user
-/// holdings (a, b, LP) signing. `min_amount_liquidity` is the caller's slippage floor and
-/// must be positive (the guest rejects a zero). Recoverable failures fail closed as `Err`
-/// (`same_token_pair`, `config_unavailable`, `no_pool`, bad amounts).
+/// Builds an `AddLiquidity` message for the pool's AMM actor. The two deposit
+/// holdings authorize their token actors. The LP holding receives the mint.
+/// Amounts and holdings follow the pool's stored token order, including pools
+/// created in the opposite order to the module's convention. The pool also
+/// supplies the vault and LP definition IDs. `min_amount_liquidity` must be positive.
 pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
@@ -301,9 +297,6 @@ pub(super) fn add_liquidity_plan(request: AddLiquidityPlanRequest) -> Result<Val
     let min_lp = positive_amount(Some(&request.min_lp))?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
-    // config / pool / current_tick / clock are order-independent PDAs, so derive_pair takes the
-    // tokens in the caller's order. (Its canonical vaults are unused here — the guest asserts the
-    // vaults against the pool's stored ids, taken below.)
     let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
         return Err(String::from("config_unavailable"));
     };
@@ -445,7 +438,7 @@ pub(super) fn remove_liquidity_quote(
 /// LP definition come from `pool_data`, which the guest asserts against — but only
 /// `user_holding_lp` signs (it is burned), and there is no fresh holding: the existing token
 /// a/b holdings receive the withdrawal. `min_amount_*_raw` are the caller's slippage floors and
-/// must be positive (the guest rejects a zero). Emits the fixed 10-account IDL order.
+/// must be positive. The pool's AMM actor receives the message.
 /// Recoverable failures fail closed as `Err` (`same_token_pair`, `config_unavailable`,
 /// `no_pool`, `pair_mismatch`, bad amounts).
 pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Result<Value, String> {
@@ -464,9 +457,6 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
     let min_b = positive_amount(Some(&request.min_amount_b))?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
-    // config / pool / current_tick / clock are order-independent PDAs, so derive_pair takes the
-    // tokens in the caller's order. (Its vaults are canonical and unused here — the guest
-    // asserts the vaults against the pool's stored ids, taken below.)
     let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
         return Err(String::from("config_unavailable"));
     };
@@ -509,13 +499,9 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
     super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
-/// Builds the `SyncReserves` submission — a permissionless keeper op that refreshes the pool's
-/// stored reserves to the live vault balances (and its TWAP tick). A unit instruction: no
-/// amounts, deadline, or holdings, and nothing signs. config / pool / current_tick / clock are
-/// order-independent PDAs from `derive_pair`; the vaults come from the pool's stored ids in
-/// `pool_data` (read-only, but the guest still asserts them). Fixed 6-account IDL order.
-/// Recoverable failures fail closed as `Err` (`same_token_pair`, `config_unavailable`,
-/// `no_pool`).
+/// Builds a permissionless `SyncReserves` message for the pool's AMM actor.
+/// The guest reads the stored vaults, records their balances, and sends the
+/// updated tick to the Oracle actor on the pool account.
 pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
@@ -524,8 +510,6 @@ pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Val
         return Err(String::from("same_token_pair"));
     }
 
-    // config / pool / current_tick / clock are order-independent PDAs, so the token order does
-    // not matter for derive_pair.
     let Ok(pair) = derive_pair(amm_program, token_a, token_b, &request.config) else {
         return Err(String::from("config_unavailable"));
     };
@@ -962,7 +946,7 @@ mod tests {
         let holding_b = AccountId::new([0x0B; 32]); // token_b holding
         let lp = AccountId::new([0x0C; 32]);
 
-        // Run the plan for a caller ordering; returns (accountIds, instruction words).
+        // Return the actor account IDs and Borsh message bytes for this token order.
         let run = |ta: String, tb: String, ma: &str, mb: &str, ha: String, hb: String| {
             let value = add_liquidity_plan(AddLiquidityPlanRequest {
                 amm_program_id: program.clone(),
@@ -1307,7 +1291,7 @@ mod tests {
             .unwrap();
             serde_json::json!(words.iter().map(|w| u64::from(*w)).collect::<Vec<u64>>())
         };
-        // Only user_holding_lp (index 7) signs — a/b just receive.
+        // The LP holding authorizes the burn. The token A and B holdings receive funds.
         let expected_signers = serde_json::json!([
             false, false, false, false, false, false, false, false, true, false, false,
         ]);
@@ -1432,7 +1416,6 @@ mod tests {
         );
         assert_eq!(ids[3], account_id_hex(vault_a)); // pool's stored vaults
         assert_eq!(ids[4], account_id_hex(vault_b));
-        // ids[4] current_tick, ids[5] clock — order-independent PDAs.
         assert_eq!(
             value["signingRequirements"],
             serde_json::json!([false, false, false, false, false, false, false])

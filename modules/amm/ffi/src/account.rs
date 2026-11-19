@@ -89,21 +89,6 @@ pub(crate) fn account_id_hex(account_id: AccountId) -> String {
     hex::encode(account_id.into_value())
 }
 
-fn parse_le_u128(value: &str, label: &str) -> Result<u128, String> {
-    if value.len() != 32
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err(format!(
-            "{label} must be 32 lowercase hexadecimal characters"
-        ));
-    }
-    let mut bytes = [0_u8; 16];
-    hex::decode_to_slice(value, &mut bytes).map_err(|error| format!("invalid {label}: {error}"))?;
-    Ok(u128::from_le_bytes(bytes))
-}
-
 pub(crate) fn decode_account(read: &AccountRead) -> Result<(AccountId, Account), String> {
     if read.status != "ok" {
         return Err(String::from("account read failed"));
@@ -114,7 +99,12 @@ pub(crate) fn decode_account(read: &AccountRead) -> Result<(AccountId, Account),
         .as_ref()
         .ok_or_else(|| String::from("successful account read has no account"))?;
     let mut account = Account {
-        nonce: Nonce(parse_le_u128(&source.nonce, "account nonce")?),
+        nonce: Nonce(
+            source
+                .nonce
+                .parse::<u128>()
+                .map_err(|_| "invalid account nonce")?,
+        ),
         ..Account::default()
     };
     for actor in &source.actor_states {
@@ -143,7 +133,7 @@ pub(crate) fn account_read(id: AccountId, account: &Account) -> AccountRead {
             .unwrap_or_default(),
         status: "ok".into(),
         account: Some(WalletAccount {
-            nonce: hex::encode(account.nonce.0.to_le_bytes()),
+            nonce: account.nonce.0.to_string(),
             actor_states: account
                 .data
                 .actor_states

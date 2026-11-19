@@ -51,9 +51,8 @@ pub struct WithdrawProtocolFeesPlanRequest {
     pub amount: String,
 }
 
-/// Builds the `CreatePriceObservations` submission — seeds the pool's TWAP observations feed for a
-/// window. `config` is the read of the config PDA (its `twap_oracle_program_id` seeds the feed
-/// PDAs); `token_ids` are hex; `window_duration_ms` is the TWAP window in milliseconds.
+/// Inputs for `CreatePriceObservations`. The token IDs select the pool, and the
+/// config identifies its Oracle program. The message carries the window in milliseconds.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePriceObservationsPlanRequest {
@@ -64,8 +63,8 @@ pub struct CreatePriceObservationsPlanRequest {
     pub window_duration_ms: u64,
 }
 
-/// Builds the `CreateOraclePriceAccount` submission — creates the pool's TWAP oracle price account
-/// for a window. Same inputs as `CreatePriceObservationsPlanRequest`.
+/// Inputs for `CreateOraclePriceAccount`, addressed to the same pool as
+/// `CreatePriceObservationsPlanRequest`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateOraclePriceAccountPlanRequest {
@@ -114,6 +113,8 @@ pub struct SwapPairRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvePoolRequest {
     pub pool: AccountRead,
+    /// Current LP token definition. An absent pool can be resolved without this read.
+    pub lp_definition: Option<AccountRead>,
     /// AMM config account read — the fee shown for the pool is the instance-wide
     /// `AmmConfig::swap_fee_bps`, no longer a per-pool field.
     pub config: AccountRead,

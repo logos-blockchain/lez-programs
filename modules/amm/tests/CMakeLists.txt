@@ -6,23 +6,13 @@ option(AMM_REAL_FFI_TESTS "Build AMM module tests against the production FFI lib
 include(LogosTest)
 
 logos_test(
-    NAME amm_fee_payer_tests
-    MODULE_SOURCES
-        ../src/amm_fee_payer.cpp
-    TEST_SOURCES
-        main.cpp
-        amm_fee_payer_test.cpp
-    EXTRA_INCLUDES
-        ../src
-)
-
-logos_test(
     NAME amm_module_tests
     MODULE_SOURCES
         ../src/amm_module_impl.cpp
         ../src/amm_fee_payer.cpp
     TEST_SOURCES
         main.cpp
+        amm_fee_payer_test.cpp
         amm_module_regression_test.cpp
         amm_module_read_test.cpp
         amm_module_submit_test.cpp
@@ -47,6 +37,7 @@ if(AMM_REAL_FFI_TESTS)
         TEST_SOURCES
             main.cpp
             amm_module_real_ffi_test.cpp
+            amm_wallet_test.cpp
         EXTRA_INCLUDES
             ../src
             ../ffi/include
