@@ -3,10 +3,16 @@ name = "twap_oracle_program"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2" }
-twap_oracle_core = { path = "core" }
-
 [lints]
 workspace = true
+
+[dependencies]
+# Not `workspace = true`: that would inherit the `host` feature into the guest build.
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
+twap_oracle_core = { path = "core" }
+borsh = { version = "1.5", features = ["derive"] }
+
+[dev-dependencies]
+# `host` derives `Debug`/`PartialEq` on `Response`, for assertions.
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["host"] }
