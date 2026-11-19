@@ -34,7 +34,7 @@ nix build .#test-framework -o apps/token/result-mcp
 ```
 
 For manual runs, stage the portable install outputs into a Basecamp user
-directory: `.#install-portable` for `token_module`,
+directory: `.#token-module-install-portable` for `token_module`,
 `.#token-ui-install-portable` for `token_ui`, and the matching portable
 `lez_core` install. Launch the inspector-enabled bundle with
 `--user-dir <path> -platform offscreen`.

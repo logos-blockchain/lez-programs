@@ -69,7 +69,7 @@ mcp_root="$(build_if_missing "${LOGOS_QT_MCP:-}" "${run_root}/result-mcp" .#test
 bundle_root="$(build_if_missing "${TOKEN_BASECAMP_BUNDLE:-}" "${run_root}/result-bundle" github:logos-co/logos-basecamp#bin-bundle-dir-inspector)"
 wallet_install="$(build_if_missing "${TOKEN_WALLET_INSTALL:-}" "${run_root}/wallet-install" \
   'github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2#install-portable')"
-token_install="$(build_if_missing "${TOKEN_MODULE_INSTALL:-}" "${run_root}/token-install" .#install-portable)"
+token_install="$(build_if_missing "${TOKEN_MODULE_INSTALL:-}" "${run_root}/token-install" .#token-module-install-portable)"
 ui_install="$(build_if_missing "${TOKEN_UI_INSTALL:-}" "${run_root}/token-ui-install" .#token-ui-install-portable)"
 
 cp -RL "${wallet_install}/modules/." "${run_root}/user/modules/"
