@@ -8,8 +8,8 @@
 //! Trust rests on the sender:
 //!
 //! - the clock's reply is accepted only from `clock_actor()`;
-//! - [`Internal`] messages only from oracle actors, and each receiver checks that the sender is
-//!   its own current-tick or observations actor;
+//! - [`Internal`] messages only from oracle actors, and each receiver checks that the sender is its
+//!   own current-tick or observations actor;
 //! - source messages only from the [`PriceSource`] stored at creation.
 
 use lee_core::{

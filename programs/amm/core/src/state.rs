@@ -38,7 +38,7 @@ impl AmmState {
 pub struct AmmConfig {
     /// Deployed token program account address, shared by every pool in this namespace.
     pub token_program_id: AccountId,
-    /// Oracle deployment implementing the AMM-facing message contract.
+    /// TWAP Oracle deployment that maintains this instance's pool feeds.
     pub twap_oracle_program_id: AccountId,
     pub authority: AccountId,
     /// Swap fee in basis points, strictly below 10,000.

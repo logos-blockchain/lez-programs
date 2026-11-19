@@ -1,11 +1,12 @@
 use amm_core::{
     compute_liquidity_token_pda, compute_liquidity_token_pda_seed, compute_lp_lock_holding_pda,
     compute_lp_lock_holding_pda_seed, compute_pool_pda, compute_pool_pda_seed, compute_vault_pda,
-    compute_vault_pda_seed, event::Event, isqrt_product, oracle, spot_price_q64_64, AmmState,
-    Internal, Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_vault_pda_seed, event::Event, isqrt_product, spot_price_q64_64, AmmState, Internal,
+    Message, Pending, PoolDefinition, MINIMUM_LIQUIDITY,
 };
 use lee_core::program::{ReceiveInput, Response, SyncMessage};
 use token_core::Message as TokenMessage;
+use twap_oracle_core::Message as OracleMessage;
 
 use crate::settlement::{finish, oracle_call, token_call};
 
@@ -167,9 +168,8 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         .send(oracle_call(
             input,
             config,
-            &pool,
-            &oracle::Message::CreateCurrentTick {
-                price: spot_price_q64_64(token_a_amount, token_b_amount),
+            &OracleMessage::CreateCurrentTickAccount {
+                initial_price: spot_price_q64_64(token_a_amount, token_b_amount),
             },
         ))
         .event(

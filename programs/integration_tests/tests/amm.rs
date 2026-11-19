@@ -1,23 +1,37 @@
-//! AMM actor conversations through real AMM/token guests and a recording oracle mock.
+//! AMM settlement and TWAP publication through the real AMM, token, Oracle, and clock programs.
 
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_protocol_fee_pda, compute_vault_pda, event::Event, oracle, spot_price_q64_64,
+    compute_protocol_fee_pda, compute_vault_pda, event::Event, spot_price_q64_64,
     swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, AmmState, Message, PoolDefinition,
     MINIMUM_LIQUIDITY,
 };
-use integration_tests::{account, assert_refused, deploy, deploy_at, key, submit};
-use lee::{error::LeeError, PrivateKey, V03State};
+use clock_core::clock_actor;
+use integration_tests::{
+    account, assert_refused, deploy, deploy_at, key, submit, tick, with_clock,
+};
+use lee::{
+    error::{InvalidProgramBehaviorError, LeeError},
+    PrivateKey, V03State,
+};
 use lee_core::{
     account::{AccountId, Actor},
+    execution_state::ExecutionError,
     program::TransactionEvent,
 };
-use oracle_mock_methods::oracle::OracleState;
 use token_core::{Message as TokenMessage, TokenState};
+use twap_oracle_core::{
+    compute_oracle_price_account_pda, compute_price_observations_pda, price_to_tick,
+    tick_to_oracle_price, CurrentTickState, Message as OracleMessage, OraclePrice, OracleState,
+    PriceSource,
+};
+use twap_oracle_methods::TWAP_ORACLE_ELF;
 
 const DEPOSIT_A: u128 = 1_000_000;
 const DEPOSIT_B: u128 = 2_000_000;
 const SUPPLY: u128 = 1_000_000_000;
+const T0: u64 = 1_700_000_000_000;
+const WINDOW: u64 = 2_048_000;
 
 struct Chain {
     state: V03State,
@@ -38,7 +52,7 @@ impl Chain {
         let (state, ids) = deploy(&[
             amm_methods::AMM_ELF,
             token_methods::TOKEN_ELF,
-            oracle_mock_methods::ORACLE_MOCK_ELF,
+            TWAP_ORACLE_ELF,
         ]);
         let [amm, token, oracle] = ids.as_slice() else {
             panic!("three guests deployed")
@@ -56,7 +70,7 @@ impl Chain {
         let config = compute_config_pda(amm, account(&key(1)), [0; 32]);
         let (a, b) = (account(&key(2)), account(&key(3)));
         let mut chain = Self {
-            state,
+            state: with_clock(state, T0),
             amm,
             token,
             oracle,
@@ -138,7 +152,10 @@ impl Chain {
             Actor::new(self.config, self.amm),
             Actor::new(self.pool, self.amm),
             Actor::new(account(&key(1)), self.amm),
-            Actor::new(self.pool, self.oracle),
+            self.tick_actor(),
+            clock_actor(),
+            Actor::new(self.observations_id(), self.oracle),
+            Actor::new(self.price_id(), self.oracle),
         ];
         actors.extend(
             [
@@ -230,14 +247,40 @@ impl Chain {
         }
     }
 
-    fn oracle(&self) -> OracleState {
-        borsh::from_slice(
+    fn tick_actor(&self) -> Actor {
+        let source = PriceSource::program(Actor::new(self.pool, self.amm));
+        Actor::new(source.current_tick_account_id(), self.oracle)
+    }
+
+    fn observations_id(&self) -> AccountId {
+        compute_price_observations_pda(self.oracle, self.tick_actor().account_id, WINDOW)
+    }
+
+    fn price_id(&self) -> AccountId {
+        compute_oracle_price_account_pda(self.oracle, self.tick_actor().account_id, WINDOW)
+    }
+
+    fn oracle_state(&self, id: AccountId) -> Option<OracleState> {
+        OracleState::decode(
             self.state
-                .get_account_by_id(self.pool)
+                .get_account_by_id(id)
                 .data
                 .actor_state(self.oracle),
         )
-        .expect("mock oracle state decodes")
+    }
+
+    fn current_tick(&self) -> CurrentTickState {
+        match self.oracle_state(self.tick_actor().account_id) {
+            Some(OracleState::CurrentTick(state)) => state,
+            other => panic!("expected current-tick actor, got {other:?}"),
+        }
+    }
+
+    fn price(&self) -> OraclePrice {
+        match self.oracle_state(self.price_id()) {
+            Some(OracleState::Price(state)) => state,
+            other => panic!("expected price actor, got {other:?}"),
+        }
     }
 
     fn assert_reserves(&self) {
@@ -246,8 +289,8 @@ impl Chain {
         assert_eq!(self.balance(pool.vault_b_id), pool.reserve_b);
         assert_eq!(self.lp_supply(), pool.liquidity_pool_supply);
         assert_eq!(
-            self.oracle().price,
-            spot_price_q64_64(pool.reserve_a, pool.reserve_b)
+            self.current_tick().tick,
+            price_to_tick(spot_price_q64_64(pool.reserve_a, pool.reserve_b))
         );
         assert_eq!(
             self.balance(compute_lp_lock_holding_pda(self.amm, self.pool)),
@@ -299,7 +342,21 @@ fn creation_initializes_vaults_lp_lock_and_authenticated_oracle() {
             .checked_sub(MINIMUM_LIQUIDITY)
             .expect("unlocked supply")
     );
-    assert_eq!(chain.oracle().source, Actor::new(chain.pool, chain.amm));
+    assert_eq!(
+        chain.current_tick().source,
+        PriceSource::program(Actor::new(chain.pool, chain.amm)),
+    );
+    let tick_actor = chain.tick_actor();
+    assert_refused(
+        &submit(
+            &mut chain.state,
+            tick_actor,
+            &[tick_actor, clock_actor()],
+            &[],
+            &OracleMessage::UpdateCurrentTick { price: 1 << 64 },
+        ),
+        "sender is not the price source",
+    );
     assert!(events.iter().any(|event| event.account_id == chain.amm
         && matches!(
             borsh::from_slice::<Event>(&event.event.data),
@@ -625,42 +682,66 @@ fn donations_are_synchronized_and_oracle_feeds_use_pool_prices() {
             chain.pool,
             &[],
             &Message::CreatePriceObservations {
-                window_duration: 86_400_000,
+                window_duration: WINDOW,
             },
         )
-        .expect("observations");
-    chain
-        .call(
-            chain.pool,
-            &[],
-            &Message::CreateOraclePriceAccount {
-                window_duration: 86_400_000,
-            },
-        )
-        .expect("price account");
-    let oracle = chain.oracle();
-    assert_eq!(oracle.observations, vec![86_400_000]);
+        .expect("open observations and price actors");
+    let tick_actor = chain.tick_actor();
+    let initial_tick = chain.current_tick().tick;
+    let Some(OracleState::PriceObservations(observations)) =
+        chain.oracle_state(chain.observations_id())
+    else {
+        panic!("expected observations actor")
+    };
+    assert_eq!(observations.price_source_id, chain.pool);
+    assert_eq!(observations.current_tick, tick_actor.account_id);
+    assert_eq!(observations.last_recorded_tick, initial_tick);
+    assert_eq!(observations.total_entries, 1);
+    let initial_price = chain.price();
     assert_eq!(
-        oracle.prices,
-        vec![oracle::Message::CreateOraclePriceAccount {
-            base_asset: chain.a,
-            quote_asset: chain.b,
-            initial_price: spot_price_q64_64(chain.pool().reserve_a, chain.pool().reserve_b),
-            window_duration: 86_400_000
-        }]
+        (initial_price.base_asset, initial_price.quote_asset),
+        (chain.a, chain.b)
     );
+    assert_eq!(initial_price.source_id, chain.pool);
+    assert_eq!(initial_price.price, tick_to_oracle_price(initial_tick));
+    assert_eq!(initial_price.timestamp, T0);
+
     let before = chain.snapshot();
     assert_refused(
         &chain.call(
             chain.pool,
             &[],
-            &Message::CreatePriceObservations {
-                window_duration: 86_400_000,
+            &Message::CreateOraclePriceAccount {
+                window_duration: WINDOW,
             },
         ),
-        "observations already exist",
+        "observations actor already exists",
     );
     assert_eq!(chain.snapshot(), before);
+
+    // A keeper records a changed pool tick, then publishes the price on the same block.
+    tick(&mut chain.state, T0 + 1_000);
+    chain
+        .call(chain.pool, &[&key(4)], &chain.swap_in(true, 10_000))
+        .expect("swap updates the tick");
+    chain.assert_reserves();
+    let updated = chain.current_tick();
+    assert_eq!(updated.last_updated, T0 + 1_000);
+    assert_ne!(initial_tick, updated.tick);
+    let declared = chain.actors();
+    for operation in [
+        OracleMessage::RecordTick {
+            window_duration: WINDOW,
+        },
+        OracleMessage::PublishPrice {
+            window_duration: WINDOW,
+        },
+    ] {
+        submit(&mut chain.state, tick_actor, &declared, &[], &operation).expect("keeper succeeds");
+    }
+    let published = chain.price();
+    assert_eq!(published.timestamp, T0 + 1_000);
+    assert_eq!(published.price, tick_to_oracle_price(updated.tick));
 }
 
 #[test]
@@ -717,7 +798,7 @@ fn non_image_program_addresses_are_used_for_pdas_and_dispatch() {
     let state = deploy_at(&[
         (amm, amm_methods::AMM_ELF),
         (token, token_methods::TOKEN_ELF),
-        (oracle, oracle_mock_methods::ORACLE_MOCK_ELF),
+        (oracle, TWAP_ORACLE_ELF),
     ]);
     let mut chain = Chain::setup(state, amm, token, oracle, 0);
     chain.create().expect("create at named deployments");
@@ -730,19 +811,23 @@ fn non_image_program_addresses_are_used_for_pdas_and_dispatch() {
 #[test]
 fn oracle_failure_rolls_back_transfers_fees_and_pool_state() {
     let mut chain = Chain::new();
-    let mut oracle = chain.oracle();
-    oracle.reject_updates = true;
-    let mut account = chain.state.get_account_by_id(chain.pool);
-    account.data.set_actor_state(
-        chain.oracle,
-        borsh::to_vec(&oracle).expect("mock state encodes").into(),
-    );
-    // Inject a downstream failure into the mock, without changing AMM or token state.
-    chain.state.force_insert_account(chain.pool, account);
     let before = chain.snapshot();
-    assert_refused(
-        &chain.call(chain.pool, &[&key(4)], &chain.swap_in(true, 10_000)),
-        "mock oracle refused update",
+    let mut actors = chain.actors();
+    actors.retain(|actor| *actor != clock_actor());
+    let swap = chain.swap_in(true, 10_000);
+    let result = submit(
+        &mut chain.state,
+        Actor::new(chain.pool, chain.amm),
+        &actors,
+        &[&key(4)],
+        &swap,
+    );
+    // Settlement calls UpdateCurrentTick after the token transfers. Its clock read fails.
+    assert!(
+        matches!(result, Err(LeeError::InvalidProgramBehavior(InvalidProgramBehaviorError::Execution(
+            ExecutionError::UndeclaredActor { actor }
+        ))) if actor == clock_actor()),
+        "expected the Oracle's clock read to fail, got {result:?}"
     );
     assert_eq!(chain.snapshot(), before);
 }

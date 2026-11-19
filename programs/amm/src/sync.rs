@@ -1,5 +1,6 @@
-use amm_core::{event::Event, oracle, spot_price_q64_64, AmmState, Message, Pending};
+use amm_core::{event::Event, AmmState, Message, Pending};
 use lee_core::program::{ReceiveInput, Response};
+use twap_oracle_core::Message as OracleMessage;
 
 use crate::{reads, settlement};
 
@@ -24,24 +25,15 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
                 Response::keep_state().event(event.to_program_event()),
             );
         }
-        Message::CreatePriceObservations { window_duration } => {
+        Message::CreatePriceObservations { window_duration }
+        | Message::CreateOraclePriceAccount { window_duration } => {
             assert!(
-                window_duration >= oracle::MIN_WINDOW_DURATION,
+                window_duration >= u64::from(twap_oracle_core::OBSERVATIONS_CAPACITY),
                 "oracle window is too short"
             );
-            oracle::Message::CreatePriceObservations { window_duration }
-        }
-        Message::CreateOraclePriceAccount { window_duration } => {
-            assert!(
-                window_duration >= oracle::MIN_WINDOW_DURATION,
-                "oracle window is too short"
-            );
-            let initial_price = spot_price_q64_64(pool.reserve_a, pool.reserve_b);
-            assert!(initial_price != 0, "oracle price must be nonzero");
-            oracle::Message::CreateOraclePriceAccount {
+            OracleMessage::CreatePriceAccounts {
                 base_asset: pool.definition_token_a_id,
                 quote_asset: pool.definition_token_b_id,
-                initial_price,
                 window_duration,
             }
         }
@@ -55,7 +47,6 @@ pub(crate) fn execute(input: &ReceiveInput, pending: &Pending) -> Response {
         | Message::WithdrawProtocolFees { .. }
         | Message::ReadState => unreachable!("sync or oracle continuation"),
     };
-    let response =
-        Response::keep_state().send(settlement::oracle_call(input, config, &pool, &message));
+    let response = Response::keep_state().send(settlement::oracle_call(input, config, &message));
     settlement::finish(input, AmmState::Pool(pool), response)
 }

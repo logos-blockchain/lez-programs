@@ -12,10 +12,7 @@ use crate::AmmConfig;
 pub enum Message {
     /// Sent to the authorized namespace owner's actor. Creates the config PDA derived
     /// from that owner and `nonce`; deployment ids and fees are immutable afterward.
-    Initialize {
-        nonce: [u8; 32],
-        config: AmmConfig,
-    },
+    Initialize { nonce: [u8; 32], config: AmmConfig },
     /// Sent to the authorized current admin's actor, which forwards to `config`.
     UpdateConfig {
         config: AccountId,
@@ -74,12 +71,11 @@ pub enum Message {
     },
     /// Permissionless: incorporate direct vault donations into reserves and notify the oracle.
     SyncReserves,
-    CreatePriceObservations {
-        window_duration: u64,
-    },
-    CreateOraclePriceAccount {
-        window_duration: u64,
-    },
+    /// Create both TWAP observations and price accounts for this pool and window.
+    /// Use either setup message once per window.
+    CreatePriceObservations { window_duration: u64 },
+    /// Alias for `CreatePriceObservations`. The Oracle creates both accounts atomically.
+    CreateOraclePriceAccount { window_duration: u64 },
     /// Sent to the authorized current admin's actor. The source is derived from
     /// `(config, token)`; `destination` must already hold that token.
     WithdrawProtocolFees {
