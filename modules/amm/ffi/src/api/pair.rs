@@ -1,8 +1,9 @@
 use amm_core::{
     compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda,
 };
-use lee_core::account::AccountId;
+use lee_core::account::{AccountId, Actor};
 use serde_json::{json, Value};
+use twap_oracle_core::PriceSource;
 
 use super::{config::load_config, PairIdsRequest};
 use crate::account::{account_id_hex, parse_base58_id, parse_program_id, AccountRead};
@@ -18,7 +19,7 @@ pub(super) struct PairIds {
     pub(super) lp_definition: AccountId,
     pub(super) lp_lock_holding: AccountId,
     pub(super) token_program: AccountId,
-    /// Program of the Oracle actor on the pool account.
+    pub(super) current_tick: AccountId,
     pub(super) twap_oracle_program: AccountId,
 }
 
@@ -65,6 +66,7 @@ pub(super) fn derive_pair(
         lp_definition: compute_liquidity_token_pda(amm_program, pool),
         lp_lock_holding: compute_lp_lock_holding_pda(amm_program, pool),
         token_program: config.token_program_id,
+        current_tick: PriceSource::program(Actor::new(pool, amm_program)).current_tick_account_id(),
         twap_oracle_program: config.twap_oracle_program_id,
     })
 }
@@ -80,6 +82,6 @@ fn pair_json(pair: PairIds) -> Value {
         "vaultBId": account_id_hex(pair.vault_b),
         "lpDefinitionId": account_id_hex(pair.lp_definition),
         "lpLockHoldingId": account_id_hex(pair.lp_lock_holding),
-        "oracleAccountId": account_id_hex(pair.pool),
+        "oracleAccountId": account_id_hex(pair.current_tick),
     })
 }

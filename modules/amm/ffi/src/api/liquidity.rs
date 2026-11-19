@@ -501,7 +501,7 @@ pub(super) fn remove_liquidity_plan(request: RemoveLiquidityPlanRequest) -> Resu
 
 /// Builds a permissionless `SyncReserves` message for the pool's AMM actor.
 /// The guest reads the stored vaults, records their balances, and sends the
-/// updated tick to the Oracle actor on the pool account.
+/// updated price to the pool's current-tick actor.
 pub(super) fn sync_reserves_plan(request: SyncReservesPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_a = account_id_from_hex(&request.token_a_id, "token A id")?;
@@ -1293,7 +1293,7 @@ mod tests {
         };
         // The LP holding authorizes the burn. The token A and B holdings receive funds.
         let expected_signers = serde_json::json!([
-            false, false, false, false, false, false, false, false, true, false, false,
+            false, false, false, false, false, false, false, false, true, false, false, false,
         ]);
         let assert_aligned =
             |ids: &[String], instruction: &serde_json::Value, signers: &serde_json::Value| {
@@ -1408,7 +1408,7 @@ mod tests {
             .iter()
             .map(|v| v.as_str().unwrap().to_string())
             .collect::<Vec<String>>();
-        assert_eq!(ids.len(), 7);
+        assert_eq!(ids.len(), 8);
         assert_eq!(ids[1], account_id_hex(config_id(amm)));
         assert_eq!(
             ids[0],
@@ -1418,7 +1418,7 @@ mod tests {
         assert_eq!(ids[4], account_id_hex(vault_b));
         assert_eq!(
             value["signingRequirements"],
-            serde_json::json!([false, false, false, false, false, false, false])
+            serde_json::json!([false, false, false, false, false, false, false, false])
         );
         let expected_instruction = {
             let words = borsh::to_vec(&amm_core::Message::SyncReserves).unwrap();

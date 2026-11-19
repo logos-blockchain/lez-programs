@@ -4,10 +4,14 @@ use amm_core::{
     compute_protocol_fee_pda, compute_vault_pda, isqrt_product, AmmConfig, Message, PoolDefinition,
     MINIMUM_LIQUIDITY,
 };
-use lee_core::account::{Account, AccountId, ActorState};
+use lee_core::account::{Account, AccountId, Actor, ActorState};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{json, Value};
 use token_core::{TokenDefinition, TokenHolding};
+use twap_oracle_core::{
+    compute_oracle_price_account_pda, compute_price_observations_pda, PriceSource,
+    OBSERVATIONS_CAPACITY,
+};
 
 use super::{
     admin::{transfer_ownership_plan, withdraw_protocol_fees_plan},
@@ -104,6 +108,7 @@ fn ids() -> PairIds {
         lp_definition: compute_liquidity_token_pda(AMM_PROGRAM, pool),
         lp_lock_holding: compute_lp_lock_holding_pda(AMM_PROGRAM, pool),
         token_program: TOKEN_PROGRAM,
+        current_tick: PriceSource::program(Actor::new(pool, AMM_PROGRAM)).current_tick_account_id(),
         twap_oracle_program: TWAP_PROGRAM,
     }
 }
@@ -166,10 +171,11 @@ fn pair_manifest_uses_canonical_ids_and_current_program_types() {
     assert_eq!(result["status"], "ok");
     assert_eq!(result["tokenAId"], account_id_hex(token_a));
     assert_eq!(result["tokenBId"], account_id_hex(token_b));
-    assert_eq!(
-        result["poolId"],
-        account_id_hex(compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b))
-    );
+    let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
+    assert_eq!(result["poolId"], account_id_hex(pool));
+    let current_tick =
+        PriceSource::program(Actor::new(pool, AMM_PROGRAM)).current_tick_account_id();
+    assert_eq!(result["oracleAccountId"], account_id_hex(current_tick));
 }
 
 #[test]
@@ -349,13 +355,39 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
     );
 }
 
+fn assert_window_actors(plan: &Value, pool: AccountId, window: u64) {
+    let current_tick =
+        PriceSource::program(Actor::new(pool, AMM_PROGRAM)).current_tick_account_id();
+    let ids = plan["accountIds"].as_array().unwrap();
+    let programs = plan["actorProgramIds"].as_array().unwrap();
+    for actor in [
+        Actor::new(current_tick, TWAP_PROGRAM),
+        Actor::new(
+            compute_price_observations_pda(TWAP_PROGRAM, current_tick, window),
+            TWAP_PROGRAM,
+        ),
+        Actor::new(
+            compute_oracle_price_account_pda(TWAP_PROGRAM, current_tick, window),
+            TWAP_PROGRAM,
+        ),
+        clock_core::clock_actor(),
+    ] {
+        let id = account_id_hex(actor.account_id);
+        let program = account_id_hex(actor.program_account_id);
+        assert!(ids
+            .iter()
+            .zip(programs)
+            .any(|(a, p)| *a == id && *p == program));
+    }
+}
+
 #[test]
 fn create_price_observations_plan_targets_the_window_feed_accounts() {
     let token_a = AccountId::new([2; 32]);
     let token_b = AccountId::new([1; 32]);
     let config_id = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
-    let window = amm_core::oracle::MIN_WINDOW_DURATION;
+    let window = u64::from(OBSERVATIONS_CAPACITY);
 
     let request = CreatePriceObservationsPlanRequest {
         amm_program_id: amm_program_id(),
@@ -377,8 +409,7 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
     assert_eq!(plan["rootMention"], 0);
     assert_eq!(plan["accountIds"][0], account_id_hex(pool));
     assert_eq!(plan["actorProgramIds"][0], account_id_hex(AMM_PROGRAM));
-    assert_eq!(plan["accountIds"][2], account_id_hex(pool));
-    assert_eq!(plan["actorProgramIds"][2], account_id_hex(TWAP_PROGRAM));
+    assert_window_actors(&plan, pool, window);
     assert!(plan["signingRequirements"]
         .as_array()
         .unwrap()
@@ -404,7 +435,7 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
     let token_b = AccountId::new([1; 32]);
     let config_id = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
-    let window = amm_core::oracle::MIN_WINDOW_DURATION;
+    let window = u64::from(OBSERVATIONS_CAPACITY);
 
     let request = CreateOraclePriceAccountPlanRequest {
         amm_program_id: amm_program_id(),
@@ -426,8 +457,7 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
     assert_eq!(plan["rootMention"], 0);
     assert_eq!(plan["accountIds"][0], account_id_hex(pool));
     assert_eq!(plan["actorProgramIds"][0], account_id_hex(AMM_PROGRAM));
-    assert_eq!(plan["accountIds"][2], account_id_hex(pool));
-    assert_eq!(plan["actorProgramIds"][2], account_id_hex(TWAP_PROGRAM));
+    assert_window_actors(&plan, pool, window);
     assert!(plan["signingRequirements"]
         .as_array()
         .unwrap()
@@ -539,7 +569,7 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
     // Both protocol-fee holdings are mentioned. The input holding authorizes the debit.
-    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 11);
+    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 12);
     assert_eq!(
         plan["accountIds"][8],
         account_id_hex(compute_protocol_fee_pda(
@@ -550,7 +580,7 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([false, false, false, false, false, true, false, false, false, false, false])
+        json!([false, false, false, false, false, true, false, false, false, false, false, false])
     );
 }
 
@@ -623,7 +653,7 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
     // The exact-output plan declares the same protocol-fee holdings as the exact-input plan.
-    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 11);
+    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 12);
     assert_eq!(
         plan["accountIds"][8],
         account_id_hex(compute_protocol_fee_pda(
@@ -634,7 +664,7 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([false, false, false, false, false, true, false, false, false, false, false])
+        json!([false, false, false, false, false, true, false, false, false, false, false, false])
     );
 }
 

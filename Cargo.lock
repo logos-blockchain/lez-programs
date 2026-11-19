@@ -98,6 +98,7 @@ dependencies = [
  "amm_core",
  "borsh",
  "cbindgen",
+ "clock_core",
  "hex",
  "lee_core",
  "pretty_assertions",
@@ -107,6 +108,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "token_core",
+ "twap_oracle_core",
 ]
 
 [[package]]

@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 alloy-primitives = { version = "1", default-features = false }
 amm_core = { workspace = true }
 borsh = { workspace = true }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
 hex = "0.4"
 lee_core = { workspace = true }
 risc0-binfmt = { version = "=3.0.4", default-features = false }
@@ -18,6 +19,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 token_core = { workspace = true }
+twap_oracle_core = { workspace = true }
 
 [build-dependencies]
 cbindgen = "0.28"

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use amm_core::{compute_protocol_fee_pda, AmmConfig, Message};
 use lee_core::account::{AccountId, Actor};
 use serde_json::{json, Value};
+use twap_oracle_core::{compute_oracle_price_account_pda, compute_price_observations_pda};
 
 use super::pair::PairIds;
 use crate::account::{account_id_hex, parse_program_id};
@@ -41,15 +42,12 @@ pub(super) fn pool_plan(program: &str, pair: PairIds, message: Message) -> Resul
     let amm = parse_program_id(program)?;
     let bytes = borsh::to_vec(&message).map_err(|e| e.to_string())?;
     let mut plan = Plan::default();
-    let root = if matches!(message, Message::NewDefinition { .. }) {
-        pair.config
-    } else {
-        pair.pool
-    };
+    let creates_pool = matches!(message, Message::NewDefinition { .. });
+    let root = if creates_pool { pair.config } else { pair.pool };
     plan.add(root, amm, false);
     plan.add(pair.config, amm, false);
     plan.add(pair.pool, amm, false);
-    plan.add(pair.pool, pair.twap_oracle_program, false);
+    plan.add(pair.current_tick, pair.twap_oracle_program, false);
     plan.add(pair.vault_a, pair.token_program, false);
     plan.add(pair.vault_b, pair.token_program, false);
     match message {
@@ -107,13 +105,30 @@ pub(super) fn pool_plan(program: &str, pair: PairIds, message: Message) -> Resul
                 );
             }
         }
-        Message::SyncReserves
-        | Message::CreatePriceObservations { .. }
-        | Message::CreateOraclePriceAccount { .. } => {}
+        Message::CreatePriceObservations { window_duration }
+        | Message::CreateOraclePriceAccount { window_duration } => {
+            let oracle = pair.twap_oracle_program;
+            let tick = pair.current_tick;
+            plan.add(
+                compute_price_observations_pda(oracle, tick, window_duration),
+                oracle,
+                false,
+            );
+            plan.add(
+                compute_oracle_price_account_pda(oracle, tick, window_duration),
+                oracle,
+                false,
+            );
+        }
+        Message::SyncReserves => {}
         _ => return Err("unsupported pool message".into()),
     }
     plan.add(pair.token_a, pair.token_program, false);
     plan.add(pair.token_b, pair.token_program, false);
+    if !creates_pool {
+        let clock = clock_core::clock_actor();
+        plan.add(clock.account_id, clock.program_account_id, false);
+    }
     Ok(plan.response(program, bytes))
 }
 

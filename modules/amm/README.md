@@ -48,7 +48,8 @@ except the two swaps which return a bare tx hash)
 - `createPool` / `addLiquidity` / `removeLiquidity` — the create/add paths take a
   fresh `lpHoldingId` the app supplies (the module never creates wallet accounts).
 - `syncReserves` — permissionless keeper op refreshing stored reserves + TWAP tick.
-- `createPriceObservations` / `createOraclePriceAccount` — seed a pool's TWAP feed.
+- `createPriceObservations` and `createOraclePriceAccount` are aliases. Call one
+  per pool and window to create both the observations and price accounts.
 - `transferOwnership` — admin-only `UpdateConfig` handing over the authority.
 - `withdrawProtocolFees` — admin-only; drains one token's accrued protocol fees
   (the per-`(config, token)` PDA) to a destination holding of that token. Takes
@@ -289,7 +290,25 @@ definition. Direct `amm_resolve_pool` callers must supply this account read as
 `lpDefinition` for an existing pool. A missing or unreadable definition returns
 `lp_supply_unavailable`. Quotes can become stale before execution.
 
-The AMM program still uses the recording Oracle mock contract. Oracle setup
-messages target the pool's Oracle actor; they do not create legacy per-window
-Oracle PDAs or provide production TWAP prices. This port supports public wallet
-transactions. Private transaction planning is outside this module's scope.
+The module plans public wallet transactions.
+
+### TWAP Oracle
+
+Pool creation initializes a current-tick account for the deployed TWAP Oracle.
+The AMM program derives this PDA from the pool ID. The Oracle authenticates the
+pool's AMM actor as its price source. The pair planner returns the current-tick
+account ID as `oracleAccountId`. Swaps, liquidity changes and `syncReserves`
+update the tick from the reserves using the canonical clock.
+
+To open a window, call either setup method with `tokenAId`, `tokenBId`,
+`windowDurationMs` and `feePayerId`. The duration must be at least 2,048 ms.
+One public transaction creates both Oracle PDAs, derived from the current-tick
+account and the window duration. It seeds the observations and the initial price
+from the current tick. A second setup for the same window fails.
+
+A keeper sends `RecordTick` and `PublishPrice` as root messages to the
+current-tick actor for the chosen window. Both read the canonical clock.
+Recording appends at most once per `floor(windowDurationMs / 2048)` ms.
+Publishing updates the price once the window has at least two observations
+and the newest is at most four sampling intervals old. For an older sample,
+record a fresh tick before publishing. [Oracle message and PDA definitions](../../programs/twap_oracle/core/src/lib.rs)

@@ -52,7 +52,8 @@ pub struct WithdrawProtocolFeesPlanRequest {
 }
 
 /// Inputs for `CreatePriceObservations`. The token IDs select the pool, and the
-/// config identifies its Oracle program. The message carries the window in milliseconds.
+/// config identifies its Oracle program. Each setup call initializes the observations and
+/// price actors for the requested window in milliseconds.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePriceObservationsPlanRequest {
@@ -220,7 +221,7 @@ pub struct CreatePoolPlanRequest {
     /// id-deriving op) — the FFI is stateless and can't read it itself.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the pool Oracle actor uses (same as the swap plan requests).
+    /// the pool's current-tick actor uses (same as the swap plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
@@ -265,7 +266,7 @@ pub struct AddLiquidityPlanRequest {
     /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the pool Oracle actor uses (same as the swap / create plan requests).
+    /// the pool's current-tick actor uses (same as the swap / create plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
@@ -308,7 +309,7 @@ pub struct RemoveLiquidityPlanRequest {
     /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the pool Oracle actor uses (same as the swap / add plan requests).
+    /// the pool's current-tick actor uses (same as the swap / add plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
@@ -332,7 +333,7 @@ pub struct SyncReservesPlanRequest {
     /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the pool Oracle actor uses (same as the swap / liquidity plan requests).
+    /// the pool's current-tick actor uses (same as the swap / liquidity plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
