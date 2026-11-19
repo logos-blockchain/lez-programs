@@ -8,6 +8,14 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         curl -L https://risczero.com/install | bash
-        /home/runner/.risc0/bin/rzup install
+        rzup=/home/runner/.risc0/bin/rzup
+        "$rzup" install
+        # A bare install takes the latest release, but r0vm must match the host's risc0-zkvm.
+        version="$(awk '/^name = "risc0-zkvm"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)"
+        : "${version:?risc0-zkvm is not in Cargo.lock}"
+        for component in r0vm cargo-risczero; do
+          # --force: the bare install may already have this version once it is the latest.
+          "$rzup" install --force "$component" "$version"
+          "$rzup" default "$component" "$version"
+        done
       shell: bash
-
