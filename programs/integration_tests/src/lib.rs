@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 
 use borsh::BorshSerialize;
+use clock_core::{clock_account_id, clock_actor, ClockAccountData, CLOCK_PROGRAM_ACCOUNT_ID};
 use lee::{
     error::LeeError,
     program::Program,
@@ -15,7 +16,7 @@ use lee::{
     PrivateKey, PublicKey, PublicTransaction, V03State,
 };
 use lee_core::{
-    account::{AccountId, Actor},
+    account::{Account, AccountId, Actor},
     program::TransactionEvent,
 };
 
@@ -88,4 +89,47 @@ pub fn assert_refused<T: std::fmt::Debug>(result: &Result<T, LeeError>, reason: 
         matches!(result, Err(LeeError::ProgramExecutionFailed(message)) if message.contains(reason)),
         "expected a refusal with {reason:?}, got {result:?}"
     );
+}
+
+/// Adds LEZ's clock, at block 1 and `timestamp`. Handlers read the clock's time; the chain ticks
+/// it after every block, which the tests do with [`tick`].
+#[must_use]
+pub fn with_clock(state: V03State, timestamp: u64) -> V03State {
+    let clock = ClockAccountData {
+        block_id: 1,
+        timestamp,
+    };
+    state
+        .with_named_programs([(clock_account_id(), programs::clock())])
+        .with_public_accounts([(
+            CLOCK_PROGRAM_ACCOUNT_ID,
+            Account::default().with_actor_state(clock_account_id(), clock.to_bytes().into()),
+        )])
+}
+
+/// Ends the block: the clock moves to the next block at `timestamp`, as the sequencer's last
+/// transaction would.
+pub fn tick(state: &mut V03State, timestamp: u64) {
+    let block_id = clock(state)
+        .block_id
+        .checked_add(1)
+        .expect("block id fits in u64");
+    submit(
+        state,
+        clock_actor(),
+        &[clock_actor()],
+        &[],
+        &clock_core::Message::Tick {
+            timestamp,
+            block_id,
+        },
+    )
+    .expect("the clock ticks");
+}
+
+/// The clock's block id and timestamp.
+#[must_use]
+pub fn clock(state: &V03State) -> ClockAccountData {
+    let account = state.get_account_by_id(CLOCK_PROGRAM_ACCOUNT_ID);
+    ClockAccountData::from_bytes(account.data.actor_state(clock_account_id()))
 }
