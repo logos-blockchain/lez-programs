@@ -1,63 +1,41 @@
 {
-  "version": "0.1.0",
+  "version": "2",
   "name": "twap_oracle",
-  "instructions": [
+  "messages": [
     {
-      "name": "create_price_observations",
-      "accounts": [
+      "name": "CreateCurrentTickAccount",
+      "tag": 0,
+      "docs": "Create the current-tick actor of a price source, at tick `price_to_tick(initial_price)`.\n\nSent to the empty actor by the source: a program's actor (with the current-tick seed,\nwhich admits the account), or a key at root, signing for its own account.",
+      "fields": [
         {
-          "name": "price_observations",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "price_source",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "initial_tick",
-          "type": "i32"
-        },
-        {
-          "name": "window_duration",
-          "type": "u64"
+          "name": "initial_price",
+          "type": "u128",
+          "docs": "Opening spot price as `Q64.64` (`quote_asset` per `base_asset`)."
         }
       ]
     },
     {
-      "name": "create_oracle_price_account",
-      "accounts": [
+      "name": "UpdateCurrentTick",
+      "tag": 1,
+      "docs": "From the source: set the tick to `price_to_tick(price)`, stamped with the clock.",
+      "fields": [
         {
-          "name": "oracle_price_account",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "price_source",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "name": "price",
+          "type": "u128",
+          "docs": "New spot price as `Q64.64`."
         }
-      ],
-      "args": [
+      ]
+    },
+    {
+      "name": "CreatePriceAccounts",
+      "tag": 2,
+      "docs": "From the source: create the observations and price actors of a window, both seeded\nfrom the current tick.",
+      "fields": [
+        {
+          "name": "window_duration",
+          "type": "u64",
+          "docs": "The TWAP window in milliseconds; at least `OBSERVATIONS_CAPACITY`."
+        },
         {
           "name": "base_asset",
           "type": "account_id"
@@ -65,11 +43,14 @@
         {
           "name": "quote_asset",
           "type": "account_id"
-        },
-        {
-          "name": "initial_price",
-          "type": "u128"
-        },
+        }
+      ]
+    },
+    {
+      "name": "RecordTick",
+      "tag": 3,
+      "docs": "At root, to the current-tick actor: append the current tick to the window's ring\nbuffer, if a sampling interval has passed since the last entry.",
+      "fields": [
         {
           "name": "window_duration",
           "type": "u64"
@@ -77,129 +58,10 @@
       ]
     },
     {
-      "name": "create_current_tick_account",
-      "accounts": [
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "price_source",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "initial_price",
-          "type": "u128"
-        }
-      ]
-    },
-    {
-      "name": "update_current_tick",
-      "accounts": [
-        {
-          "name": "current_tick_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "price_source",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "price",
-          "type": "u128"
-        }
-      ]
-    },
-    {
-      "name": "publish_price",
-      "accounts": [
-        {
-          "name": "price_observations",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "oracle_price_account",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "current_tick_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "price_source_id",
-          "type": "account_id"
-        },
-        {
-          "name": "window_duration",
-          "type": "u64"
-        }
-      ]
-    },
-    {
-      "name": "record_tick",
-      "accounts": [
-        {
-          "name": "price_observations",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "current_tick_account",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "price_source_id",
-          "type": "account_id"
-        },
+      "name": "PublishPrice",
+      "tag": 4,
+      "docs": "At root, to the current-tick actor: publish the window's TWAP to its price actor.",
+      "fields": [
         {
           "name": "window_duration",
           "type": "u64"
@@ -207,103 +69,371 @@
       ]
     }
   ],
-  "accounts": [
+  "state": {
+    "defined": "OracleState"
+  },
+  "events": [
     {
-      "name": "PriceObservations",
+      "name": "CurrentTickAccountCreated",
+      "selector": "c90352d0b172ef88",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "price_source_id",
-            "type": "account_id"
-          },
-          {
-            "name": "write_index",
-            "type": "u32"
-          },
-          {
-            "name": "total_entries",
-            "type": "u64"
-          },
-          {
-            "name": "last_recorded_tick",
-            "type": "i32"
-          },
-          {
-            "name": "entries",
-            "type": {
-              "vec": {
-                "defined": "ObservationEntry"
-              }
-            }
-          }
-        ]
+        "defined": "CurrentTickAccountCreated"
       }
     },
     {
-      "name": "OraclePriceAccount",
+      "name": "PriceAccountsCreated",
+      "selector": "aa275275c9d1cc66",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "base_asset",
-            "type": "account_id"
-          },
-          {
-            "name": "quote_asset",
-            "type": "account_id"
-          },
-          {
-            "name": "price",
-            "type": "u128"
-          },
-          {
-            "name": "timestamp",
-            "type": "u64"
-          },
-          {
-            "name": "source_id",
-            "type": "account_id"
-          },
-          {
-            "name": "confidence_interval",
-            "type": "u128"
-          }
-        ]
+        "defined": "PriceAccountsCreated"
       }
     },
     {
-      "name": "CurrentTickAccount",
+      "name": "Recorded",
+      "selector": "7b561119cd4cdcda",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "tick",
-            "type": "i32"
-          },
-          {
-            "name": "last_updated",
-            "type": "u64"
-          }
-        ]
+        "defined": "Recorded"
+      }
+    },
+    {
+      "name": "Published",
+      "selector": "8022777573e9e8cd",
+      "type": {
+        "defined": "Published"
       }
     }
   ],
   "types": [
+    {
+      "name": "CurrentTickAccountCreated",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "current_tick",
+          "type": "account_id"
+        },
+        {
+          "name": "source",
+          "type": {
+            "defined": "PriceSource"
+          }
+        },
+        {
+          "name": "tick",
+          "type": "i32"
+        }
+      ]
+    },
+    {
+      "name": "CurrentTickState",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "source",
+          "type": {
+            "defined": "PriceSource"
+          }
+        },
+        {
+          "name": "tick",
+          "type": "i32",
+          "docs": "The tick of the source's latest price, `price_to_tick(price)`."
+        },
+        {
+          "name": "last_updated",
+          "type": "u64",
+          "docs": "Clock time of the latest `UpdateCurrentTick`; 0 until the first."
+        },
+        {
+          "name": "pending",
+          "type": {
+            "option": {
+              "defined": "Pending"
+            }
+          },
+          "docs": "The operation waiting for the clock's reply; `None` between transactions."
+        }
+      ]
+    },
     {
       "name": "ObservationEntry",
       "kind": "struct",
       "fields": [
         {
           "name": "timestamp",
-          "type": "u64"
+          "type": "u64",
+          "docs": "Clock time (milliseconds) when this entry was recorded."
         },
         {
           "name": "tick_cumulative",
-          "type": "i64"
+          "type": "i64",
+          "docs": "Running sum of `tick × elapsed_ms` up to this entry.\n\nThe TWAP over `[t1, t2]` is `(tick_cumulative[t2] - tick_cumulative[t1]) / (t2 - t1)`."
+        }
+      ]
+    },
+    {
+      "name": "OraclePrice",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "base_asset",
+          "type": "account_id",
+          "docs": "Canonical identifier for the priced asset."
+        },
+        {
+          "name": "quote_asset",
+          "type": "account_id",
+          "docs": "Canonical identifier for the quote asset that denominates `price`."
+        },
+        {
+          "name": "price",
+          "type": "u128",
+          "docs": "Amount of `quote_asset` one unit of `base_asset` is worth, as `Q64.64`\n(`price / 2^PRICE_FRACTIONAL_BITS`). Zero is rejected on read."
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "docs": "Price observation timestamp. Consumers choose the time unit by matching this with\n`max_age`."
+        },
+        {
+          "name": "source_id",
+          "type": "account_id",
+          "docs": "Identifier of the source that populated this price; for the TWAP, the price source's\naccount."
+        },
+        {
+          "name": "confidence_interval",
+          "type": "u128",
+          "docs": "Source-provided confidence interval, or zero when the source does not provide one."
+        }
+      ]
+    },
+    {
+      "name": "OracleState",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "CurrentTick",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "CurrentTickState"
+              }
+            }
+          ]
+        },
+        {
+          "name": "PriceObservations",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "PriceObservations"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Price",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "OraclePrice"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Pending",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "UpdateCurrentTick",
+          "fields": [
+            {
+              "name": "price",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "CreatePriceAccounts",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            },
+            {
+              "name": "base_asset",
+              "type": "account_id"
+            },
+            {
+              "name": "quote_asset",
+              "type": "account_id"
+            }
+          ]
+        },
+        {
+          "name": "RecordTick",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "PublishPrice",
+          "fields": [
+            {
+              "name": "window_duration",
+              "type": "u64"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "PriceAccountsCreated",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "current_tick",
+          "type": "account_id"
+        },
+        {
+          "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "price_observations",
+          "type": "account_id"
+        },
+        {
+          "name": "oracle_price",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "PriceObservations",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "price_source_id",
+          "type": "account_id",
+          "docs": "The source's account: the pool or the key."
+        },
+        {
+          "name": "current_tick",
+          "type": "account_id",
+          "docs": "The current-tick actor's account: the only sender of `SampleTick` and `ComputePrice`."
+        },
+        {
+          "name": "window_duration",
+          "type": "u64",
+          "docs": "The TWAP window in milliseconds; sets the sampling interval."
+        },
+        {
+          "name": "write_index",
+          "type": "u32",
+          "docs": "Index of the *next* slot to write (wraps at `OBSERVATIONS_CAPACITY`)."
+        },
+        {
+          "name": "total_entries",
+          "type": "u64",
+          "docs": "Total entries ever appended (never resets; tells a partial buffer from a full one)."
+        },
+        {
+          "name": "last_recorded_tick",
+          "type": "i32",
+          "docs": "The tick most recently *recorded*: the clamped value, not the source's raw tick.\n\nStoring the clamped value makes [`MAX_TICK_DELTA`] a bound on the accumulator: the\nrecorded tick walks toward the true price at `MAX_TICK_DELTA` per observation."
+        },
+        {
+          "name": "entries",
+          "type": {
+            "vec": {
+              "defined": "ObservationEntry"
+            }
+          },
+          "docs": "Always exactly `OBSERVATIONS_CAPACITY` entries."
+        }
+      ]
+    },
+    {
+      "name": "PriceSource",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Program",
+          "fields": [
+            {
+              "name": "account_id",
+              "type": "account_id"
+            },
+            {
+              "name": "program_id",
+              "type": "account_id"
+            }
+          ]
+        },
+        {
+          "name": "Key",
+          "fields": [
+            {
+              "name": "0",
+              "type": "account_id"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Published",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "oracle_price",
+          "type": "account_id"
+        },
+        {
+          "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "price",
+          "type": "u128"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "Recorded",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "price_observations",
+          "type": "account_id"
+        },
+        {
+          "name": "window_duration",
+          "type": "u64"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64"
+        },
+        {
+          "name": "tick",
+          "type": "i32",
+          "docs": "The clamped tick, as recorded."
         }
       ]
     }
-  ],
-  "instruction_type": "twap_oracle_core::Instruction"
+  ]
 }
