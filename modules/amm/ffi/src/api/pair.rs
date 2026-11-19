@@ -1,10 +1,9 @@
 use amm_core::{
     compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda, compute_vault_pda,
 };
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::account::AccountId;
+use lee_core::account::{AccountId, Actor};
 use serde_json::{json, Value};
-use twap_oracle_core::compute_current_tick_account_pda;
+use twap_oracle_core::PriceSource;
 
 use super::{config::load_config, PairIdsRequest};
 use crate::account::{account_id_hex, parse_base58_id, parse_program_id, AccountRead};
@@ -19,9 +18,8 @@ pub(super) struct PairIds {
     pub(super) vault_b: AccountId,
     pub(super) lp_definition: AccountId,
     pub(super) lp_lock_holding: AccountId,
+    pub(super) token_program: AccountId,
     pub(super) current_tick: AccountId,
-    pub(super) clock: AccountId,
-    /// The configured TWAP oracle program — the price/observation PDAs are seeded by it.
     pub(super) twap_oracle_program: AccountId,
 }
 
@@ -67,8 +65,8 @@ pub(super) fn derive_pair(
         vault_b: compute_vault_pda(amm_program, pool, token_b),
         lp_definition: compute_liquidity_token_pda(amm_program, pool),
         lp_lock_holding: compute_lp_lock_holding_pda(amm_program, pool),
-        current_tick: compute_current_tick_account_pda(config.twap_oracle_program_id, pool),
-        clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
+        token_program: config.token_program_id,
+        current_tick: PriceSource::program(Actor::new(pool, amm_program)).current_tick_account_id(),
         twap_oracle_program: config.twap_oracle_program_id,
     })
 }
@@ -84,7 +82,6 @@ fn pair_json(pair: PairIds) -> Value {
         "vaultBId": account_id_hex(pair.vault_b),
         "lpDefinitionId": account_id_hex(pair.lp_definition),
         "lpLockHoldingId": account_id_hex(pair.lp_lock_holding),
-        "currentTickId": account_id_hex(pair.current_tick),
-        "clockId": account_id_hex(pair.clock),
+        "oracleAccountId": account_id_hex(pair.current_tick),
     })
 }

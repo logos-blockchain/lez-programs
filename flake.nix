@@ -60,6 +60,7 @@
     # (Also builds from the Logos nix cache, so `ring` isn't compiled locally — it
     # fails under the nix cc-wrapper on Apple Silicon.)
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
+    amm_lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=cc73ebfe0857705cfc1c3b29743fb6c8c6aebd82";
 
   };
 
@@ -169,7 +170,7 @@
         # generate the modules().amm_module wrapper). The wallet module stays a
         # direct dep too, so both the UI and amm_module resolve the one shared
         # wallet instance.
-        flakeInputs = inputs // { amm_module = ammModuleOutputs; };
+        flakeInputs = inputs // { amm_module = ammModuleOutputs; lez_core = inputs.amm_lez_core; };
         # The UI links no external lib of its own — the AMM brain (amm_ffi) is
         # linked by amm_module, which the UI reaches via modules().amm_module.
         externalLibInputs = { };
@@ -296,13 +297,12 @@
       ammModuleOutputs = logos-module-builder.lib.mkLogosModule {
         src = ./modules/amm;
         configFile = ./modules/amm/metadata.json;
-        flakeInputs = inputs;
+        flakeInputs = inputs // { lez_core = inputs.amm_lez_core; };
         externalLibInputs = {
           amm_ffi = { input = self; packages.default = "amm_ffi"; };
         };
         tests = {
           dir = ./modules/amm/tests;
-          mockCLibs = [ "amm_ffi" ];
         };
       };
       ammModulePkgs = ammModuleOutputs.packages or { };

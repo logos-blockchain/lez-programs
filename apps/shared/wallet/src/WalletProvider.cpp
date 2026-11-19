@@ -11,6 +11,8 @@ QString walletFailureCode(WalletFailure failure)
         return QStringLiteral("wallet_unavailable");
     case WalletFailure::OpenFailed:
         return QStringLiteral("open_failed");
+    case WalletFailure::WrongPassword:
+        return QStringLiteral("wrong_password");
     case WalletFailure::CreateFailed:
         return QStringLiteral("create_failed");
     case WalletFailure::SaveFailed:

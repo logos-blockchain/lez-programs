@@ -18,13 +18,14 @@ methods (the module API is generated from the header) are:
 
 **Reads**
 - `resolvePoolAccount(defAHex, defBHex)` — derives the pool PDA and reads/decodes
-  the pool account (reserves in canonical `a`/`b` order). On success
+  the pool account (reserves in the caller's token order). On success
   `{ status: "ok", error: "", poolId, defAHex, defBHex, vaultAId, vaultBId,
-  lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }` — `feeBps` is the
-  instance-wide swap fee read from the config, not a pool field; an absent /
+  lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }`. The module reads
+  `feeBps` from the instance config and `liquiditySupply` from the LP token
+  definition so direct LP burns are reflected in pool shares. An absent /
   uninitialized pool or one with no liquidity is `{ status: "error", error:
   "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
-  `bad_config`).
+  `bad_config`, `lp_supply_unavailable`).
 - `configAccount()` — decodes the AMM instance's config (authority, the
   token/oracle program ids it was initialized with, `swapFeeBps` — the
   instance-wide swap fee — and `protocolFeeBps` — the fraction of that swap fee
@@ -47,7 +48,8 @@ except the two swaps which return a bare tx hash)
 - `createPool` / `addLiquidity` / `removeLiquidity` — the create/add paths take a
   fresh `lpHoldingId` the app supplies (the module never creates wallet accounts).
 - `syncReserves` — permissionless keeper op refreshing stored reserves + TWAP tick.
-- `createPriceObservations` / `createOraclePriceAccount` — seed a pool's TWAP feed.
+- `createPriceObservations` and `createOraclePriceAccount` are aliases. Call one
+  per pool and window to create both the observations and price accounts.
 - `transferOwnership` — admin-only `UpdateConfig` handing over the authority.
 - `withdrawProtocolFees` — admin-only; drains one token's accrued protocol fees
   (the per-`(config, token)` PDA) to a destination holding of that token. Takes
@@ -60,7 +62,8 @@ or a separate account that co-signs the fee; it is never inferred, because the
 signers can all be unfunded. A missing payer, or one that takes part without
 signing, fails with `invalid_fee_payer` (an empty hash for the swaps).
 
-See **Amount / id conventions** below.
+The module header lists all public methods and their request and response fields.
+[AMM module API](src/amm_module_impl.h)
 
 ## How it fits together
 
@@ -153,28 +156,27 @@ Have all of the following in place before staging the modules dir:
    `lm` introspects a built plugin without running it — handy to confirm the API
    (`lm result/lib/amm_module_plugin.dylib` shows methods, signatures, deps).
 
-3. **This module, built** (produces `amm_module_plugin.dylib` + `libamm_ffi.dylib`):
+3. **The AMM and wallet module packages**. From the repository root, build
+   both for the local platform. The `amm_lez_core` input selects the actor-aware
+   `lez_core` 0.6.0 revision from the root lockfile.
 
    ```bash
-   nix build .#amm-module        # from the repo root; output under result/lib/
+   nix build '.#amm-module-lgx' --out-link result-amm
+   nix build --inputs-from . 'amm_lez_core#lgx' --out-link result-wallet
    ```
 
-4. **The wallet module it depends on, built** — `lez_core` is a
-   *separate repo*, not part of this tree. Build the **same rev** this module
-   pins as its `lez_core` flake input (mismatched revs = ABI/ImageID
-   drift), producing `lez_core_plugin.dylib` + `libwallet_ffi.dylib`:
+4. **The Logos package manager**, for staging both packages:
 
    ```bash
-   nix build 'github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2'
-   # output under result/lib/ — copy it aside before building amm-module (both use ./result)
+   nix profile install 'github:logos-co/logos-package-manager#cli'
    ```
 
 5. **The deployed AMM program id** for `AMM_PROGRAM_ID` (and its config id for
    `AMM_CONFIG_ID`) — the header account the AMM was deployed to on your target
-   sequencer. See `apps/amm/README.md` and the testnet setup script.
+   sequencer. Use the IDs from that deployment or its network registry.
 
-6. **A wallet** at `~/.lee/wallet` (`wallet_config.json` with `sequencer_addr`
-   pointing at your sequencer, plus `storage.json` with your accounts), and a
+6. **A wallet** at `~/.lee/wallet` (`wallet_config.json` pointing at your
+   sequencer, plus `storage.json` with your accounts), and a
    **running sequencer** with the AMM initialized and a pool holding liquidity.
    Every op (including `resolvePoolAccount`) reads on-chain through the wallet
    module's `get_account_public`, which needs the wallet **open** (the handle is
@@ -183,34 +185,13 @@ Have all of the following in place before staging the modules dir:
 
 ### Staging the modules directory
 
-**Core modules get no `.lgx` from the builder** (only UI modules do), so stage a
-modules directory by hand — one subdir per module, each with `manifest.json` +
-`variant` + the plugin dylib (and its sibling FFI dylib, since rpath is
-`@loader_path`). The daemon discovers modules from this layout; it does **not**
-verify the manifest hashes at load time.
+Install both packages in a directory for the daemon. Each package includes
+the plugin, libraries and manifest for the selected variant.
 
-```
-modules/
-  amm_module/
-    amm_module_plugin.dylib
-    libamm_ffi.dylib
-    variant                     # one line: darwin-arm64-dev
-    manifest.json
-  lez_core/
-    lez_core_plugin.dylib
-    libwallet_ffi.dylib
-    variant
-    manifest.json
-```
-
-`amm_module/manifest.json`:
-
-```json
-{
-  "name": "amm_module", "type": "core", "version": "0.1.0",
-  "manifestVersion": "0.2.0", "dependencies": ["lez_core"],
-  "main": { "darwin-arm64-dev": "amm_module_plugin.dylib" }
-}
+```bash
+mkdir -p ./runtime/modules
+lgpm --modules-dir "$PWD/runtime/modules" install --file result-wallet/*.lgx
+lgpm --modules-dir "$PWD/runtime/modules" install --file result-amm/*.lgx
 ```
 
 Start the daemon **with the env vars set on it**, then load the dependency
@@ -219,7 +200,7 @@ first, then the module:
 ```bash
 AMM_PROGRAM_ID=<deployed-amm-program-id> \
 AMM_CONFIG_ID=<amm-config-id> \
-logoscore -D -m ./modules --persistence-path ./data
+logoscore -D -m ./runtime/modules --persistence-path ./runtime/data
 
 logoscore load-module lez_core     # dependency first
 logoscore load-module amm_module
@@ -230,12 +211,17 @@ which fails on a null wallet handle (surfacing as an absent pool), so open the
 wallet first — `resolvePoolAccount` then works:
 
 ```bash
-logoscore call lez_core open ~/.lee/wallet/wallet_config.json \
-  ~/.lee/wallet/storage.json ~/.lee/wallet/statistics.json
+wallet_dir="${LEE_WALLET_HOME_DIR:-$HOME/.lee/wallet}"
+read -rs -p 'Wallet password (empty for unencrypted storage): ' wallet_password
+echo
+logoscore call lez_core open "$wallet_dir/wallet_config.json" \
+  "$wallet_dir/storage.json" "$wallet_password" true
+unset wallet_password
 logoscore call amm_module resolvePoolAccount <defA_hex> <defB_hex>
 ```
 
-`swapExactInput` reuses that open wallet but additionally needs it **synced**
+The final `true` tells `lez_core` to connect to the RPC sequencer in the wallet
+config. `swapExactInput` reuses that open wallet but additionally needs it **synced**
 (nothing opens/syncs it for you headlessly). Note the amount/deadline
 conventions above — small amount bare, deadline (and any big amount) quoted:
 
@@ -257,11 +243,9 @@ failed swap returns an empty tx hash; the trace shows the reason.
 
 `get_balance` reads the wallet's *local synced state*, and `swapExactInput`
 builds transactions against it. If you reset/reinitialize the sequencer, the
-wallet's `storage.json` may keep a stale `last_synced_block` ahead of the new
-chain — transactions then reference dead state and the sequencer rejects them
-(reserves don't move). Reset the cursor (`last_synced_block: 0`, keep
-`key_chain`/`labels`) and re-`open` + `sync_to_block <height>` to re-sync from
-genesis. `resolvePoolAccount` is a **live** sequencer read, so the stale cursor
+wallet's synced state may refer to the previous chain. For a fresh test chain,
+use a wallet initialized for that chain and call `sync_to_block <height>`
+before submitting. `resolvePoolAccount` is a **live** sequencer read, so the stale cursor
 doesn't affect it — but it still needs the wallet **open**: the read goes through the
 wallet's sequencer connection (not its private keys), which only exists once the
 wallet is opened.
@@ -276,8 +260,55 @@ plugin).
 
 ## QtRO / byte-string note
 
-`send_generic_public_transaction` takes `instruction` as a byte string
-(`std::vector<uint8_t>`). This module sends the plan's u32 words as their
-little-endian bytes and references the program by its id hex (not the raw ELF).
-It requires the wallet module built with the byte-string `instruction` param —
-the fork pinned as the `lez_core` input.
+`send_generic_public_transaction` takes `message` as a byte string
+(`std::vector<uint8_t>`). This module passes the Borsh bytes directly, together
+with a root mention index and the deployed program ID for each actor mention.
+It requires the actor-aware wallet pinned by the module flake (`lez_core` 0.6.0).
+
+## LEZ 0.4 actor interface
+
+The module uses LEZ `v0.4.0-rc3` and the actor-aware `lez_core` 0.6.0 wallet
+interface. Existing app operations keep their names. Rust transaction plans now
+return `message` (Borsh `amm_core::Message` bytes), `rootMention`, `accountIds`,
+`actorProgramIds`, and `signingRequirements`. The three arrays are aligned;
+account IDs may repeat for different programs on the same account. Each mention
+of a signing account carries the same signing requirement. The wallet
+receives all actor mentions, including token recipients needed for immediate
+public settlement. Creation routes to the config actor, pool operations to the
+pool actor, and administrative operations to the signed authority's AMM actor.
+
+Account reads use `{ nonce, actor_states: [{ program, data }] }`. The wallet returns
+the nonce as a decimal string and actor program IDs and data as hex strings.
+An `AccountRead` also carries `programId` to select the AMM actor for pool
+resolution and fee quotes. Token lookup selects the
+configured token deployment independently, so unrelated actor states on the same
+account do not hide its holdings. Pool snapshots contain the tagged
+`AmmState::Pool` encoding, not an untagged `PoolDefinition`.
+
+Pool resolution and liquidity quotes use the current supply from the LP token
+definition. Direct `amm_resolve_pool` callers must supply this account read as
+`lpDefinition` for an existing pool. A missing or unreadable definition returns
+`lp_supply_unavailable`. Quotes can become stale before execution.
+
+The module plans public wallet transactions.
+
+### TWAP Oracle
+
+Pool creation initializes a current-tick account for the deployed TWAP Oracle.
+The AMM program derives this PDA from the pool ID. The Oracle authenticates the
+pool's AMM actor as its price source. The pair planner returns the current-tick
+account ID as `oracleAccountId`. Swaps, liquidity changes and `syncReserves`
+update the tick from the reserves using the canonical clock.
+
+To open a window, call either setup method with `tokenAId`, `tokenBId`,
+`windowDurationMs` and `feePayerId`. The duration must be at least 2,048 ms.
+One public transaction creates both Oracle PDAs, derived from the current-tick
+account and the window duration. It seeds the observations and the initial price
+from the current tick. A second setup for the same window fails.
+
+A keeper sends `RecordTick` and `PublishPrice` as root messages to the
+current-tick actor for the chosen window. Both read the canonical clock.
+Recording appends at most once per `floor(windowDurationMs / 2048)` ms.
+Publishing updates the price once the window has at least two observations
+and the newest is at most four sampling intervals old. For an older sample,
+record a fresh tick before publishing. [Oracle message and PDA definitions](../../programs/twap_oracle/core/src/lib.rs)

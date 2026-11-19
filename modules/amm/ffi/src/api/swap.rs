@@ -3,9 +3,10 @@
 //! new-position ops: pure functions returning JSON `Value`, PDAs reused from
 //! `pair::derive_pair` so the swap path never re-derives seeds.
 
+use alloy_primitives::U256;
 use amm_core::{
-    compute_pool_pda, compute_protocol_fee_pda, mul_div_ceil, mul_div_floor, price_impact_bps,
-    swap_exact_in_amounts, swap_exact_out_amounts, AmmConfig, PoolDefinition, FEE_BPS_DENOMINATOR,
+    compute_liquidity_token_pda, compute_pool_pda, mul_div_ceil, mul_div_floor, price_impact_bps,
+    swap_exact_in_amounts, swap_exact_out_amounts, FEE_BPS_DENOMINATOR,
 };
 use lee_core::account::AccountId;
 use risc0_binfmt::ProgramBinary;
@@ -24,8 +25,7 @@ use crate::account::{
 /// from `PoolDefinition` to `AmmConfig::swap_fee_bps`, so quotes and pool resolution source the
 /// fee here. Returns `invalid_config` if the read can't be decoded as an `AmmConfig`.
 fn swap_fee_bps_from_config(config: &AccountRead) -> Result<u128, String> {
-    let (_, account) = decode_account(config)?;
-    AmmConfig::try_from(&account.data)
+    crate::account::decode_config(&crate::account::actor_bytes(config)?)
         .map(|cfg| cfg.swap_fee_bps)
         .map_err(|_| String::from("invalid_config"))
 }
@@ -71,10 +71,10 @@ pub(super) fn swap_pair(request: SwapPairRequest) -> Result<Value, String> {
         "status": "ok",
         "configId": account_id_hex(pair.config),
         "poolId": account_id_hex(pair.pool),
+        "lpDefinitionId": account_id_hex(pair.lp_definition),
         "vaultAId": account_id_hex(pair.vault_a),
         "vaultBId": account_id_hex(pair.vault_b),
-        "currentTickId": account_id_hex(pair.current_tick),
-        "clockId": account_id_hex(pair.clock),
+        "oracleAccountId": account_id_hex(pair.current_tick),
     }))
 }
 
@@ -95,21 +95,24 @@ pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String>
         .unwrap_or_default();
     let missing = || json!({ "status": "error", "error": "no_pool", "poolId": pool_id });
 
-    if request.pool.status != "ok" {
-        return Ok(missing());
-    }
-    let Ok((_, pool_account)) = decode_account(&request.pool) else {
-        return Ok(missing());
-    };
-    let Ok(pool) = PoolDefinition::try_from(&pool_account.data) else {
+    let Ok(pool) = crate::account::actor_bytes(&request.pool)
+        .and_then(|bytes| crate::account::decode_pool(&bytes))
+    else {
         return Ok(missing());
     };
     if pool.liquidity_pool_supply == 0 {
         return Ok(missing());
     }
-    // The fee is instance-wide (AmmConfig::swap_fee_bps), not a pool field.
-    let fee_bps = u32::try_from(swap_fee_bps_from_config(&request.config)?)
-        .map_err(|_| String::from("invalid_fee_tier"))?;
+    let config = crate::account::decode_config(&crate::account::actor_bytes(&request.config)?)?;
+    let fee_bps =
+        u32::try_from(config.swap_fee_bps).map_err(|_| String::from("invalid_fee_tier"))?;
+    let Some((_, supply)) = super::context::fungible_definition(
+        request.lp_definition.as_ref(),
+        pool.liquidity_pool_id,
+        config.token_program_id,
+    ) else {
+        return Ok(json!({ "status": "error", "error": "lp_supply_unavailable" }));
+    };
     Ok(json!({
         "status": "ok",
         "error": "",
@@ -121,7 +124,7 @@ pub(super) fn resolve_pool(request: ResolvePoolRequest) -> Result<Value, String>
         "lpDefinitionId": pool.liquidity_pool_id.to_string(),
         "reserveA": pool.reserve_a.to_string(),
         "reserveB": pool.reserve_b.to_string(),
-        "liquiditySupply": pool.liquidity_pool_supply.to_string(),
+        "liquiditySupply": supply.to_string(),
         "feeBps": fee_bps,
     }))
 }
@@ -139,8 +142,10 @@ pub(super) fn pool_id(request: PoolIdRequest) -> Result<Value, String> {
     }
     let (config_id, _) = decode_account(&request.config)?;
     let (token_a, token_b) = canonical_pair(token_in, token_out);
+    let pool = compute_pool_pda(amm_program, config_id, token_a, token_b);
     Ok(json!({
-        "poolId": account_id_hex(compute_pool_pda(amm_program, config_id, token_a, token_b))
+        "poolId": account_id_hex(pool),
+        "lpDefinitionId": account_id_hex(compute_liquidity_token_pda(amm_program, pool)),
     }))
 }
 
@@ -172,7 +177,7 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
     // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
     let pool = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
         .filter(|pool| pool.liquidity_pool_supply != 0)
         .ok_or_else(|| String::from("no_pool"))?;
 
@@ -224,7 +229,8 @@ pub(super) fn swap_exact_in_quote(request: SwapExactInQuoteRequest) -> Result<Va
 /// liquidity, incl. a zero reserve), `same_token_pair`, `invalid_slippage`
 /// (slippage ≥ 100%), `pair_mismatch` (the decoded pool isn't for this pair),
 /// `amount_too_small` (zero requested output — the guest would reject it),
-/// `output_exceeds_liquidity` (asking for at least the whole reserve). Pool
+/// `output_exceeds_liquidity` (asking for at least the whole reserve or requiring
+/// more input than fits in a token amount). Pool
 /// metadata (reserves/fee) comes from `resolve_pool`.
 pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<Value, String> {
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
@@ -249,7 +255,7 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     // Decode the pool; absent / undecodable / empty ⇒ nothing to swap against.
     let pool = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
         .filter(|pool| pool.liquidity_pool_supply != 0)
         .ok_or_else(|| String::from("no_pool"))?;
 
@@ -271,18 +277,34 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
         return Err(String::from("no_pool"));
     }
 
-    // Required input for the desired output (shared with amm_program::swap). None
-    // when the pool can't deliver that much (amount_out >= reserve_out).
+    // Bound the inverse curve before its two rounded divisions narrow to u128.
+    // Even the maximum gross input must buy enough effective input for the swap.
+    let max_effective = mul_div_floor(
+        u128::MAX,
+        FEE_BPS_DENOMINATOR.saturating_sub(swap_fee_bps),
+        FEE_BPS_DENOMINATOR,
+    );
+    let remaining_out = reserve_out.saturating_sub(amount_out);
+    if U256::from(max_effective) * U256::from(remaining_out)
+        < U256::from(reserve_in) * U256::from(amount_out)
+    {
+        return Err(String::from("output_exceeds_liquidity"));
+    }
+
     let Some((_, required_in)) =
         swap_exact_out_amounts(amount_out, reserve_in, reserve_out, swap_fee_bps)
     else {
         return Err(String::from("output_exceeds_liquidity"));
     };
 
-    // Slippage ceiling: the most the user will pay, rounded up so rounding never
-    // trips the on-chain max-in check.
-    let slippage_ceiling = FEE_BPS_DENOMINATOR + u128::from(request.slippage_bps);
-    let max_in = mul_div_ceil(required_in, slippage_ceiling, FEE_BPS_DENOMINATOR);
+    // The headroom fits u128 because slippage is below 100%. Cap the combined
+    // ceiling at the largest max_amount_in the guest can receive.
+    let headroom = mul_div_ceil(
+        required_in,
+        u128::from(request.slippage_bps),
+        FEE_BPS_DENOMINATOR,
+    );
+    let max_in = required_in.saturating_add(headroom);
 
     // Price impact (display): how far the required input rises above the naive spot
     // cost (reserve_in * amount_out / reserve_out), in bps (fee + curve combined).
@@ -290,12 +312,9 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     let price_impact_bps = if spot_in == 0 {
         0
     } else {
-        u32::try_from(mul_div_floor(
-            required_in.saturating_sub(spot_in),
-            FEE_BPS_DENOMINATOR,
-            spot_in,
-        ))
-        .unwrap_or(u32::MAX)
+        let premium = U256::from(required_in.saturating_sub(spot_in));
+        let impact = premium * U256::from(FEE_BPS_DENOMINATOR) / U256::from(spot_in);
+        u32::try_from(impact).unwrap_or(u32::MAX)
     };
 
     Ok(json!({
@@ -305,17 +324,9 @@ pub(super) fn swap_exact_out_quote(request: SwapExactOutQuoteRequest) -> Result<
     }))
 }
 
-/// Builds the `SwapExactInput` submission for a pair: the fixed 8-account IDL
-/// order (vaults from the pool's stored ids, only the user's input holding
-/// signs) and the borsh-encoded instruction bytes (the encoding the guest
-/// decodes). On success returns exactly the tx-submission fields
-/// (`programId`, `accountIds`, `signingRequirements`, `instruction`; the
-/// deadline is already baked into the instruction bytes). Every recoverable
-/// domain failure fails CLOSED as `Err` (surfaced through the FFI envelope as
-/// `{ ok: false, error }`): `same_token_pair`, `config_unavailable`, and a
-/// missing/undecodable pool as `Err("no_pool")` — so the caller stops on
-/// `planResult.ok` rather than submit a tx with empty account/instruction
-/// vectors.
+/// Builds a `SwapExactInput` message for the pool's AMM actor, using the stored
+/// vault IDs. The input holding authorizes its token actor. The plan mentions
+/// the output holding for settlement and both protocol-fee holdings.
 pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
@@ -328,14 +339,10 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
         return Err(String::from("config_unavailable"));
     };
 
-    // Take the vaults from the pool's STORED ids, in its `def_a`/`def_b` (creation)
-    // order — the guest asserts the provided vaults against `pool.vault_a_id` /
-    // `vault_b_id`, which needn't match `derive_pair`'s canonical order for a
-    // non-canonically created pool. (`pair.pool`/`current_tick`/`clock` are
-    // order-independent, so they still come from `derive_pair`.)
+    // A pool created with reversed tokens stores its vaults in that same order.
     let Some(pool) = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
     else {
         return Err(String::from("no_pool"));
     };
@@ -349,45 +356,22 @@ pub(super) fn swap_exact_in_plan(request: SwapExactInPlanRequest) -> Result<Valu
     let min_amount_out = parse_u128(&request.min_out, "minOut")?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::SwapExactInput {
+    let message = amm_core::Message::SwapExactInput {
+        user_input_holding,
+        user_output_holding,
         swap_amount_in,
         min_amount_out,
         deadline,
-    })
-    .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // The protocol fee is taken in the input token, so its holding is the input token's
-    // instance-wide protocol PDA under this config namespace (created lazily on first fee).
-    let protocol_fee_holding = compute_protocol_fee_pda(amm_program, pair.config, token_in);
-
-    // Fixed IDL account order for SwapExactInput; only user_input_holding signs.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        user_input_holding,
-        user_output_holding,
-        pair.current_tick,
-        pair.clock,
-        protocol_fee_holding,
-    ];
-    let signing_requirements = [false, false, false, false, true, false, false, false, false];
-
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    };
+    let mut pair = pair;
+    pair.vault_a = pool.vault_a_id;
+    pair.vault_b = pool.vault_b_id;
+    pair.lp_definition = pool.liquidity_pool_id;
+    super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
-/// Builds the `SwapExactOutput` submission for a pair: the same fixed 8-account
-/// IDL order and error contract as `swap_exact_in_plan` — every recoverable
-/// failure fails closed as `Err` (`same_token_pair`, `config_unavailable`, and
-/// `Err("no_pool")` for a missing/undecodable pool). Only the encoded
-/// instruction differs, carrying `exact_amount_out` / `max_amount_in` in place
-/// of the exact-in bounds.
+/// Builds a `SwapExactOutput` message with the same actor mentions as
+/// `swap_exact_in_plan`. The message specifies exact output and maximum input.
 pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Value, String> {
     let amm_program = parse_program_id(&request.amm_program_id)?;
     let token_in = account_id_from_hex(&request.token_in_id, "token in id")?;
@@ -400,14 +384,10 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
         return Err(String::from("config_unavailable"));
     };
 
-    // Take the vaults from the pool's STORED ids, in its `def_a`/`def_b` (creation)
-    // order — the guest asserts the provided vaults against `pool.vault_a_id` /
-    // `vault_b_id`, which needn't match `derive_pair`'s canonical order for a
-    // non-canonically created pool. (`pair.pool`/`current_tick`/`clock` are
-    // order-independent, so they still come from `derive_pair`.)
+    // A pool created with reversed tokens stores its vaults in that same order.
     let Some(pool) = hex::decode(&request.pool_data)
         .ok()
-        .and_then(|bytes| borsh::from_slice::<PoolDefinition>(&bytes).ok())
+        .and_then(|bytes| crate::account::decode_pool(&bytes).ok())
     else {
         return Err(String::from("no_pool"));
     };
@@ -421,37 +401,18 @@ pub(super) fn swap_exact_out_plan(request: SwapExactOutPlanRequest) -> Result<Va
     let max_amount_in = parse_u128(&request.max_in, "maxIn")?;
     let deadline = parse_u64(&request.deadline_ms, "deadlineMs")?;
 
-    let instruction = borsh::to_vec(&amm_core::Instruction::SwapExactOutput {
+    let message = amm_core::Message::SwapExactOutput {
+        user_input_holding,
+        user_output_holding,
         exact_amount_out,
         max_amount_in,
         deadline,
-    })
-    .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // The protocol fee is taken in the input token, so its holding is the input token's
-    // instance-wide protocol PDA under this config namespace (created lazily on first fee).
-    let protocol_fee_holding = compute_protocol_fee_pda(amm_program, pair.config, token_in);
-
-    // Fixed IDL account order for SwapExactOutput; only user_input_holding signs.
-    let account_ids = [
-        pair.config,
-        pair.pool,
-        pool.vault_a_id,
-        pool.vault_b_id,
-        user_input_holding,
-        user_output_holding,
-        pair.current_tick,
-        pair.clock,
-        protocol_fee_holding,
-    ];
-    let signing_requirements = [false, false, false, false, true, false, false, false, false];
-
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    };
+    let mut pair = pair;
+    pair.vault_a = pool.vault_a_id;
+    pair.vault_b = pool.vault_b_id;
+    pair.lp_definition = pool.liquidity_pool_id;
+    super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
 /// Computes a binary's RISC Zero ImageID. `elf` is the hex-encoded `.bin` (a
@@ -471,13 +432,15 @@ pub(super) fn program_id(request: ProgramIdRequest) -> Result<Value, String> {
         .compute_image_id()
         .map_err(|error| format!("{error:?}"))?
         .into();
-    Ok(json!({ "imageId": account_id_hex(AccountId::from(image_id)) }))
+    Ok(
+        json!({ "imageId": hex::encode(image_id.into_iter().flat_map(u32::to_le_bytes).collect::<Vec<_>>()) }),
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use amm_core::PoolDefinition;
-    use lee_core::account::{Account, AccountId, Data};
+    use amm_core::{AmmConfig, PoolDefinition};
+    use lee_core::account::{Account, AccountId, ActorState};
 
     use super::*;
     use crate::account::{account_read, AccountRead, WalletAccount};
@@ -486,29 +449,35 @@ mod tests {
     /// instance-wide fee from here now that it is no longer a pool field. 30 bps matches the fee
     /// the pricing assertions were computed against.
     fn valid_config() -> AccountRead {
-        let account = Account {
-            program_owner: parse_program_id(&"00".repeat(32)).unwrap(),
-            data: Data::from(&AmmConfig {
-                token_program_id: parse_program_id(&"01".repeat(32)).unwrap(),
-                twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
-                authority: AccountId::new([0x09; 32]),
-                swap_fee_bps: 30,
-                protocol_fee_bps: 0,
-            }),
-            ..Account::default()
-        };
+        let account = Account::default().with_actor_state(
+            parse_program_id(&"00".repeat(32)).unwrap(),
+            ActorState::from(
+                borsh::to_vec(&amm_core::AmmState::Config(AmmConfig {
+                    token_program_id: parse_program_id(&"01".repeat(32)).unwrap(),
+                    twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
+                    authority: AccountId::new([0x09; 32]),
+                    swap_fee_bps: 30,
+                    protocol_fee_bps: 0,
+                }))
+                .unwrap(),
+            ),
+        );
         account_read(AccountId::new([0xEE; 32]), &account)
     }
 
     fn pool_read(pool: &PoolDefinition) -> AccountRead {
         AccountRead {
+            program_id: "00".repeat(32),
             id: "11".repeat(32),
             status: String::from("ok"),
             account: Some(WalletAccount {
-                program_owner: "00".repeat(32),
-                balance: "0".repeat(32),
-                nonce: "0".repeat(32),
-                data: hex::encode(borsh::to_vec(pool).unwrap()),
+                nonce: "0".into(),
+                actor_states: vec![crate::account::WalletActorState {
+                    program: "00".repeat(32),
+                    data: hex::encode(
+                        borsh::to_vec(&amm_core::AmmState::Pool(pool.clone())).unwrap(),
+                    ),
+                }],
             }),
         }
     }
@@ -521,21 +490,37 @@ mod tests {
         let vault_b = AccountId::new([0xC2; 32]);
         let lp = AccountId::new([0xD0; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             vault_a_id: vault_a,
             vault_b_id: vault_b,
             liquidity_pool_id: lp,
-            liquidity_pool_supply: 1_000,
+            liquidity_pool_supply: 10_000,
             reserve_a: 111,
             reserve_b: 222,
         };
 
-        let value = resolve_pool(ResolvePoolRequest {
+        // Direct burns update the LP definition before the next pool operation reconciles it.
+        let definition = Account::default().with_actor_state(
+            AccountId::new([1; 32]),
+            ActorState::from(
+                borsh::to_vec(&token_core::TokenState::Definition(
+                    token_core::TokenDefinition {
+                        name: "LP".into(),
+                        total_supply: 9_000,
+                        authority: Some(AccountId::new([0x11; 32])),
+                    },
+                ))
+                .unwrap(),
+            ),
+        );
+        let mut request = ResolvePoolRequest {
             config: valid_config(),
             pool: pool_read(&pool),
-        })
-        .unwrap();
+            lp_definition: Some(account_read(lp, &definition)),
+        };
+        let value = resolve_pool(request.clone()).unwrap();
 
         assert_eq!(value["status"], "ok");
         assert_eq!(value["poolId"], AccountId::new([0x11; 32]).to_string());
@@ -549,19 +534,31 @@ mod tests {
         assert_eq!(value["lpDefinitionId"], lp.to_string());
         assert_eq!(value["reserveA"], "111");
         assert_eq!(value["reserveB"], "222");
-        assert_eq!(value["liquiditySupply"], "1000");
+        assert_eq!(value["liquiditySupply"], "9000");
         assert_eq!(value["feeBps"], 30);
+
+        request.lp_definition = Some(account_read(def_a, &definition));
+        assert_eq!(
+            resolve_pool(request.clone()).unwrap()["error"],
+            "lp_supply_unavailable"
+        );
+        request.lp_definition = None;
+        assert_eq!(
+            resolve_pool(request).unwrap()["error"],
+            "lp_supply_unavailable"
+        );
     }
 
     #[test]
     fn resolve_pool_absent_is_a_no_pool_error_carrying_the_pool_id() {
         let pool = PoolDefinition {
             liquidity_pool_supply: 0,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         let value = resolve_pool(ResolvePoolRequest {
             config: valid_config(),
             pool: pool_read(&pool),
+            lp_definition: None,
         })
         .unwrap();
         assert_eq!(
@@ -580,6 +577,7 @@ mod tests {
         let same = "aa".repeat(32);
         // Not reached before the same-token check, so its contents don't matter.
         let dummy_config = AccountRead {
+            program_id: "00".repeat(32),
             id: String::new(),
             status: String::from("read_failed"),
             account: None,
@@ -624,6 +622,7 @@ mod tests {
             token_in_id: "aa".repeat(32),
             token_out_id: "bb".repeat(32),
             config: AccountRead {
+                program_id: "00".repeat(32),
                 id: String::new(),
                 status: String::from("read_failed"),
                 account: None,
@@ -644,6 +643,7 @@ mod tests {
         let program = "00".repeat(32);
         let same = "aa".repeat(32);
         let dummy_config = AccountRead {
+            program_id: "00".repeat(32),
             id: String::new(),
             status: String::from("read_failed"),
             account: None,
@@ -666,7 +666,7 @@ mod tests {
     }
 
     fn pool_data_hex(pool: &PoolDefinition) -> String {
-        hex::encode(borsh::to_vec(pool).unwrap())
+        hex::encode(borsh::to_vec(&amm_core::AmmState::Pool(pool.clone())).unwrap())
     }
 
     #[test]
@@ -674,12 +674,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
 
         // Sell A → receive B: reserveIn = reserve_a, reserveOut = reserve_b.
@@ -738,10 +739,11 @@ mod tests {
         );
         // Zero-supply pool.
         let empty_pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 0,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         assert_eq!(
             swap_exact_in_quote(req(pool_data_hex(&empty_pool))),
@@ -754,12 +756,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         let req = |amount: &str| SwapExactInQuoteRequest {
             config: valid_config(),
@@ -792,12 +795,13 @@ mod tests {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1,
             reserve_a: 1,
             reserve_b: u128::MAX,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         let quote = swap_exact_in_quote(SwapExactInQuoteRequest {
             config: valid_config(),
@@ -816,16 +820,67 @@ mod tests {
     }
 
     #[test]
+    fn swap_exact_out_quote_handles_u128_boundaries() {
+        let def_a = AccountId::new([0xAA; 32]);
+        let def_b = AccountId::new([0xBB; 32]);
+        let quote = |reserve_a, reserve_b, amount_out: u128, slippage_bps| {
+            let pool = PoolDefinition {
+                definition_token_a_id: def_a,
+                definition_token_b_id: def_b,
+                reserve_a,
+                reserve_b,
+                liquidity_pool_supply: amm_core::isqrt_product(reserve_a, reserve_b),
+                ..crate::api::tests::empty_pool()
+            };
+            swap_exact_out_quote(SwapExactOutQuoteRequest {
+                config: valid_config(),
+                token_in_id: account_id_hex(def_a),
+                token_out_id: account_id_hex(def_b),
+                amount_out: amount_out.to_string(),
+                slippage_bps,
+                pool_data: pool_data_hex(&pool),
+            })
+        };
+
+        // Required input and post-swap reserves fit, but adding 3% headroom exceeds u128.
+        let reserve_in = 1_u128 << 120;
+        let reserve_out = 251_u128 << 64;
+        let amount_out = 250_u128 << 64;
+        let (_, required_in) =
+            swap_exact_out_amounts(amount_out, reserve_in, reserve_out, 30).unwrap();
+        assert!(reserve_in.checked_add(required_in).is_some());
+        let capped = quote(reserve_in, reserve_out, amount_out, 300).unwrap();
+        assert_eq!(capped["requiredIn"], required_in.to_string());
+        assert_eq!(capped["maxIn"], u128::MAX.to_string());
+
+        // A spot input of one makes the display-only impact exceed even u128.
+        let reserve_out = 1_u128 << 126;
+        let high_impact = quote(2, reserve_out, reserve_out - 1, 0).unwrap();
+        assert_eq!(high_impact["priceImpactBps"], u32::MAX);
+        assert_eq!(high_impact["maxIn"], high_impact["requiredIn"]);
+
+        // With four input units the effective input fits but the gross does not.
+        // With eight input units even the effective input exceeds u128.
+        for reserve_in in [4, 8] {
+            assert_eq!(
+                quote(reserve_in, reserve_out, reserve_out - 1, 0),
+                Err(String::from("output_exceeds_liquidity"))
+            );
+        }
+    }
+
+    #[test]
     fn swap_exact_out_quote_requires_input_and_bounds_it() {
         let def_a = AccountId::new([0xAA; 32]);
         let def_b = AccountId::new([0xBB; 32]);
         let pool = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1_000_000,
             reserve_a: 1_000_000,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         let req = |amount_out: &str| SwapExactOutQuoteRequest {
             config: valid_config(),
@@ -866,12 +921,13 @@ mod tests {
         // A zero reserve on either side is no liquidity, not a free quote — it
         // passes the non-zero-supply decode filter but must still surface no_pool.
         let empty_side = PoolDefinition {
+            config_id: AccountId::new([0; 32]),
             definition_token_a_id: def_a,
             definition_token_b_id: def_b,
             liquidity_pool_supply: 1,
             reserve_a: 0,
             reserve_b: 2_000_000,
-            ..Default::default()
+            ..crate::api::tests::empty_pool()
         };
         assert_eq!(
             swap_exact_out_quote(SwapExactOutQuoteRequest {
@@ -890,13 +946,15 @@ mod tests {
     /// `pool_id` only decodes the account for its id, so the config bytes/owner are irrelevant.
     fn config_read(config_id: AccountId) -> AccountRead {
         AccountRead {
+            program_id: "00".repeat(32),
             id: account_id_hex(config_id),
             status: String::from("ok"),
             account: Some(WalletAccount {
-                program_owner: "00".repeat(32),
-                balance: "0".repeat(32),
-                nonce: "0".repeat(32),
-                data: String::new(),
+                nonce: "0".into(),
+                actor_states: vec![crate::account::WalletActorState {
+                    program: "00".repeat(32),
+                    data: String::new(),
+                }],
             }),
         }
     }

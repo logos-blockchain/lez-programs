@@ -1,8 +1,8 @@
-use amm_core::{compute_protocol_fee_pda, Instruction};
-use serde_json::{json, Value};
+use amm_core::Message;
+use serde_json::Value;
 
 use super::{config::load_config, TransferOwnershipPlanRequest, WithdrawProtocolFeesPlanRequest};
-use crate::account::{account_id_from_hex, account_id_hex, parse_program_id};
+use crate::account::{account_id_from_hex, parse_program_id};
 
 /// Builds the `UpdateConfig` submission that transfers the AMM's admin authority. The current
 /// admin — the config's stored `authority`, decoded from `config` — is the sole signer;
@@ -17,21 +17,12 @@ pub(super) fn transfer_ownership_plan(
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = borsh::to_vec(&Instruction::UpdateConfig { new_authority })
-        .map_err(|error| format!("instruction serialization failed: {error}"))?;
+    let message = Message::UpdateConfig {
+        config: config_id,
+        new_authority,
+    };
 
-    // Fixed IDL account order for UpdateConfig: the config account (mut, updated in place, not a
-    // signer) and the current admin authority (signs). `new_authority` is instruction data, not
-    // an account.
-    let account_ids = [config_id, config.authority];
-    let signing_requirements = [false, true];
-
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    super::plan::admin_plan(&request.amm_program_id, config_id, &config, message)
 }
 
 /// Builds the `WithdrawProtocolFees` submission that moves `amount` of accrued protocol fees for
@@ -54,24 +45,12 @@ pub(super) fn withdraw_protocol_fees_plan(
         return Err(String::from("config_unavailable"));
     };
 
-    let instruction = borsh::to_vec(&Instruction::WithdrawProtocolFees { amount })
-        .map_err(|error| format!("instruction serialization failed: {error}"))?;
-
-    // Fixed IDL account order for WithdrawProtocolFees: config, the protocol-fee holding PDA (mut),
-    // the destination holding (mut), and the admin authority (signs). `amount` is instruction data.
-    let protocol_fee_holding = compute_protocol_fee_pda(amm_program, config_id, token_definition);
-    let account_ids = [
-        config_id,
-        protocol_fee_holding,
+    let message = Message::WithdrawProtocolFees {
+        config: config_id,
+        token: token_definition,
         destination,
-        config.authority,
-    ];
-    let signing_requirements = [false, false, false, true];
+        amount,
+    };
 
-    Ok(json!({
-        "programId": request.amm_program_id,
-        "accountIds": account_ids.into_iter().map(account_id_hex).collect::<Vec<_>>(),
-        "signingRequirements": signing_requirements,
-        "instruction": instruction,
-    }))
+    super::plan::admin_plan(&request.amm_program_id, config_id, &config, message)
 }

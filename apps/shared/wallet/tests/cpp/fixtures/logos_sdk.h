@@ -62,15 +62,20 @@ public:
     QString openedConfig;
     QString openedStorage;
     QString openedStatistics;
+    QString openedPassword;
+    bool openedForceRpc = false;
     QString createdConfig;
     QString createdStorage;
     QString createdStatistics;
     QString createdPassword;
+    bool createdForceRpc = false;
     QStringList submittedAccountIds;
     QList<bool> submittedSigningRequirements;
     QByteArray submittedInstruction;
     QString submittedProgramId;
     QString submittedPayerAccountId;
+    quint64 submittedRootMention = 0;
+    QStringList submittedActorPrograms;
 
     QString version()
     {
@@ -105,6 +110,19 @@ public:
         deliver(QStringLiteral("open"), std::move(callback), open(config, storage, statistics));
     }
 
+    int open(const QString& config, const QString& storage, const QString& password, bool forceRpc)
+    {
+        openedPassword = password;
+        openedForceRpc = forceRpc;
+        return open(config, storage, QString());
+    }
+
+    void openAsync(const QString& config, const QString& storage, const QString& password,
+                   bool forceRpc, std::function<void(int)> callback)
+    {
+        deliver(QStringLiteral("open"), std::move(callback), open(config, storage, password, forceRpc));
+    }
+
     QString create_new(const QString& config,
                        const QString& storage,
                        const QString& statistics,
@@ -130,6 +148,13 @@ public:
             deliver(QStringLiteral("create_new"), std::move(callback),
                     create_new(config, storage, statistics, password));
         });
+    }
+
+    void create_newAsync(const QString& config, const QString& storage, const QString& password,
+                         bool forceRpc, std::function<void(QString)> callback, Timeout timeout = Timeout())
+    {
+        createdForceRpc = forceRpc;
+        create_newAsync(config, storage, QString(), password, std::move(callback), timeout);
     }
 
     int save()
@@ -237,6 +262,16 @@ public:
         submittedProgramId = programId;
         submittedPayerAccountId = payerAccountId;
         return transactionResponse;
+    }
+
+    QString send_generic_public_transaction(const QStringList& accountIds, quint64 root,
+                                            const QList<bool>& signingRequirements,
+                                            const QByteArray& message, const QString& payer,
+                                            const QStringList& actorPrograms)
+    {
+        submittedRootMention = root;
+        submittedActorPrograms = actorPrograms;
+        return send_generic_public_transaction(accountIds, signingRequirements, message, {}, payer);
     }
 
 private:

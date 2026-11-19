@@ -104,10 +104,11 @@ void WalletController::openOnStartup()
 
     const QString config = defaultConfigPath();
     const QString storage = defaultStoragePath();
-    beginOpen(config, storage);
+    beginOpen(config, storage, {}, true);
 }
 
-bool WalletController::beginOpen(const QString& config, const QString& storage)
+bool WalletController::beginOpen(const QString& config, const QString& storage,
+                                 const QString& password, bool onStartup)
 {
     if (m_state.isWalletOpen
         || m_state.syncStatus == QStringLiteral("opening")
@@ -137,16 +138,17 @@ bool WalletController::beginOpen(const QString& config, const QString& storage)
 
     const QString statistics = QFileInfo(config).absolutePath()
         + QStringLiteral("/statistics.json");
-    m_wallet.connectAsync({ config, storage, statistics },
-        [this, generation, config, storage](WalletSession session) {
+    m_wallet.connectAsync({ config, storage, statistics, password },
+        [this, generation, config, storage, onStartup](WalletSession session) {
             if (generation != m_operationGeneration)
                 return;
-            if (session.failure == WalletFailure::WalletMissing) {
+            const bool locked = onStartup && session.failure == WalletFailure::WrongPassword;
+            if (session.failure == WalletFailure::WalletMissing || locked) {
                 m_state.isWalletOpen = false;
                 m_state.initialSync = false;
                 m_state.syncStatus = QStringLiteral("closed");
                 m_state.syncError.clear();
-                m_state.walletExists = false;
+                m_state.walletExists = locked;
                 emit stateChanged();
                 return;
             }
@@ -245,14 +247,14 @@ QString WalletController::createWallet(const QString& configPath,
     return creation.mnemonic;
 }
 
-bool WalletController::open()
+bool WalletController::open(const QString& password)
 {
     const QString config = m_state.configPath.isEmpty()
         ? defaultConfigPath() : m_state.configPath;
     const QString storage = m_state.storagePath.isEmpty()
         ? defaultStoragePath() : m_state.storagePath;
     QSettings(SETTINGS_ORG, m_settingsApplication).setValue(DISCONNECTED_KEY, false);
-    return beginOpen(config, storage);
+    return beginOpen(config, storage, password);
 }
 
 void WalletController::cancelSync()

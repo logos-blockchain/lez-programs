@@ -57,10 +57,10 @@ pub(super) fn load_config(
     read: &AccountRead,
 ) -> Result<(AccountId, AmmConfig), String> {
     let (id, account) = decode_account(read)?;
-    if account.program_owner != amm_program || account == Account::default() {
+    if account == Account::default() {
         return Err(String::from("AMM config is unavailable"));
     }
-    let config =
-        AmmConfig::try_from(&account.data).map_err(|_| String::from("AMM config is invalid"))?;
+    let config = crate::account::decode_config(account.data.actor_state(amm_program).as_ref())
+        .map_err(|_| String::from("AMM config is invalid"))?;
     Ok((id, config))
 }

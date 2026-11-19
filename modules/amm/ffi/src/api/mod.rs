@@ -8,6 +8,7 @@ mod holding;
 mod liquidity;
 mod oracle;
 mod pair;
+mod plan;
 mod quote;
 mod request;
 mod swap;
@@ -29,7 +30,7 @@ pub use request::{
 };
 use serde_json::Value;
 
-pub use crate::account::{AccountRead, WalletAccount};
+pub use crate::account::{AccountRead, WalletAccount, WalletActorState};
 
 /// JSON response shared by direct Rust callers and transport adapters.
 pub type AmmResponse = Value;
@@ -160,12 +161,14 @@ pub fn withdraw_protocol_fees_plan(request: WithdrawProtocolFeesPlanRequest) -> 
     admin::withdraw_protocol_fees_plan(request).map_err(Into::into)
 }
 
-/// Builds the `CreatePriceObservations` submission — seeds a pool's TWAP observations feed.
+/// Builds a `CreatePriceObservations` request to open the pool's observations and price actors for
+/// a window.
 pub fn create_price_observations_plan(request: CreatePriceObservationsPlanRequest) -> AmmResult {
     oracle::create_price_observations_plan(request).map_err(Into::into)
 }
 
-/// Builds the `CreateOraclePriceAccount` submission — creates a pool's TWAP oracle price account.
+/// Builds a `CreateOraclePriceAccount` request to open the pool's observations and price actors for
+/// a window.
 pub fn create_oracle_price_account_plan(request: CreateOraclePriceAccountPlanRequest) -> AmmResult {
     oracle::create_oracle_price_account_plan(request).map_err(Into::into)
 }
