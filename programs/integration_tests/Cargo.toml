@@ -17,6 +17,10 @@ path = "tests/token.rs"
 name = "nft"
 path = "tests/nft.rs"
 
+[[test]]
+name = "twap_oracle"
+path = "tests/twap_oracle.rs"
+
 [dependencies]
 borsh = { workspace = true }
 lee = { workspace = true }
@@ -25,3 +29,9 @@ token_core = { workspace = true }
 token-methods = { path = "../token/methods" }
 nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
+twap_oracle_core = { workspace = true }
+twap-oracle-methods = { path = "../twap_oracle/methods" }
+integration-test-methods = { path = "methods" }
+clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
+# LEZ's system programs, prebuilt (`artifacts`): the tests deploy its clock.
+programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["artifacts"] }

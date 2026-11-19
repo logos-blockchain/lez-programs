@@ -10,6 +10,7 @@ members = [
     "programs/twap_oracle",
     "programs/twap_oracle/methods",
     "programs/integration_tests",
+    "programs/integration_tests/methods",
     "tools/risc0-packager",
     "tools/idl-gen",
     # Not yet ported to LEZ's actor model.
@@ -32,6 +33,7 @@ members = [
     # "programs/token_mint_authority/methods",
 ]
 exclude = [
+    "programs/integration_tests/methods/guest",
     "programs/token/methods/guest",
     "programs/nft/methods/guest",
     "programs/amm/methods/guest",
