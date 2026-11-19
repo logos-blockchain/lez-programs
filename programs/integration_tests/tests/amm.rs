@@ -1024,6 +1024,9 @@ fn creation_checks_token_id_arguments_and_the_initial_lp_signature() {
 fn module_plans_execute_with_only_their_declared_actors_and_signers() {
     use amm_ffi::api;
     use serde_json::{json, Value};
+    use twap_oracle_core::{
+        compute_oracle_price_account_pda, compute_price_observations_pda, OracleState, PriceSource,
+    };
     let mut chain = Chain::empty(2_000);
     let hex_id = |id: AccountId| hex::encode(id.value());
     let config = chain.state.get_account_by_id(chain.config);
@@ -1042,7 +1045,7 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
         "amountA": DEPOSIT_A.to_string(), "amountB": DEPOSIT_B.to_string(),
         "deadlineMs": u64::MAX.to_string(),
     });
-    let execute = |chain: &mut Chain, plan: Value| {
+    let submit_plan = |chain: &mut Chain, plan: Value| {
         let ids: Vec<String> = serde_json::from_value(plan["accountIds"].clone()).expect("ids");
         let programs: Vec<String> =
             serde_json::from_value(plan["actorProgramIds"].clone()).expect("programs");
@@ -1076,7 +1079,9 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
             &signers,
             &message,
         )
-        .expect("module plan settles");
+    };
+    let execute = |chain: &mut Chain, plan| {
+        submit_plan(chain, plan).expect("module plan settles");
     };
     execute(
         &mut chain,
@@ -1126,21 +1131,35 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
         api::sync_reserves_plan(serde_json::from_value(request.clone()).expect("sync request"))
             .expect("sync plan"),
     );
-    request["windowDurationMs"] = json!(3600000);
-    execute(
-        &mut chain,
-        api::create_price_observations_plan(
-            serde_json::from_value(request.clone()).expect("oracle request"),
-        )
-        .expect("oracle plan"),
-    );
-    execute(
-        &mut chain,
-        api::create_oracle_price_account_plan(
-            serde_json::from_value(request.clone()).expect("oracle request"),
-        )
-        .expect("oracle plan"),
-    );
+    // Each AMM setup entrypoint creates both Oracle actors for a fresh window.
+    let tick = PriceSource::program(Actor::new(chain.pool, chain.amm)).current_tick_account_id();
+    for window in [3_600_000, 7_200_000] {
+        request["windowDurationMs"] = json!(window);
+        let plan = if window == 3_600_000 {
+            api::create_price_observations_plan(serde_json::from_value(request.clone()).unwrap())
+        } else {
+            api::create_oracle_price_account_plan(serde_json::from_value(request.clone()).unwrap())
+        }
+        .expect("oracle plan");
+        execute(&mut chain, plan.clone());
+        let observations = compute_price_observations_pda(chain.oracle, tick, window);
+        let price = compute_oracle_price_account_pda(chain.oracle, tick, window);
+        let accounts = |chain: &Chain| {
+            [chain.pool, tick, observations, price].map(|id| chain.state.get_account_by_id(id))
+        };
+        let before = accounts(&chain);
+        assert!(
+            matches!(OracleState::decode(before[2].data.actor_state(chain.oracle)), Some(OracleState::PriceObservations(state)) if state.window_duration == window)
+        );
+        assert!(
+            matches!(OracleState::decode(before[3].data.actor_state(chain.oracle)), Some(OracleState::Price(state)) if state.source_id == chain.pool && state.price > 0)
+        );
+        assert_refused(
+            &submit_plan(&mut chain, plan),
+            "observations actor already exists",
+        );
+        assert_eq!(accounts(&chain), before);
+    }
     // The authority signs as the AMM actor and receives the fee at its token actor.
     let authority = account(&key(1));
     chain

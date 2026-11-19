@@ -161,12 +161,14 @@ pub fn withdraw_protocol_fees_plan(request: WithdrawProtocolFeesPlanRequest) -> 
     admin::withdraw_protocol_fees_plan(request).map_err(Into::into)
 }
 
-/// Builds a `CreatePriceObservations` request for the pool and its Oracle actor.
+/// Builds a `CreatePriceObservations` request to open the pool's observations and price actors for
+/// a window.
 pub fn create_price_observations_plan(request: CreatePriceObservationsPlanRequest) -> AmmResult {
     oracle::create_price_observations_plan(request).map_err(Into::into)
 }
 
-/// Builds a `CreateOraclePriceAccount` request for the pool and its Oracle actor.
+/// Builds a `CreateOraclePriceAccount` request to open the pool's observations and price actors for
+/// a window.
 pub fn create_oracle_price_account_plan(request: CreateOraclePriceAccountPlanRequest) -> AmmResult {
     oracle::create_oracle_price_account_plan(request).map_err(Into::into)
 }

@@ -6,7 +6,7 @@ use super::{
 use crate::account::{account_id_from_hex, parse_program_id};
 
 fn checked_window(window: u64) -> Result<u64, String> {
-    if window < amm_core::oracle::MIN_WINDOW_DURATION {
+    if window < u64::from(twap_oracle_core::OBSERVATIONS_CAPACITY) {
         return Err("invalid_window".into());
     }
     Ok(window)
@@ -29,7 +29,7 @@ fn resolve(
         .map_err(|_| String::from("config_unavailable"))
 }
 
-/// Builds the AMM message that forwards an observations request to the pool's Oracle actor.
+/// Builds a request to open the observations and price actors for a window.
 pub(super) fn create_price_observations_plan(
     request: CreatePriceObservationsPlanRequest,
 ) -> Result<Value, String> {
@@ -46,7 +46,7 @@ pub(super) fn create_price_observations_plan(
     super::plan::pool_plan(&request.amm_program_id, pair, message)
 }
 
-/// Builds the AMM message that forwards the window and pool-derived price to its Oracle actor.
+/// Alternate AMM entrypoint for opening the same pair of window actors.
 pub(super) fn create_oracle_price_account_plan(
     request: CreateOraclePriceAccountPlanRequest,
 ) -> Result<Value, String> {

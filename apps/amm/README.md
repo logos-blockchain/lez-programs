@@ -208,8 +208,10 @@ AMM_PROGRAM_ID=<deployed-amm-program-id> AMM_CONFIG_ID=<amm-config-id> nix run .
 ```
 
 Use the IDs from the deployment on your selected sequencer. The module reads
-the token and Oracle program IDs from the AMM config. The Oracle actor uses
-the pool account. Without a program ID the Swap view stays disabled.
+the token and TWAP Oracle program IDs from the AMM config. Pool creation
+initializes the Oracle's current tick at a PDA derived by the AMM program from
+the pool ID. Each configured TWAP window has its own observations and price
+accounts. Without an AMM program ID the Swap view stays disabled.
 
 > **Golden rule:** a redeploy creates a new header account, so a new program id
 > and *every* derived PDA. After any redeploy, update `AMM_PROGRAM_ID` (and
@@ -341,7 +343,7 @@ verifies the pool reserves actually changed on-chain (read back from the
 sequencer via the app's `resolvePoolAccount`).
 
 Use an initialized LEZ 0.4 pool and wallet for the steps below. The older
-testnet setup script expects a separate current-tick account from the pre-actor AMM.
+testnet setup script uses pre-0.4 token and AMM instruction arguments.
 
 The test framework itself — the `test()` / `run()` / `app.*` API that the tests
 import from `test-framework/framework.mjs` — comes from the

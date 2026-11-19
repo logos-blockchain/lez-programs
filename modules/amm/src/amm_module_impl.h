@@ -85,8 +85,8 @@ public:
     /// `invalid_amount`, `wallet_submission_failed`, `backend_error`, or a plan code.
     LogosMap withdrawProtocolFees(const LogosMap& request);
 
-    /// Send an observations or price setup message to the AMM actor for the selected pool.
-    /// The pool forwards the requested window to the Oracle actor on the same account.
+    /// Call either method once per window. The pool sends CreatePriceAccounts to its
+    /// current-tick actor, which creates both the observations and price accounts.
     /// Both requests take `{ tokenAId, tokenBId, windowDurationMs, feePayerId }`.
     /// The fee payer signs the transaction. Success returns the transaction ID.
     LogosMap createPriceObservations(const LogosMap& request);

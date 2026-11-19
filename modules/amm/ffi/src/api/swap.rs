@@ -74,7 +74,7 @@ pub(super) fn swap_pair(request: SwapPairRequest) -> Result<Value, String> {
         "lpDefinitionId": account_id_hex(pair.lp_definition),
         "vaultAId": account_id_hex(pair.vault_a),
         "vaultBId": account_id_hex(pair.vault_b),
-        "oracleAccountId": account_id_hex(pair.pool),
+        "oracleAccountId": account_id_hex(pair.current_tick),
     }))
 }
 
