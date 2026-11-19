@@ -798,6 +798,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clock_core"
+version = "0.1.0"
+source = "git+https://github.com/logos-blockchain/logos-execution-zone.git?tag=v0.4.0-rc3#bafd07be0701398f9bc435f73ab05e9a7936c301"
+dependencies = [
+ "borsh",
+ "lee_core",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4319,6 +4328,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "twap-oracle-methods"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+ "risc0-zkvm",
+ "twap_oracle_core",
+]
+
+[[package]]
 name = "twap_oracle_core"
 version = "0.1.0"
 dependencies = [
@@ -4329,6 +4347,16 @@ dependencies = [
  "ruint",
  "serde",
  "uniswap_v3_math",
+]
+
+[[package]]
+name = "twap_oracle_program"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "clock_core",
+ "lee_core",
+ "twap_oracle_core",
 ]
 
 [[package]]
