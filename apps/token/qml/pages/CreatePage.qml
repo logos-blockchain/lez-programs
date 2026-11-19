@@ -85,6 +85,19 @@ Item {
         errorMessage = "";
     }
 
+    // After a submission: back to the settings with the token's fields kept, and the target
+    // accounts cleared, since the submitted transaction used them.
+    function startOver() {
+        if (root.submitting)
+            return;
+        clearDraftState();
+        definitionTargetField.text = "";
+        holdingTargetField.text = "";
+        metadataTargetField.text = "";
+        step = 0;
+        scroll.contentY = 0;
+    }
+
     function watch(result, success, failure) {
         if (root.runtime && root.runtime.watch)
             root.runtime.watch(result, success, failure);
@@ -1613,6 +1626,36 @@ Item {
                                     color: "#211914"
                                     border.color: inspectButton.activeFocus ? "#FFB26B" : "#49301F"
                                     border.width: inspectButton.activeFocus ? 2 : 1
+                                }
+                            }
+
+                            Button {
+                                id: createAnotherButton
+
+                                objectName: "tokenCreateAnotherButton"
+
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 42
+                                visible: root.prepared
+                                activeFocusOnTab: true
+                                Accessible.name: qsTr("Create another token definition")
+                                text: qsTr("Create another")
+                                onClicked: root.startOver()
+
+                                contentItem: Text {
+                                    color: "#F2D8C7"
+                                    font.pixelSize: 14
+                                    font.weight: Font.DemiBold
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                    text: createAnotherButton.text
+                                }
+
+                                background: Rectangle {
+                                    radius: 8
+                                    color: "#211914"
+                                    border.color: createAnotherButton.activeFocus ? "#FFB26B" : "#49301F"
+                                    border.width: createAnotherButton.activeFocus ? 2 : 1
                                 }
                             }
                         }

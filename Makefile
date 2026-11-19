@@ -1,4 +1,4 @@
-.PHONY: build-programs clippy clippy-guest clippy-all check-benchmark test integration-test test-apps fmt idl changelog release
+.PHONY: build-programs clippy clippy-guest clippy-all check-benchmark test integration-test test-apps check-lez-core-version fmt idl changelog release
 
 build-programs:
 	./scripts/build-guests.sh
@@ -26,6 +26,10 @@ integration-test:
 # Wallet, AMM and token app tests (C++ and QML), with Qt from the flake's nixpkgs.
 test-apps:
 	./scripts/test-apps.sh
+
+# Every flake pins one lez_core rev, and each metadata.json declares that rev's version.
+check-lez-core-version:
+	./scripts/check-lez-core-version.sh
 
 fmt:
 	cargo +nightly fmt --all

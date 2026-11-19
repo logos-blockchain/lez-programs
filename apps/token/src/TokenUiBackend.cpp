@@ -225,14 +225,22 @@ QVariantMap TokenUiBackend::walletTokenAccounts()
     return m_logos->token_module.walletTokenAccounts();
 }
 
-QVariantList TokenUiBackend::walletDefinitions()
+QVariantMap TokenUiBackend::walletDefinitions()
 {
+    // A failed read reports an error rather than an empty list, so callers can't mistake it for
+    // a wallet that holds no definitions.
+    const auto failure = [](const QString& error) {
+        return QVariantMap {
+            { QStringLiteral("status"), QStringLiteral("error") },
+            { QStringLiteral("error"), error },
+        };
+    };
     if (!m_walletController->state().canSubmit())
-        return {};
+        return failure(QStringLiteral("wallet_not_ready"));
 
     const QVariantMap accountsResult = m_logos->token_module.walletTokenAccounts();
     if (!succeeded(accountsResult))
-        return {};
+        return failure(accountsResult.value(QStringLiteral("error")).toString());
 
     QMap<QString, QString> definitionIds;
     QMap<QString, QVariantList> holdingsByDefinition;
@@ -265,8 +273,12 @@ QVariantList TokenUiBackend::walletDefinitions()
     QVariantList records;
     for (auto definition = definitionIds.cbegin(); definition != definitionIds.cend(); ++definition) {
         const QVariantMap inspected = m_logos->token_module.inspectDefinition(definition.value());
-        if (!succeeded(inspected))
+        if (!succeeded(inspected)) {
+            const QString error = inspected.value(QStringLiteral("error")).toString();
+            if (error == QStringLiteral("backend_error"))
+                return failure(error);
             continue;
+        }
 
         const QVariantMap raw = inspected.value(QStringLiteral("definition")).toMap();
         if (raw.isEmpty())
@@ -379,7 +391,10 @@ QVariantList TokenUiBackend::walletDefinitions()
         records.append(record);
     }
 
-    return records;
+    return {
+        { QStringLiteral("status"), QStringLiteral("ok") },
+        { QStringLiteral("definitions"), records },
+    };
 }
 
 QVariantMap TokenUiBackend::createFungible(QString definitionTargetId,

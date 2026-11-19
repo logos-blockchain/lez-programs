@@ -56,13 +56,14 @@ class TokenUiBackend
     SLOT(bool setFeePayer(QString accountId))
 
     // Token Program reads. walletDefinitions() joins the module's account
-    // discovery and inspect calls into the record shape consumed by QML.
+    // discovery and inspect calls into the record shape consumed by QML:
+    // { status: "ok", definitions } or { status: "error", error }.
     SLOT(QVariantMap tokenProgramInfo())
     SLOT(QVariantMap inspectDefinition(QString definitionId))
     SLOT(QVariantMap inspectHolding(QString holdingId))
     SLOT(QVariantMap inspectMetadata(QString metadataId))
     SLOT(QVariantMap walletTokenAccounts())
-    SLOT(QVariantList walletDefinitions())
+    SLOT(QVariantMap walletDefinitions())
 
     // Token Program creation surface. Raw amounts remain decimal strings so
     // QML never narrows u128 values through a JavaScript number.

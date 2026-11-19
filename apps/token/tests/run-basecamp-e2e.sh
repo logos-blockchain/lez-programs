@@ -8,19 +8,45 @@ run_root="${TOKEN_E2E_RUN_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/token-basecamp-e2e.
 inspector_port="${QML_INSPECTOR_PORT:-3768}"
 basecamp_pid=""
 
-if [[ "${TOKEN_E2E_LIVE:-0}" == 1 ]]; then
-  if [[ -z "${TOKEN_PROGRAM_BIN:-}" ]]; then
-    printf 'Live acceptance requires TOKEN_PROGRAM_BIN for deployed program identity\n' >&2
+# The tests submit real transactions, so they need a prepared, funded wallet (by
+# default the one setup-amm-testnet.sh restores) and the deployed program's
+# address. Since LEZ v0.2.5 that is the header account the program was deployed
+# to, which no binary can supply; the setup script labels it `token-header`.
+wallet_home="${TOKEN_E2E_WALLET_HOME:-${repo_root}/apps/amm/tests/testnet/.wallet}"
+if [[ ! -f "${wallet_home}/wallet_config.json" || ! -f "${wallet_home}/storage.json" ]]; then
+  printf 'Prepared wallet is missing wallet_config.json or storage.json: %s\n' "${wallet_home}" >&2
+  printf 'Run apps/amm/tests/testnet/setup-amm-testnet.sh or set TOKEN_E2E_WALLET_HOME\n' >&2
+  exit 2
+fi
+if [[ -z "${TOKEN_PROGRAM_ID:-}" ]]; then
+  wallet_bin="${TOKEN_E2E_WALLET:-wallet}"
+  if ! command -v "${wallet_bin}" >/dev/null; then
+    printf 'Wallet CLI not found: %s (set TOKEN_E2E_WALLET or TOKEN_PROGRAM_ID)\n' "${wallet_bin}" >&2
     exit 2
   fi
-  if [[ ! -r "${TOKEN_PROGRAM_BIN}" || ! -s "${TOKEN_PROGRAM_BIN}" ]]; then
-    printf 'Token program binary is missing or unreadable: %s\n' "${TOKEN_PROGRAM_BIN}" >&2
+  wallet_status=0
+  lookup="$(LEE_WALLET_HOME_DIR="${wallet_home}" "${wallet_bin}" \
+    account id --account-id token-header 2>&1)" || wallet_status=$?
+  if (( wallet_status != 0 )); then
+    if [[ "${lookup}" == *"No account found for label"* ]]; then
+      printf 'TOKEN_PROGRAM_ID is required: no token-header account in %s\n' "${wallet_home}" >&2
+    else
+      printf 'Wallet CLI failed (exit %d) looking up token-header in %s:\n%s\n' \
+        "${wallet_status}" "${wallet_home}" "${lookup}" >&2
+    fi
     exit 2
   fi
-  if [[ -z "${TOKEN_E2E_WALLET_HOME:-}" ]]; then
-    printf 'Live acceptance requires TOKEN_E2E_WALLET_HOME for a prepared wallet\n' >&2
+  TOKEN_PROGRAM_ID="$(grep -oE '[1-9A-HJ-NP-Za-km-z]{32,44}' <<<"${lookup}" | head -n1 || true)"
+  if [[ -z "${TOKEN_PROGRAM_ID}" ]]; then
+    printf 'Wallet CLI printed no account id for token-header:\n%s\n' "${lookup}" >&2
     exit 2
   fi
+fi
+export TOKEN_PROGRAM_ID
+# Optional: the module checks it is the bytecode deployed at TOKEN_PROGRAM_ID.
+if [[ -n "${TOKEN_PROGRAM_BIN:-}" && ( ! -r "${TOKEN_PROGRAM_BIN}" || ! -s "${TOKEN_PROGRAM_BIN}" ) ]]; then
+  printf 'Token program binary is missing or unreadable: %s\n' "${TOKEN_PROGRAM_BIN}" >&2
+  exit 2
 fi
 
 cleanup() {
@@ -43,15 +69,6 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${output_dir}" "${run_root}/user/modules" "${run_root}/user/plugins"
-wallet_home="${TOKEN_E2E_WALLET_HOME:-${run_root}/wallet}"
-mkdir -p "${wallet_home}"
-if [[ "${TOKEN_E2E_LIVE:-0}" == 1
-  && ( ! -f "${wallet_home}/wallet_config.json"
-    || ! -f "${wallet_home}/storage.json" ) ]]; then
-  printf 'Prepared wallet is missing wallet_config.json or storage.json: %s\n' \
-    "${wallet_home}" >&2
-  exit 2
-fi
 
 build_if_missing() {
   local override="$1"
@@ -69,7 +86,7 @@ mcp_root="$(build_if_missing "${LOGOS_QT_MCP:-}" "${run_root}/result-mcp" .#test
 bundle_root="$(build_if_missing "${TOKEN_BASECAMP_BUNDLE:-}" "${run_root}/result-bundle" github:logos-co/logos-basecamp#bin-bundle-dir-inspector)"
 wallet_install="$(build_if_missing "${TOKEN_WALLET_INSTALL:-}" "${run_root}/wallet-install" \
   'github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2#install-portable')"
-token_install="$(build_if_missing "${TOKEN_MODULE_INSTALL:-}" "${run_root}/token-install" .#install-portable)"
+token_install="$(build_if_missing "${TOKEN_MODULE_INSTALL:-}" "${run_root}/token-install" .#token-module-install-portable)"
 ui_install="$(build_if_missing "${TOKEN_UI_INSTALL:-}" "${run_root}/token-ui-install" .#token-ui-install-portable)"
 
 cp -RL "${wallet_install}/modules/." "${run_root}/user/modules/"
@@ -113,5 +130,6 @@ fi
 
 LOGOS_QT_MCP="${mcp_root}" \
 QML_INSPECTOR_PORT="${inspector_port}" \
+LEE_WALLET_HOME_DIR="${wallet_home}" \
 TOKEN_E2E_OUTPUT="${output_dir}" \
 node "${repo_root}/apps/token/tests/token-definition.mjs"

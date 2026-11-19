@@ -460,7 +460,10 @@ LogosMap TokenModuleImpl::walletTokenAccounts() {
             if (!id_value.is_string()) continue;
             const std::string id = id_value.get<std::string>();
             const json read = readPublicAccount(id);
-            if (jsonString(read, "status") != "ok") continue;
+            const std::string read_status = jsonString(read, "status");
+            // A failed read must not look like an account the wallet doesn't hold.
+            if (read_status == "backend_error") return publicError("backend_error");
+            if (read_status != "ok") continue;
             const auto account = read.find("account");
             if (account == read.end() || !account->is_object()
                 || lowercase(jsonString(*account, "program_owner")) != program_id) {

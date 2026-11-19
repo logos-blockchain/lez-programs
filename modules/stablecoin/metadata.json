@@ -6,7 +6,7 @@
   "category": "stablecoin",
   "description": "Universal Logos core module for LEZ stablecoin reads and transactions",
   "main": "stablecoin_module_plugin",
-  "dependencies": ["lez_core"],
+  "dependencies": [{ "name": "lez_core", "version": "0.4.2" }],
   "nix": {
     "packages": {
       "build": [],

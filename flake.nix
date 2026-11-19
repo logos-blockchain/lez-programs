@@ -29,7 +29,7 @@
     # path or git-remote reference to this repo is needed (see apps/amm/flake.nix
     # history: a `git+file://` URL pointing at a local checkout is
     # machine-specific and not portable).
-    logos-module-builder.url = "github:logos-co/logos-module-builder";
+    logos-module-builder.url = "github:logos-co/logos-module-builder/0.3.3";
 
     # Core wallet module (the LEZ wallet FFI Qt plugin). The input name must
     # match the metadata.json `dependencies` entry so the builder can resolve it
@@ -377,7 +377,9 @@
       stablecoinModuleAliases = builtins.mapAttrs (
         system: attrs:
         (if attrs ? lgx then { stablecoin-module-lgx = attrs.lgx; } else { })
+        // (if attrs ? lgx-portable then { stablecoin-module-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { stablecoin-module-install = attrs.install; } else { })
+        // (if attrs ? install-portable then { stablecoin-module-install-portable = attrs.install-portable; } else { })
         // (if attrs ? unit-tests then { stablecoin-module-tests = attrs.unit-tests; } else { })
       ) stablecoinModulePkgs;
 
