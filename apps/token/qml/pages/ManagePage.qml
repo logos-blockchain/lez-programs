@@ -138,20 +138,29 @@ Item {
         var requestSerial = ++root.refreshSerial;
         root.loading = true;
         root.loadError = "";
-        root.runtime.watch(root.backend.walletDefinitions(), function(definitions) {
+        root.runtime.watch(root.backend.walletDefinitions(), function(result) {
             if (requestSerial !== root.refreshSerial)
                 return;
+            if (!result || result.status !== "ok") {
+                root.failLiveDefinitions(result && result.error ? result.error : "unknown_error");
+                return;
+            }
             root.loading = false;
-            root.store.setLiveDefinitions(definitions || []);
+            root.store.setLiveDefinitions(result.definitions || []);
             root.ensureSelection();
         }, function(error) {
             if (requestSerial !== root.refreshSerial)
                 return;
-            root.loading = false;
-            root.loadError = qsTr("Token accounts could not be read: %1").arg(error);
-            root.store.clearLiveDefinitions();
-            root.ensureSelection();
+            root.failLiveDefinitions(error);
         });
+    }
+
+    // A failed read leaves the live view unloaded: it must not read as a wallet with no tokens.
+    function failLiveDefinitions(error) {
+        root.loading = false;
+        root.loadError = qsTr("Token accounts could not be read: %1").arg(error);
+        root.store.clearLiveDefinitions();
+        root.ensureSelection();
     }
 
     onVisibleChanged: {

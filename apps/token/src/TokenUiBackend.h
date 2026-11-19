@@ -48,7 +48,7 @@ public slots:
     QVariantMap inspectHolding(QString holdingId) override;
     QVariantMap inspectMetadata(QString metadataId) override;
     QVariantMap walletTokenAccounts() override;
-    QVariantList walletDefinitions() override;
+    QVariantMap walletDefinitions() override;
 
     QVariantMap createFungible(QString definitionTargetId, QString holdingTargetId,
                                QString name, QString totalSupplyRaw,

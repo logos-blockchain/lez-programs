@@ -21,11 +21,14 @@ Item {
             property int lastSyncedBlock: 0
             property bool initialSync: false
             property var liveDefinitions: []
+            property string definitionsError: ""
             property int walletDefinitionsCalls: 0
 
             function walletDefinitions() {
                 ++walletDefinitionsCalls
-                return liveDefinitions
+                if (definitionsError.length > 0)
+                    return { status: "error", error: definitionsError }
+                return { status: "ok", definitions: liveDefinitions }
             }
         }
     }
@@ -191,6 +194,29 @@ Item {
             })
             compare(fixture.store.allDefinitions[0].id, definitionBase58)
             compare(fixture.runtime.watchCalls, initialWatchCalls + 1)
+        }
+
+        function test_failedReadIsNotAnEmptyWallet() {
+            const fixture = createFixture()
+            fixture.backend.liveDefinitions = [record(tokenA, "Token A", "network")]
+            fixture.page.refreshLiveDefinitions()
+            verify(fixture.store.liveDefinitionsLoaded)
+            compare(fixture.page.loadError, "")
+
+            fixture.backend.definitionsError = "backend_error"
+            fixture.page.refreshLiveDefinitions()
+
+            verify(!fixture.store.liveDefinitionsLoaded)
+            compare(fixture.store.liveDefinitions.length, 0)
+            verify(fixture.page.loadError.indexOf("backend_error") >= 0)
+            verify(!fixture.page.loading)
+
+            fixture.backend.definitionsError = ""
+            fixture.page.refreshLiveDefinitions()
+
+            verify(fixture.store.liveDefinitionsLoaded)
+            compare(fixture.page.loadError, "")
+            compare(fixture.store.liveDefinitions.length, 1)
         }
 
         function test_refreshesOnceWhenBackgroundPollSyncsNewBlocks() {
