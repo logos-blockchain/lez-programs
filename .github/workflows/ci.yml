@@ -168,6 +168,9 @@ jobs:
             extra-substituters = https://logos-co.cachix.org
             extra-trusted-public-keys = logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E=
 
+      - name: Check lez_core version in metadata.json
+        run: make check-lez-core-version
+
       - name: Wallet, AMM and token C++ and QML tests
         run: make test-apps
 
