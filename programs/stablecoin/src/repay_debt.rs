@@ -4,29 +4,25 @@ use lee_core::{
 };
 use stablecoin_core::{
     compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda,
-    math::{mul_div, FIXED_POINT_ONE},
-    verify_position_and_get_seed, Position, ProtocolParameters, StabilityFeeAccumulator,
+    math::compute_repayment, verify_position_and_get_seed, Position, ProtocolParameters,
+    StabilityFeeAccumulator,
 };
 use token_core::TokenHolding;
 
-/// Repay `amount` of outstanding stablecoin debt against an existing position.
+/// Repay outstanding debt with `amount` as the maximum authorized stablecoin burn.
 ///
-/// Burns `amount` stablecoins from `user_stablecoin_holding` via a chained
-/// `Token::Burn` and decreases `Position.normalized_debt_amount` by the
-/// *normalized* equivalent of that amount — `⌊amount × FIXED_POINT_ONE /
-/// current_accumulator⌋` — which is smaller than `amount` whenever fees have
-/// accrued. The position diff is a plain data write — the
-/// PDA was already claimed at `open_position` time.
-///
-/// The normalized-debt decrement is `⌊amount × FIXED_POINT_ONE /
-/// current_accumulator⌋`, rounded **down** per §6.3, so the position's debt
-/// shrinks by at most what was burned and the rounding remainder stays with the
-/// protocol.
+/// Caps the chained `Token::Burn` at the ceiling of the position's current
+/// debt. A sufficient maximum clears normalized debt; the unused buffer stays in
+/// the user's holding. Otherwise the entire maximum is burned and the normalized
+/// decrement is rounded down: `⌊amount × FIXED_POINT_ONE / current_accumulator⌋`
+/// (§6.3). The position diff is a plain data write; its PDA was claimed at
+/// opening. Zero maxima and debt-free positions still validate all accounts and
+/// emit a zero-amount burn.
 ///
 /// Accrues first, like `generate_debt`: the accumulator is persisted at `now`,
 /// the fees accrued on the existing debt are minted to the surplus holding
-/// (§6.6), and the decrement is priced at the persisted accumulator and taken
-/// off `total_normalized_debt`.
+/// (§6.6), and the repayment is priced at the persisted accumulator and its
+/// decrement taken off `total_normalized_debt`.
 ///
 /// Allowed while the protocol is frozen — repaying only improves the protocol's
 /// position (§7). `stablecoin_definition` is pinned against
@@ -47,7 +43,7 @@ use token_core::TokenHolding;
 /// - `protocol_parameters` or `stability_fee_accumulator` is uninitialized, wrongly owned, not at
 ///   its canonical PDA, or does not decode.
 /// - `clock` is not the initialized system `CLOCK_01` account.
-/// - The floored decrement exceeds `Position.normalized_debt_amount`.
+/// - Projecting the accumulator exceeds the supported arithmetic range.
 #[allow(
     clippy::too_many_arguments,
     reason = "the eight account inputs mirror the spec §10.8 ABI"
@@ -153,17 +149,19 @@ pub fn repay_debt(
     );
     let current_accumulator = accrual.accumulator.accumulated_rate_at_last_accrual;
 
-    // Round DOWN (§6.3): the borrower burned exactly `amount`, and their debt
-    // shrinks by at most that much. The remainder is fee credit for the protocol.
-    let debt_delta = mul_div(amount, FIXED_POINT_ONE, current_accumulator);
+    let repayment = compute_repayment(
+        amount,
+        position_data.normalized_debt_amount,
+        current_accumulator,
+    );
     let new_debt = position_data
         .normalized_debt_amount
-        .checked_sub(debt_delta)
-        .expect("Repay amount exceeds outstanding normalized debt");
+        .checked_sub(repayment.normalized_debt_decrement)
+        .expect("Repayment decrement is capped at outstanding normalized debt");
     accrual.accumulator.total_normalized_debt = accrual
         .accumulator
         .total_normalized_debt
-        .checked_sub(debt_delta)
+        .checked_sub(repayment.normalized_debt_decrement)
         .expect("Total normalized debt underflow");
 
     let updated_position = Position {
@@ -197,7 +195,7 @@ pub fn repay_debt(
         token_program_id,
         vec![stablecoin_definition_id, user_stablecoin_holding_id],
         &token_core::Instruction::Burn {
-            amount_to_burn: amount,
+            amount_to_burn: repayment.amount_to_burn,
         },
     );
 
