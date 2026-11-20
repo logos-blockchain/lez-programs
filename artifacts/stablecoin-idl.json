@@ -100,6 +100,14 @@
         {
           "name": "initial_admin_account_id",
           "type": "account_id"
+        },
+        {
+          "name": "minimum_debt_amount",
+          "type": "u128"
+        },
+        {
+          "name": "debt_ceiling",
+          "type": "u128"
         }
       ]
     },
@@ -805,6 +813,33 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "set_debt_limits",
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": false,
+          "signer": true,
+          "init": false
+        },
+        {
+          "name": "protocol_parameters",
+          "writable": true,
+          "signer": false,
+          "init": false
+        }
+      ],
+      "args": [
+        {
+          "name": "minimum_debt_amount",
+          "type": "u128"
+        },
+        {
+          "name": "debt_ceiling",
+          "type": "u128"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -813,6 +848,10 @@
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "schema_version",
+            "type": "u8"
+          },
           {
             "name": "admin_account_id",
             "type": "account_id"
@@ -860,6 +899,14 @@
           {
             "name": "is_frozen",
             "type": "bool"
+          },
+          {
+            "name": "minimum_debt_amount",
+            "type": "u128"
+          },
+          {
+            "name": "debt_ceiling",
+            "type": "u128"
           }
         ]
       }
@@ -893,6 +940,10 @@
       "type": {
         "kind": "struct",
         "fields": [
+          {
+            "name": "schema_version",
+            "type": "u8"
+          },
           {
             "name": "accumulated_rate_at_last_accrual",
             "type": "u128"

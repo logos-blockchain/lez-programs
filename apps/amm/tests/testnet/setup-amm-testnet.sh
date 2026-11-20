@@ -60,6 +60,8 @@
 #   TEST_SEQUENCER_ADDR=http://127.0.0.1:8080 apps/amm/tests/testnet/setup-amm-testnet.sh
 #   FORCE_BOOTSTRAP=1 ...        # re-restore the test wallet (rewrites its storage)
 #   DEPLOY_STABLECOIN=0 ...      # skip the stablecoin deployment
+#   STABLECOIN_MINIMUM_DEBT_AMOUNT=10 STABLECOIN_DEBT_CEILING=1000000 ...
+#                              # override raw atomic-unit smoke-test limits
 #
 set -euo pipefail
 
@@ -192,6 +194,11 @@ COLLATERAL_NAME="COLLATERAL"; COLLATERAL_SUPPLY="1000000000000000000000"
 
 # --- Stablecoin ---
 DEPLOY_STABLECOIN="${DEPLOY_STABLECOIN:-1}"
+# Explicit smoke-test fixtures in raw stablecoin atomic units. These small limits
+# exercise bounded borrowing; they are not deployment recommendations. Operators
+# invoking scripts/deploy-stablecoin.sh directly must choose both limits.
+STABLECOIN_MINIMUM_DEBT_AMOUNT="${STABLECOIN_MINIMUM_DEBT_AMOUNT:-10}"
+STABLECOIN_DEBT_CEILING="${STABLECOIN_DEBT_CEILING:-1000000}"
 
 # --- Pool inputs ---
 CLOCK_ACCOUNT="4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNU"  # canonical LEZ system clock
@@ -987,6 +994,8 @@ kv "wrote" "$CUSTOM_TOKEN_MANIFEST_OUT"
 if [ "$DEPLOY_STABLECOIN" = "1" ]; then
   STABLECOIN_ADMIN="$STABLECOIN_ADMIN_ID" \
   STABLECOIN_ORACLE_SOURCE="$STABLECOIN_ORACLE_SOURCE_ID" \
+  STABLECOIN_MINIMUM_DEBT_AMOUNT="$STABLECOIN_MINIMUM_DEBT_AMOUNT" \
+  STABLECOIN_DEBT_CEILING="$STABLECOIN_DEBT_CEILING" \
   COLLATERAL_DEFINITION="$COLLATERAL_DEF" \
   COLLATERAL_HOLDING="$COLLATERAL_HOLDING" \
   COLLATERAL_NAME="$COLLATERAL_NAME" \

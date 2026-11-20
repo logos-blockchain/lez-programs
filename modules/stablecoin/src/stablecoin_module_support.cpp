@@ -144,6 +144,11 @@ std::string stableFfiError(const std::string& error) {
     static const std::set<std::string> stable = {
         "account_read_failed",
         "admin_mismatch",
+        "invalid_debt_limits",
+        "debt_below_minimum",
+        "debt_ceiling_exceeded",
+        "total_debt_arithmetic_error",
+        "unsupported_account_schema",
         "freeze_authority_mismatch",
         "collateralization_ratio_out_of_band",
         "controller_gains_out_of_band",

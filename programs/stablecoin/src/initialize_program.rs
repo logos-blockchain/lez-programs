@@ -36,6 +36,10 @@ pub struct InitializeProgramParams<'a> {
     pub initial_redemption_price: u128,
     pub stablecoin_name: &'a str,
     pub initial_admin_account_id: AccountId,
+    /// Explicit raw stablecoin atomic-unit floor; must be positive.
+    pub minimum_debt_amount: u128,
+    /// Explicit raw atomic-unit borrowing ceiling; must be at least the floor.
+    pub debt_ceiling: u128,
 }
 
 // --- Host function ----------------------------------------------------------
@@ -201,8 +205,19 @@ pub fn initialize_program(
         "stablecoin_name must be non-empty"
     );
 
+    assert!(
+        stablecoin_core::debt_limits::valid_debt_limits(
+            params.minimum_debt_amount,
+            params.debt_ceiling
+        ),
+        "Debt limits require 0 < minimum_debt_amount <= debt_ceiling"
+    );
+
     // 8. Build the new global states
     let protocol_parameters_value = ProtocolParameters {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
+        minimum_debt_amount: params.minimum_debt_amount,
+        debt_ceiling: params.debt_ceiling,
         admin_account_id: params.initial_admin_account_id,
         freeze_authority_account_id: params.freeze_authority_account_id,
         stablecoin_definition_id: stablecoin_definition.account_id,
@@ -217,6 +232,7 @@ pub fn initialize_program(
         is_frozen: false,
     };
     let accumulator_value = StabilityFeeAccumulator {
+        schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
         accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
         last_accrued_at: now,
         total_normalized_debt: 0,
@@ -438,6 +454,8 @@ mod tests {
             initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable",
             initial_admin_account_id: admin_id(),
+            minimum_debt_amount: 10,
+            debt_ceiling: 1_000_000,
         }
     }
 
@@ -476,6 +494,12 @@ mod tests {
             STABLECOIN_PROGRAM_ID
         );
         let decoded = ProtocolParameters::try_from(pp_post.post_data()).expect("decode");
+        assert_eq!(
+            decoded.schema_version,
+            stablecoin_core::GLOBAL_SCHEMA_VERSION
+        );
+        assert_eq!(decoded.minimum_debt_amount, 10);
+        assert_eq!(decoded.debt_ceiling, 1_000_000);
         assert_eq!(decoded.admin_account_id, admin_id());
         assert_eq!(decoded.freeze_authority_account_id, freeze_id());
         assert_eq!(decoded.stablecoin_definition_id, stablecoin_def_id());
@@ -491,6 +515,11 @@ mod tests {
         let decoded = StabilityFeeAccumulator::try_from(acc_post.post_data()).expect("decode");
         assert_eq!(decoded.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
         assert_eq!(decoded.last_accrued_at, NOW);
+        assert_eq!(
+            decoded.schema_version,
+            stablecoin_core::GLOBAL_SCHEMA_VERSION
+        );
+        assert_eq!(decoded.total_normalized_debt, 0);
     }
 
     #[test]
@@ -932,5 +961,14 @@ mod tests {
         let mut p = ok_params();
         p.stablecoin_name = "";
         let _ = invoke(p);
+    }
+    #[test]
+    fn initialize_rejects_invalid_debt_limits() {
+        for (minimum, ceiling) in [(0, 100), (1, 0), (101, 100)] {
+            let mut params = ok_params();
+            params.minimum_debt_amount = minimum;
+            params.debt_ceiling = ceiling;
+            assert!(std::panic::catch_unwind(|| invoke(params)).is_err());
+        }
     }
 }
