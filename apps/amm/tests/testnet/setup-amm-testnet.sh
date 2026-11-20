@@ -145,8 +145,8 @@ unset _prog _i
 
 # The stablecoin's accounts come last, so every label above keeps its id:
 # collateral-def/-holding back a dedicated faucet-mintable collateral token,
-# stablecoin-admin signs initialize_program, and stablecoin-oracle-source signs
-# (and so owns) the market price oracle account.
+# stablecoin-admin is the selected initial administrator; stablecoin-header signs
+# initialize_program. stablecoin-oracle-source signs (and owns) the price account.
 ACCOUNT_LABELS+=(collateral-def collateral-holding stablecoin-admin stablecoin-oracle-source)
 
 ###############################################################################
