@@ -1,47 +1,51 @@
 [workspace]
 members = [
-    "modules/amm/ffi",
-    "modules/oracle/ffi",
-    "modules/stablecoin/ffi",
-    "modules/token/ffi",
-    "programs/token/core",
-    "programs/token",
-    "programs/token/methods",
-    "programs/amm/core",
-    "programs/amm",
-    "programs/amm/methods",
-    "programs/ata/core",
-    "programs/ata",
-    "programs/ata/methods",
-    "programs/twap_oracle/core",
-    "programs/twap_oracle",
-    "programs/twap_oracle/methods",
-    "programs/stablecoin/core",
-    "programs/stablecoin",
-    "programs/stablecoin/methods",
-    "programs/token_mint_authority/core",
-    "programs/token_mint_authority",
-    "programs/token_mint_authority/methods",
-    "programs/integration_tests",
-    "tools/idl-gen",
-    "tools/risc0-packager",
+  "modules/amm/ffi",
+  "modules/oracle/ffi",
+  "modules/stablecoin/ffi",
+  "modules/token/ffi",
+  "programs/token/core",
+  "programs/token",
+  "programs/token/methods",
+  "programs/amm/core",
+  "programs/amm",
+  "programs/amm/methods",
+  "programs/ata/core",
+  "programs/ata",
+  "programs/ata/methods",
+  "programs/twap_oracle/core",
+  "programs/twap_oracle",
+  "programs/twap_oracle/methods",
+  "programs/stablecoin/core",
+  "programs/stablecoin",
+  "programs/stablecoin/methods",
+  "programs/token_mint_authority/core",
+  "programs/token_mint_authority",
+  "programs/token_mint_authority/methods",
+  "programs/integration_tests",
+  "tools/idl-gen",
+  "tools/risc0-packager",
 ]
 exclude = [
-    "programs/token/methods/guest",
-    "programs/amm/methods/guest",
-    "programs/ata/methods/guest",
-    "programs/stablecoin/methods/guest",
-    "programs/token_mint_authority/methods/guest",
-    "programs/twap_oracle/methods/guest",
-    # Cycle benchmarks: standalone crate, kept out of --workspace builds/tests/CI. Run on demand
-    # with `cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture`.
-    "programs/benchmark"
+  "programs/token/methods/guest",
+  "programs/amm/methods/guest",
+  "programs/ata/methods/guest",
+  "programs/stablecoin/methods/guest",
+  "programs/token_mint_authority/methods/guest",
+  "programs/twap_oracle/methods/guest",
+  # Cycle benchmarks: standalone crate, kept out of --workspace builds/tests/CI. Run on demand
+  # with `cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture`.
+  "programs/benchmark",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["host"] }
-lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = ["test-utils"] }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = [
+  "host",
+] }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.5-rc2", features = [
+  "test-utils",
+] }
 token_core = { path = "programs/token/core" }
 token_program = { path = "programs/token" }
 amm_core = { path = "programs/amm/core" }
@@ -58,7 +62,12 @@ serde = { version = "1.0", features = ["derive"] }
 borsh = { version = "1.5", features = ["derive"] }
 risc0-zkvm = { version = "=3.0.5" }
 serde_json = "1.0"
-tokio = { version = "1.28.2", features = ["net", "rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1.28.2", features = [
+  "net",
+  "rt-multi-thread",
+  "sync",
+  "macros",
+] }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "deny", priority = -1 }
@@ -70,9 +79,9 @@ unsafe_code = "deny"
 # style/pedantic lints default to warn so toolchain upgrades don't break the
 # build unexpectedly — they can be evaluated and addressed at our own pace.
 correctness = { level = "deny", priority = -1 }
-suspicious  = { level = "deny", priority = -1 }
-perf        = { level = "deny", priority = -1 }
-style       = { level = "warn", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
 
 # Generated-code / placeholder blockers.
 dbg_macro = "deny"

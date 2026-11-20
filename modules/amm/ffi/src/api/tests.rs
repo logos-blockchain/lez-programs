@@ -430,6 +430,34 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
 }
 
 #[test]
+fn oracle_setup_plans_enforce_the_guest_window_minimum() {
+    let minimum = u64::from(twap_oracle_core::OBSERVATIONS_CAPACITY);
+    for window in [0, 1, minimum - 1, minimum] {
+        let observations = create_price_observations_plan(CreatePriceObservationsPlanRequest {
+            amm_program_id: amm_program_id(),
+            config: account_read(config_id(), &config_account()),
+            token_a_id: account_id_hex(AccountId::new([2; 32])),
+            token_b_id: account_id_hex(AccountId::new([1; 32])),
+            window_duration_ms: window,
+        });
+        let price = create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
+            amm_program_id: amm_program_id(),
+            config: account_read(config_id(), &config_account()),
+            token_a_id: account_id_hex(AccountId::new([2; 32])),
+            token_b_id: account_id_hex(AccountId::new([1; 32])),
+            window_duration_ms: window,
+        });
+        if window < minimum {
+            assert_eq!(observations.unwrap_err(), "invalid_window");
+            assert_eq!(price.unwrap_err(), "invalid_window");
+        } else {
+            assert!(observations.is_ok());
+            assert!(price.is_ok());
+        }
+    }
+}
+
+#[test]
 fn config_account_decodes_authority_and_program_ids() {
     let config_id = config_id();
     let value = decode_config_account(ConfigAccountRequest {

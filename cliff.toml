@@ -59,14 +59,14 @@ body = """
 trim = true
 # Run on the fully-rendered changelog text.
 postprocessors = [
-    # Turn the nested-item sentinel into two-space markdown indentation.
-    { pattern = '(?m)^@@', replace = "  " },
-    # Collapse any run of 3+ newlines into a single blank line.
-    { pattern = '\n{3,}', replace = "\n\n" },
-    # Normalize trailing blank lines to a single one. (Postprocessors run per
-    # release body, so the trailing newline here also forms the blank-line
-    # separator before the next version header — do not drop it to "".)
-    { pattern = '\n+\z', replace = "\n" },
+  # Turn the nested-item sentinel into two-space markdown indentation.
+  { pattern = '(?m)^@@', replace = "  " },
+  # Collapse any run of 3+ newlines into a single blank line.
+  { pattern = '\n{3,}', replace = "\n\n" },
+  # Normalize trailing blank lines to a single one. (Postprocessors run per
+  # release body, so the trailing newline here also forms the blank-line
+  # separator before the next version header — do not drop it to "".)
+  { pattern = '\n+\z', replace = "\n" },
 ]
 footer = ""
 
@@ -78,33 +78,33 @@ filter_unconventional = true
 split_commits = false
 # Tidy up messages before grouping.
 commit_preprocessors = [
-    # Strip accidental leading whitespace (e.g. " build: ...").
-    { pattern = '^\s+', replace = "" },
-    # Insert a missing colon after a "type(scope)" prefix, e.g. "fix(x) msg".
-    { pattern = '^(\w+\([^)]+\))\s+(\w)', replace = "${1}: ${2}" },
-    # Drop trailing "(#123)" PR-number noise if present.
-    { pattern = '\s*\(#[0-9]+\)', replace = "" },
+  # Strip accidental leading whitespace (e.g. " build: ...").
+  { pattern = '^\s+', replace = "" },
+  # Insert a missing colon after a "type(scope)" prefix, e.g. "fix(x) msg".
+  { pattern = '^(\w+\([^)]+\))\s+(\w)', replace = "${1}: ${2}" },
+  # Drop trailing "(#123)" PR-number noise if present.
+  { pattern = '\s*\(#[0-9]+\)', replace = "" },
 ]
 # Map commit types to changelog sections. Order here controls section order.
 commit_parsers = [
-    # Release commits (from `make release`) point the tag at themselves; keep them
-    # out of the next version's changelog.
-    { message = "^chore\\(release\\)", skip = true },
-    { message = "^feat", group = "<!-- 0 -->Features" },
-    { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
-    { message = "^perf", group = "<!-- 2 -->Performance" },
-    { message = "^refactor", group = "<!-- 3 -->Refactor" },
-    { message = "^docs", group = "<!-- 4 -->Documentation" },
-    { message = "^test", group = "<!-- 5 -->Testing" },
-    { message = "^build", group = "<!-- 6 -->Build System" },
-    { message = "^ci", group = "<!-- 7 -->CI" },
-    { message = "^chore", group = "<!-- 8 -->Chores" },
-    { message = "^cleanup", group = "<!-- 8 -->Chores" },
-    { message = "^skills", group = "<!-- 8 -->Chores" },
-    { message = "^style", group = "<!-- 9 -->Styling" },
-    { message = "^revert", group = "<!-- 10 -->Reverts" },
-    # Anything else conventional but unmatched is skipped.
-    { message = ".*", skip = true },
+  # Release commits (from `make release`) point the tag at themselves; keep them
+  # out of the next version's changelog.
+  { message = "^chore\\(release\\)", skip = true },
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Bug Fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Refactor" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^test", group = "<!-- 5 -->Testing" },
+  { message = "^build", group = "<!-- 6 -->Build System" },
+  { message = "^ci", group = "<!-- 7 -->CI" },
+  { message = "^chore", group = "<!-- 8 -->Chores" },
+  { message = "^cleanup", group = "<!-- 8 -->Chores" },
+  { message = "^skills", group = "<!-- 8 -->Chores" },
+  { message = "^style", group = "<!-- 9 -->Styling" },
+  { message = "^revert", group = "<!-- 10 -->Reverts" },
+  # Anything else conventional but unmatched is skipped.
+  { message = ".*", skip = true },
 ]
 # Sort commits newest-first within each group.
 sort_commits = "newest"

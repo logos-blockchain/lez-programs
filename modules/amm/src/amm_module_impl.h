@@ -45,7 +45,8 @@ public:
     /// — the A/B fields oriented to the caller's requested order (A is def_a_hex's).
     /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_ID
     /// unset/unreadable/bad), `amm_not_initialized` (config undecodable), `bad_config`
-    /// (bad ids / internal decode failure), `same_token_pair`, or `no_pool` for the
+    /// (bad ids / internal decode failure), `pool_read_failed` (wallet read failed),
+    /// `same_token_pair`, or `no_pool` for the
     /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
     LogosMap resolvePoolAccount(const std::string& def_a_hex, const std::string& def_b_hex);
 
@@ -90,7 +91,7 @@ public:
     /// submits (chained into the oracle, seeded from validated pool state — nothing signs). On
     /// success `{ status:"ok", error:"", transactionId:<hex> }`; on failure
     /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_token_id`,
-    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `wallet_submission_failed`,
+    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `no_pool`, `wallet_submission_failed`,
     /// `backend_error` (`already_exists` if the target account is already created).
     LogosMap createPriceObservations(const LogosMap& request);
     LogosMap createOraclePriceAccount(const LogosMap& request);
@@ -188,7 +189,8 @@ public:
     /// `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
     /// `invalid_account_id`, `bad_amount` (malformed amount/deadline),
-    /// `wallet_submission_failed`, or a plan code (e.g. `config_unavailable`). Unlike the
+    /// `wallet_submission_failed`, `already_exists` (the pool PDA is occupied), or a plan code
+    /// (e.g. `config_unavailable`). Unlike the
     /// swaps, a submit failure carries a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
 
@@ -317,6 +319,10 @@ private:
     // amm_ffi ops expect (see the app-side accountReadJson). `account` is
     // omitted when the read has no data (uninitialized/nonexistent).
     nlohmann::json readPublicAccount(const std::string& account_id);
+
+    // Accept pool contents only from the active AMM program.
+    nlohmann::json readPoolAccount(const std::string& account_id,
+                                   const std::string& amm_program_id);
 
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.
