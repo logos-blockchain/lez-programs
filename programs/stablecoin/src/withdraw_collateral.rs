@@ -19,7 +19,10 @@ use token_core::TokenHolding;
 /// the initial PDA claim already happened in
 /// [`crate::open_position::open_position`].
 ///
-/// Blocked while the protocol is frozen. After the decrement, the §6.2
+/// While frozen, only positions with exactly zero normalized debt may withdraw.
+/// The exception is checked after validating the globals, clock and position
+/// ownership, PDA and owner binding; malformed inputs can fail before the frozen
+/// error. After the decrement, the §6.2
 /// collateralization invariant is checked against debt and redemption price both
 /// projected forward to the clock timestamp (§5.3) — unless `amount` is zero or
 /// the position carries no debt, in which case the projections are skipped
@@ -39,9 +42,9 @@ use token_core::TokenHolding;
 ///   collateral definition.
 /// - `protocol_parameters`, `stability_fee_accumulator` or `redemption_price_state` is
 ///   uninitialized, wrongly owned, not at its canonical PDA, or does not decode.
-/// - `protocol_parameters.is_frozen` is set.
+/// - `protocol_parameters.is_frozen` is set and the position has nonzero normalized debt.
 /// - `clock` is not the initialized system `CLOCK_01` account.
-/// - The projected redemption price is zero.
+/// - A nonzero withdrawal from an indebted position projects the redemption price to zero.
 /// - `amount > Position.collateral_amount`, or §6.2 fails post-decrement.
 #[allow(
     clippy::too_many_arguments,
@@ -67,7 +70,6 @@ pub fn withdraw_collateral(
     );
     let parameters =
         ProtocolParameters::try_from(&parameters).expect("ProtocolParameters must decode");
-    assert!(!parameters.is_frozen, "Protocol is frozen");
 
     let accumulator_data = crate::checks::decode_global(
         &stability_fee_accumulator,
@@ -115,6 +117,10 @@ pub fn withdraw_collateral(
     assert_eq!(
         position_data.owner_account_id, owner.account_id,
         "Position owner_account_id does not match the owner account"
+    );
+    assert!(
+        !parameters.is_frozen || position_data.normalized_debt_amount == 0,
+        "Protocol is frozen"
     );
     let vault_seed =
         verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
