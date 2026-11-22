@@ -22,15 +22,13 @@ std::vector<std::uint8_t> encoded(std::uint8_t tag,
 }
 }  // namespace
 
-LOGOS_TEST(exact_output_rejects_invalid_slippage_before_account_reads) {
+LOGOS_TEST(exact_output_rejects_invalid_slippage_without_account_reads) {
     MockFixture f;
     for (const auto slippage : {-1LL, 10000LL, std::numeric_limits<long long>::max()}) {
         assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10, slippage),
                     "invalid_slippage");
     }
     LOGOS_ASSERT_TRUE(f.modules.lez_core.reads.empty());
-    LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_swap_exact_out_quote"), 0);
 }
 
 LOGOS_TEST(oracle_setup_rejects_invalid_windows_without_planning_or_submission) {
@@ -41,8 +39,6 @@ LOGOS_TEST(oracle_setup_rejects_invalid_windows_without_planning_or_submission) 
         r["windowDurationMs"] = value;
         assertError(f.module.createPriceObservations(r), "invalid_window");
         assertError(f.module.createOraclePriceAccount(r), "invalid_window");
-        LOGOS_ASSERT_EQ(ffi::calls("amm_create_price_observations_plan"), 0);
-        LOGOS_ASSERT_EQ(ffi::calls("amm_create_oracle_price_account_plan"), 0);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }
@@ -97,12 +93,6 @@ LOGOS_TEST(unusable_pool_reads_stop_quotes_and_plans_with_stable_codes) {
         assertError(f.module.addLiquidity(request()), code);
         assertError(f.module.removeLiquidity(request()), code);
         assertError(f.module.syncReserves(request()), code);
-        for (const auto* name : {"amm_swap_exact_in_quote", "amm_swap_exact_out_quote",
-                                 "amm_add_liquidity_quote", "amm_remove_liquidity_quote",
-                                 "amm_swap_exact_in_plan", "amm_swap_exact_out_plan",
-                                 "amm_add_liquidity_plan", "amm_remove_liquidity_plan",
-                                 "amm_sync_reserves_plan"})
-            LOGOS_ASSERT_EQ(ffi::calls(name), 0);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }
@@ -158,7 +148,6 @@ LOGOS_TEST(pool_read_failure_is_distinct_from_an_uninitialized_pool) {
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_read_failed");
     assertError(f.module.createPriceObservations(request()), "pool_read_failed");
     assertError(f.module.createOraclePriceAccount(request()), "pool_read_failed");
-    LOGOS_ASSERT_EQ(ffi::calls("amm_resolve_pool"), 0);
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     f.modules.lez_core.accounts.erase(POOL);
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "no_pool");

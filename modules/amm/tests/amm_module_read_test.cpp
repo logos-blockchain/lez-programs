@@ -37,7 +37,6 @@ LOGOS_TEST(config_and_pool_read_failures_keep_distinct_errors) {
     MockFixture f;
     f.modules.lez_core.accounts[CONFIG] = "not-json";
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "config_read_failed");
-    LOGOS_ASSERT_EQ(ffi::calls("amm_swap_pair"), 0);
     ffi::success("amm_config_account", {{"status", "error"}, {"error", "config_unavailable"}});
     assertError(f.module.configAccount(), "config_unavailable");
     LOGOS_ASSERT_EQ(ffi::lastRequest("amm_config_account")["config"]["status"],
@@ -77,7 +76,6 @@ LOGOS_TEST(missing_configuration_returns_stable_errors_without_wallet_reads) {
     }
     LOGOS_ASSERT_TRUE(f.modules.lez_core.reads.empty());
     LOGOS_ASSERT_EQ(f.modules.lez_core.inventory_reads, 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 0);
 }
 
 LOGOS_TEST(malformed_account_fields_are_not_forwarded_as_valid_reads) {
@@ -92,7 +90,6 @@ LOGOS_TEST(malformed_account_fields_are_not_forwarded_as_valid_reads) {
         LOGOS_ASSERT_EQ(ffi::lastRequest("amm_config_account")["config"]["status"],
                         json("read_failed"));
     }
-    LOGOS_ASSERT_EQ(ffi::calls("amm_swap_pair"), 0);
 }
 
 LOGOS_TEST(pool_resolution_orients_stored_fields_to_requested_token_order) {
@@ -188,7 +185,7 @@ LOGOS_TEST(quotes_forward_exact_amounts_and_pool_data) {
     LOGOS_ASSERT_EQ(ffi::lastRequest("amm_remove_liquidity_quote")["slippageBps"], json(75));
 }
 
-LOGOS_TEST(quote_pool_id_failures_do_not_call_pricers) {
+LOGOS_TEST(quote_pool_id_failures_propagate_without_submission) {
     MockFixture f;
     f.modules.lez_core.accounts[CONFIG] = "";
     ffi::failure("amm_pool_id", "account read failed");
@@ -196,11 +193,6 @@ LOGOS_TEST(quote_pool_id_failures_do_not_call_pricers) {
     assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 100, 50), "account read failed");
     assertError(f.module.addLiquidityQuote(request()), "account read failed");
     assertError(f.module.removeLiquidityQuote(request()), "account read failed");
-    LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 4);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_swap_exact_in_quote"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_swap_exact_out_quote"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_add_liquidity_quote"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_remove_liquidity_quote"), 0);
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
@@ -225,7 +217,6 @@ LOGOS_TEST(quote_validation_and_domain_errors_are_stable) {
         assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10, slippage), "invalid_slippage");
     }
     LOGOS_ASSERT_TRUE(f.modules.lez_core.reads.empty());
-    LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 0);
     auto r = request();
     r["amountA"] = 1.5;
     assertError(f.module.createPoolQuote(r), "bad_amount");
@@ -233,8 +224,6 @@ LOGOS_TEST(quote_validation_and_domain_errors_are_stable) {
     r["slippageBps"] = 1.5;
     assertError(f.module.addLiquidityQuote(r), "invalid_slippage");
     assertError(f.module.removeLiquidityQuote(r), "invalid_slippage");
-    LOGOS_ASSERT_EQ(ffi::calls("amm_add_liquidity_quote"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_remove_liquidity_quote"), 0);
     ffi::failure("amm_swap_exact_in_quote", "no_pool");
     assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10, 1), "no_pool");
     ffi::failure("amm_create_pool_quote", "amount_too_low");

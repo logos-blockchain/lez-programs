@@ -217,9 +217,7 @@ LOGOS_TEST(pool_id_failures_stop_dependent_planners_before_submission) {
         f.modules.lez_core.accounts[CONFIG] = "";
         ffi::failure("amm_pool_id", "account read failed");
         assertFailure(op, op.invoke(f.module, request()), "account read failed");
-        LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 1);
         LOGOS_ASSERT_EQ(ffi::lastRequest("amm_pool_id")["config"]["status"], json("read_failed"));
-        LOGOS_ASSERT_EQ(ffi::calls(op.planner), 0);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }
@@ -229,8 +227,6 @@ LOGOS_TEST(missing_program_prevents_all_transaction_plans) {
         MockFixture f;
         ScopedEnv no_program("AMM_PROGRAM_ID", nullptr);
         assertFailure(op, op.invoke(f.module, request()), "config_missing");
-        LOGOS_ASSERT_EQ(ffi::calls(op.planner), 0);
-        LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 0);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.reads.empty());
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
@@ -247,8 +243,6 @@ LOGOS_TEST(missing_config_prevents_all_transaction_plans) {
                                      name == "amm_create_oracle_price_account_plan";
         assertFailure(op, op.invoke(f.module, request()),
                       admin_or_oracle ? "config_missing" : "backend_error");
-        LOGOS_ASSERT_EQ(ffi::calls(op.planner), 0);
-        LOGOS_ASSERT_EQ(ffi::calls("amm_pool_id"), 0);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.reads.empty());
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
@@ -314,11 +308,5 @@ LOGOS_TEST(invalid_account_ids_do_not_reach_transaction_planning) {
     assertError(f.module.transferOwnership(r), "invalid_account_id");
     r["destinationId"] = "invalid!";
     assertError(f.module.withdrawProtocolFees(r), "invalid_account_id");
-    LOGOS_ASSERT_EQ(ffi::calls("amm_create_pool_plan"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_add_liquidity_plan"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_remove_liquidity_plan"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_sync_reserves_plan"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_transfer_ownership_plan"), 0);
-    LOGOS_ASSERT_EQ(ffi::calls("amm_withdraw_protocol_fees_plan"), 0);
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }

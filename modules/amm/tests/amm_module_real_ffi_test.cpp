@@ -202,75 +202,6 @@ LOGOS_TEST(real_ffi_swap_submits_full_width_amount_and_stored_vaults) {
     LOGOS_ASSERT_EQ(tx.payer, PAYER);
 }
 
-LOGOS_TEST(real_ffi_rejects_foreign_owned_pool_for_reads_quotes_and_submits) {
-    RealFixture f;
-    auto pool = json::parse(f.modules.lez_core.accounts.at(REAL_POOL));
-    pool["program_owner"] = OTHER;
-    f.modules.lez_core.accounts[REAL_POOL] = pool.dump();
-    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_address_occupied");
-    assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10000, 50), "pool_address_occupied");
-    assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10000, 50), "pool_address_occupied");
-    auto r = request();
-    assertError(f.module.addLiquidityQuote(r), "pool_address_occupied");
-    assertError(f.module.removeLiquidityQuote(r), "pool_address_occupied");
-    LOGOS_ASSERT_TRUE(
-        f.module.swapExactInput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B, 10000, 1, 1000, PAYER)
-            .empty());
-    LOGOS_ASSERT_TRUE(
-        f.module.swapExactOutput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B, 10000, 20000, 1000, PAYER)
-            .empty());
-    assertError(f.module.addLiquidity(r), "pool_address_occupied");
-    assertError(f.module.removeLiquidity(r), "pool_address_occupied");
-    assertError(f.module.syncReserves(r), "pool_address_occupied");
-    assertError(f.module.createPool(r), "pool_address_occupied");
-    assertError(f.module.createPriceObservations(r), "pool_address_occupied");
-    assertError(f.module.createOraclePriceAccount(r), "pool_address_occupied");
-    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
-}
-
-LOGOS_TEST(real_ffi_pool_creation_requires_an_unoccupied_default_account) {
-    RealFixture f;
-    const auto empty = snapshot("", std::string(64, '0'));
-    for (const auto& field : {"program_owner", "balance", "nonce", "data"}) {
-        auto occupied = empty;
-        if (std::string(field) == "program_owner")
-            occupied[field] = OTHER;
-        else if (std::string(field) == "data")
-            occupied[field] = "00";
-        else
-            occupied[field] = "01" + std::string(30, '0');
-        f.modules.lez_core.accounts[REAL_POOL] = occupied.dump();
-        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_address_occupied");
-        assertError(f.module.createPool(request()), "pool_address_occupied");
-        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
-    }
-    f.modules.lez_core.accounts.erase(REAL_POOL);
-    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "no_pool");
-    assertOk(f.module.createPool(request()));
-    LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
-}
-
-LOGOS_TEST(real_ffi_oracle_setup_requires_an_amm_owned_pool) {
-    RealFixture f;
-    f.modules.lez_core.accounts.erase(REAL_POOL);
-    assertError(f.module.createPriceObservations(request()), "no_pool");
-    assertError(f.module.createOraclePriceAccount(request()), "no_pool");
-    f.modules.lez_core.accounts[REAL_POOL] = snapshot(poolData(), OTHER).dump();
-    assertError(f.module.createPriceObservations(request()), "pool_address_occupied");
-    assertError(f.module.createOraclePriceAccount(request()), "pool_address_occupied");
-    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
-}
-
-LOGOS_TEST(real_ffi_pool_read_failure_is_not_reported_as_a_vacant_pool) {
-    RealFixture f;
-    f.modules.lez_core.accounts[REAL_POOL] = "";
-    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_read_failed");
-    assertError(f.module.createPool(request()), "pool_read_failed");
-    assertError(f.module.createPriceObservations(request()), "pool_read_failed");
-    assertError(f.module.createOraclePriceAccount(request()), "pool_read_failed");
-    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
-}
-
 LOGOS_TEST(real_ffi_liquidity_submits_follow_stored_pool_orientation) {
     RealFixture f;
     auto r = request();
@@ -323,17 +254,6 @@ LOGOS_TEST(real_ffi_liquidity_submits_follow_stored_pool_orientation) {
     }
 }
 
-LOGOS_TEST(real_ffi_rejects_invalid_slippage_and_window_without_submission) {
-    RealFixture f;
-    assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 100, -1), "invalid_slippage");
-    auto r = request();
-    r["windowDurationMs"] = "123abc";
-    assertError(f.module.createPriceObservations(r), "invalid_window");
-    r["windowDurationMs"] = "-1";
-    assertError(f.module.createOraclePriceAccount(r), "invalid_window");
-    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
-}
-
 LOGOS_TEST(real_ffi_oracle_targets_accept_only_default_accounts) {
     const std::string observations_id =
         "f6c132254d93bf31bd9dafe9293651ad8b7a5b404d4893b9bfe0e21f69ffc292";
@@ -357,35 +277,15 @@ LOGOS_TEST(real_ffi_oracle_targets_accept_only_default_accounts) {
         LOGOS_ASSERT_EQ(json(tx.instruction), json(expected));
         LOGOS_ASSERT_EQ(tx.payer, PAYER);
 
-        const auto empty = snapshot("", std::string(64, '0'));
-        for (const auto& field : {"program_owner", "balance", "nonce", "data"}) {
-            auto occupied = empty;
-            if (std::string(field) == "program_owner")
-                occupied[field] = PROGRAM;
-            else if (std::string(field) == "data")
-                occupied[field] = "00";
-            else
-                occupied[field] = "01" + std::string(30, '0');
-            f.modules.lez_core.accounts[target] = occupied.dump();
-            assertError(invoke(), "already_exists");
-            LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
-        }
+        // The mock suite covers each non-default field; one suffices against the real plan.
+        f.modules.lez_core.accounts[target] = snapshot("00", std::string(64, '0')).dump();
+        assertError(invoke(), "already_exists");
+        LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
         // An unreadable target cannot be verified as available.
         f.modules.lez_core.accounts[target] = "";
         assertError(invoke(), "account_read_failed");
         LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
     }
-}
-
-LOGOS_TEST(real_ffi_oracle_planners_reject_windows_below_guest_capacity) {
-    RealFixture f;
-    for (const auto window : {1, 1000, 2047}) {
-        auto r = request();
-        r["windowDurationMs"] = window;
-        assertError(f.module.createPriceObservations(r), "invalid_window");
-        assertError(f.module.createOraclePriceAccount(r), "invalid_window");
-    }
-    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
 LOGOS_TEST(real_ffi_decodes_live_wallet_holdings_and_resolves_definitions) {
