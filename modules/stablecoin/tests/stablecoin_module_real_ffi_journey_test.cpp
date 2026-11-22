@@ -1130,6 +1130,8 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
         {"maximumOraclePriceAgeMilliseconds", "900000"},
         {"initialRedemptionPrice", FIXED_ONE},
         {"stablecoinName", "Bootstrap"},
+        {"minimumDebtAmount", "1000"},
+        {"debtCeiling", "5000000"},
         {"feePayerId", CALLER_ID_HEX},
         // A caller cannot substitute a different deployment for the configured one.
         {"stablecoinProgramId", idHex(99)},
@@ -1137,13 +1139,13 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
 
     assertOk(response);
     LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
-    // Pin tag zero, existing argument order, and the appended selected admin ID.
+    // Pin tag zero, existing argument order, then the selected admin ID and debt limits.
     std::string instruction_hex = "00" + freeze_authority_id + u128Le(FIXED_ONE)
         + i128Le("0") + i128Le("0") + u128Le(ratio);
     appendU64(instruction_hex, 300'000);
     appendU64(instruction_hex, 900'000);
     instruction_hex += u128Le(FIXED_ONE) + "09000000" + bytesHex("Bootstrap")
-        + CALLER_ID_HEX;
+        + CALLER_ID_HEX + u128Le("1000") + u128Le("5000000");
     const QByteArray instruction = QByteArray::fromHex(
         QByteArray::fromStdString(instruction_hex));
     const QVariantList signers{true, false, false, false, false, false, false, false, false};
@@ -1856,8 +1858,11 @@ LOGOS_TEST(real_ffi_initialize_requires_explicit_debt_limits_and_preserves_paylo
     LOGOS_ASSERT_TRUE(planned != nullptr);
     const json envelope = json::parse(planned.get());
     LOGOS_ASSERT_TRUE(envelope["ok"].get<bool>());
-    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
-        submissionArguments(envelope["value"], std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
+    // The header signs at index 0; the selected admin pays the fee.
+    QVariantList expected =
+        submissionArguments(envelope["value"], std::vector<std::size_t>{0}, PROGRAM_ID_HEX);
+    expected[4] = QVariant(QString::fromStdString(CALLER_ID_HEX));
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction", expected));
     for (const char* key : {"minimumDebtAmount", "debtCeiling"}) {
         LogosMap missing = request;
         missing.erase(key);
