@@ -152,6 +152,7 @@ std::string protocolData(bool frozen = false) {
     result += u128Le("1500000000000000000000000000");
     appendU64(result, 300'000);
     appendU64(result, 900'000);
+    result += ORACLE_OWNER_HEX;
     result += frozen ? "01" : "00";
     result += u128Le("1") + u128Le("340282366920938463463374607431768211455");
     return result;
@@ -260,7 +261,7 @@ void expectMissing(const std::string& account_id) {
     MockStore::instance()
         .when(QStringLiteral("lez_core"), QStringLiteral("get_account_public"))
         .withArgs(accountArgs(account_id))
-        .thenReturn(QVariant(QString()));
+        .thenReturn(QVariant(QString::fromStdString(accountResponse(std::string(64, '0'), ""))));
 }
 
 QVariantList walletAccounts() {
@@ -374,7 +375,7 @@ std::vector<RealAdminCase> realAdminCases() {
         {&StablecoinModuleImpl::setFreezeAuthority, stablecoin_set_freeze_authority_plan,
             {{"newFreezeAuthorityId", CALLER_ID_HEX}}, "newFreezeAuthorityId", "invalid-id", "invalid_account_id", false},
         {&StablecoinModuleImpl::setMarketPriceOracle, stablecoin_set_market_price_oracle_plan,
-            {{"newOracleId", idHex(8)}}, nullptr, nullptr, "oracle_asset_mismatch", true},
+            {{"newOracleId", idHex(8)}, {"newOracleProgramId", TOKEN_OWNER_HEX}}, nullptr, nullptr, "oracle_asset_mismatch", true},
     };
 }
 QVariantList singleWalletAccount(const std::string& account_id) {
@@ -607,7 +608,7 @@ LOGOS_TEST(real_ffi_freeze_repeat_unfreeze_repeat_and_live_authority_rotation_us
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), ++submissions);
         // Feed only the native flag assignment forward. All other parameters
         // keep their exact bytes, including on idempotent repeat operations.
-        parameters.replace(482, 2, frozen ? "01" : "00");
+        parameters.replace(546, 2, frozen ? "01" : "00");
         expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     }
     const LogosMap admin_only = module.freeze(withPayer({{"freezeAuthorityId", idHex(1)}}));
@@ -678,7 +679,7 @@ LOGOS_TEST(real_ffi_freeze_blocks_risk_increases_but_recovery_and_pokes_work_and
     const LogosMap debt = {{"ownerId", CALLER_ID_HEX}, {"positionNonce", "7"},
         {"amount", "0"}, {"userStablecoinHoldingId", idHex(9)}};
     assertOk(module.freeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}})));
-    parameters.replace(482, 2, "01"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    parameters.replace(546, 2, "01"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     LOGOS_ASSERT_EQ(module.openPosition(withPayer(open))["error"].get<std::string>(), std::string("protocol_frozen"));
     LogosMap indebted_withdrawal = collateral;
     indebted_withdrawal["positionNonce"] = "9";
@@ -725,7 +726,7 @@ LOGOS_TEST(real_ffi_freeze_blocks_risk_increases_but_recovery_and_pokes_work_and
     assertOk(module.closePosition(withPayer({{"ownerId", CALLER_ID_HEX}, {"positionNonce", "6"}})));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 8);
     assertOk(module.unfreeze(withPayer({{"freezeAuthorityId", CALLER_ID_HEX}})));
-    parameters.replace(482, 2, "00"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
+    parameters.replace(546, 2, "00"); expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     assertOk(module.openPosition(withPayer(open))); assertOk(module.withdrawCollateral(withPayer(indebted_withdrawal))); assertOk(module.generateDebt(withPayer(debt)));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 12);
 }
@@ -776,6 +777,10 @@ LOGOS_TEST(real_ffi_admin_setters_use_exact_plans_while_frozen_and_fail_prefligh
             submissionArguments(plan, std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
         LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
         if (setter.oracle) {
+            expectRead(idHex(8), ORACLE_OWNER_HEX, oracle);
+            const LogosMap wrong_owner = module.setMarketPriceOracle(request);
+            LOGOS_ASSERT_EQ(wrong_owner["error"].get<std::string>(), std::string("oracle_program_mismatch"));
+            LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
             // Same initialized producer; change only the bound quote asset.
             oracle.replace(64, 64, idHex(99));
             expectRead(idHex(8), TOKEN_OWNER_HEX, oracle);
@@ -989,6 +994,8 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     LOGOS_ASSERT_EQ(parameters["protocolParameters"]["schemaVersion"], json("2"));
     LOGOS_ASSERT_EQ(parameters["protocolParameters"]["minimumDebtAmount"], json("1"));
     LOGOS_ASSERT_EQ(parameters["protocolParameters"]["debtCeiling"], json("340282366920938463463374607431768211455"));
+    LOGOS_ASSERT_EQ(parameters["protocolParameters"]["marketPriceOracleProgramIdHex"].get<std::string>(),
+                    ORACLE_OWNER_HEX);
     const LogosMap accumulator_snapshot = module.stabilityFeeAccumulator();
     assertOk(accumulator_snapshot);
     LOGOS_ASSERT_EQ(
@@ -1014,6 +1021,14 @@ LOGOS_TEST(real_ffi_journey_reads_quotes_submits_and_rereads_state) {
     LOGOS_ASSERT_EQ(quote["code"].get<std::string>(), std::string("ready"));
     LOGOS_ASSERT_EQ(quote["elapsedMilliseconds"].get<std::string>(), std::string("600000"));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+    expectRead(oracle_id, TOKEN_OWNER_HEX, oracle);
+    const LogosMap untrusted_quote = module.redemptionRateUpdateQuote();
+    assertOk(untrusted_quote);
+    LOGOS_ASSERT_EQ(untrusted_quote["canSubmit"].get<bool>(), false);
+    LOGOS_ASSERT_EQ(untrusted_quote["errors"][0]["code"].get<std::string>(), std::string("oracle_unavailable"));
+    LOGOS_ASSERT_TRUE(untrusted_quote["marketPrice"].is_null());
+    expectRead(oracle_id, ORACLE_OWNER_HEX, oracle);
 
     const LogosMap accrued = module.accrueStabilityFee(CALLER_ID_HEX, CALLER_ID_HEX);
     assertOk(accrued);
@@ -1132,6 +1147,7 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
         {"stablecoinName", "Bootstrap"},
         {"minimumDebtAmount", "1000"},
         {"debtCeiling", "5000000"},
+        {"marketPriceOracleProgramId", ORACLE_OWNER_HEX},
         {"feePayerId", CALLER_ID_HEX},
         // A caller cannot substitute a different deployment for the configured one.
         {"stablecoinProgramId", idHex(99)},
@@ -1139,13 +1155,14 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
 
     assertOk(response);
     LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
-    // Pin tag zero, existing argument order, then the selected admin ID and debt limits.
+    // Pin tag zero, existing argument order, then the selected admin ID, debt limits
+    // and trusted oracle program.
     std::string instruction_hex = "00" + freeze_authority_id + u128Le(FIXED_ONE)
         + i128Le("0") + i128Le("0") + u128Le(ratio);
     appendU64(instruction_hex, 300'000);
     appendU64(instruction_hex, 900'000);
     instruction_hex += u128Le(FIXED_ONE) + "09000000" + bytesHex("Bootstrap")
-        + CALLER_ID_HEX + u128Le("1000") + u128Le("5000000");
+        + CALLER_ID_HEX + u128Le("1000") + u128Le("5000000") + ORACLE_OWNER_HEX;
     const QByteArray instruction = QByteArray::fromHex(
         QByteArray::fromStdString(instruction_hex));
     const QVariantList signers{true, false, false, false, false, false, false, false, false};
@@ -1461,7 +1478,7 @@ LOGOS_TEST(real_ffi_withdrawal_rechecks_health_and_accepts_external_destination)
     expectRead(destination_id,TOKEN_OWNER_HEX,collateralHoldingData("0"));
     expectRead(clock_id,PROGRAM_OWNER_HEX,clockData(DUE + 60'000'000));
     parameters.replace(322,32,u128Le("2000000000000000000000000000"));
-    parameters.replace(482, 2, "01");
+    parameters.replace(546, 2, "01");
     expectRead(protocol_id,PROGRAM_OWNER_HEX,parameters);
     request["amount"] = maximum;
     assertOk(module.withdrawCollateral(withPayer(request))); // Frozen zero-debt positions skip even enormous fee projections.
@@ -1728,8 +1745,8 @@ LOGOS_TEST(real_ffi_debt_limits_follow_shared_total_and_floor_updates) {
     std::string parameters = feeParameters(FIXED_ONE, false);
     parameters.replace(130, 64, definition_id);
     auto limits = [&](const std::string& minimum, const std::string& ceiling) {
-        parameters.replace(484, 32, u128Le(minimum));
-        parameters.replace(516, 32, u128Le(ceiling));
+        parameters.replace(548, 32, u128Le(minimum));
+        parameters.replace(580, 32, u128Le(ceiling));
         expectRead(protocol_id, PROGRAM_OWNER_HEX, parameters);
     };
     auto position = [&](std::uint64_t nonce, const std::string& debt) {
@@ -1804,7 +1821,7 @@ LOGOS_TEST(real_ffi_debt_limits_follow_shared_total_and_floor_updates) {
     totals("15", "15");
     assertOk(module.setDebtLimits(withPayer({{"adminId", CALLER_ID_HEX},
         {"minimumDebtAmount", "20"}, {"debtCeiling", "20"}})));
-    parameters.replace(482, 2, "01");
+    parameters.replace(546, 2, "01");
     limits("20", "20");
     request["positionNonce"] = "8";
     request["amount"] = "1";
@@ -1845,6 +1862,7 @@ LOGOS_TEST(real_ffi_initialize_requires_explicit_debt_limits_and_preserves_paylo
         {"maximumOraclePriceAgeMilliseconds", "900000"}, {"initialRedemptionPrice", FIXED_ONE},
         {"stablecoinName", "Coin"}, {"minimumDebtAmount", "9007199254740993"},
         {"debtCeiling", "340282366920938463463374607431768211455"},
+        {"marketPriceOracleProgramId", ORACLE_OWNER_HEX},
     });
     assertOk(module.initializeProgram(request));
     json planned_request = request;
@@ -1884,7 +1902,8 @@ LOGOS_TEST(real_ffi_global_readers_reject_legacy_and_unsupported_schema) {
     const std::string accumulator_id = info["stabilityFeeAccumulatorIdHex"];
     const std::string protocol = protocolData();
     const std::string accumulator = accumulatorData(FIXED_ONE, DUE);
-    for (const std::string& data : {protocol.substr(2, 482), "03" + protocol.substr(2)}) {
+    for (const std::string& data : {protocol.substr(2, 480) + protocol.substr(546, 2),
+             "03" + protocol.substr(2)}) {
         expectRead(protocol_id, PROGRAM_OWNER_HEX, data);
         LOGOS_ASSERT_EQ(module.protocolParameters()["error"].get<std::string>(),
             std::string("unsupported_account_schema"));

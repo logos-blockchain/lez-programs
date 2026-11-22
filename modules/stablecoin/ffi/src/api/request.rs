@@ -139,6 +139,7 @@ pub struct InitializeProgramPlanRequest {
     pub stablecoin_name: String,
     pub minimum_debt_amount: Value,
     pub debt_ceiling: Value,
+    pub market_price_oracle_program_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -248,6 +249,7 @@ pub struct SetMarketPriceOraclePlanRequest {
     #[serde(flatten)]
     pub context: AdminPlanContext,
     pub new_oracle_id: String,
+    pub new_oracle_program_id: String,
     pub new_oracle: AccountRead,
 }
 

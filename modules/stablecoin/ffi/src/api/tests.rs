@@ -82,6 +82,7 @@ fn protocol_parameters() -> ProtocolParameters {
         stablecoin_definition_id: id(3),
         collateral_definition_id: id(4),
         market_price_oracle_id: id(5),
+        market_price_oracle_program_id: ORACLE_PROGRAM_ID,
         stability_fee_per_millisecond: u128::MAX,
         controller_proportional_gain: i128::MIN,
         controller_integral_gain: i128::MAX,
@@ -233,6 +234,7 @@ fn initialize_request() -> InitializeProgramPlanRequest {
         stablecoin_name: String::from("Exact Stablecoin"),
         minimum_debt_amount: json!("1"),
         debt_ceiling: json!(u128::MAX.to_string()),
+        market_price_oracle_program_id: account_id_hex(ORACLE_PROGRAM_ID),
     }
 }
 
@@ -249,6 +251,7 @@ fn poke_parameters(is_frozen: bool) -> ProtocolParameters {
         stablecoin_definition_id: id(3),
         collateral_definition_id: id(4),
         market_price_oracle_id: id(5),
+        market_price_oracle_program_id: ORACLE_PROGRAM_ID,
         stability_fee_per_millisecond: FIXED_POINT_ONE,
         controller_proportional_gain: FIXED_POINT_ONE as i128,
         controller_integral_gain: 0,
@@ -1031,6 +1034,7 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
         initial_admin_account_id,
         minimum_debt_amount,
         debt_ceiling,
+        market_price_oracle_program_id,
     } = decode_instruction(&plan["instruction"])
     else {
         panic!("expected InitializeProgram");
@@ -1051,6 +1055,7 @@ fn initialize_plan_round_trips_all_boundary_values_and_exact_account_contract() 
     assert_eq!(stablecoin_name, "Exact Stablecoin");
     assert_eq!(minimum_debt_amount, 1);
     assert_eq!(debt_ceiling, u128::MAX);
+    assert_eq!(market_price_oracle_program_id, ORACLE_PROGRAM_ID);
 }
 
 #[test]
@@ -1129,12 +1134,35 @@ fn initialize_plan_validates_required_account_shapes_and_assets() {
 }
 
 #[test]
+fn initialize_plan_requires_the_configured_oracle_owner() {
+    let mut request = initialize_request();
+    request.market_price_oracle_program_id = account_id_hex(id(99));
+    assert_error(initialize_program_plan(request), "oracle_program_mismatch");
+
+    let mut request = initialize_request();
+    request.market_price_oracle = account_read(id(11), &Account::default());
+    request.market_price_oracle_program_id = account_id_hex(AccountId::default());
+    assert_error(initialize_program_plan(request), "invalid_account_id");
+}
+
+#[test]
 fn initialize_plan_accepts_an_oracle_that_does_not_exist_yet() {
     // RAI-style launch (spec §3.2): bind the address of an oracle that will
     // only exist once the stablecoin trades.
     let mut request = initialize_request();
     request.market_price_oracle = account_read(id(11), &Account::default());
     ok(initialize_program_plan(request));
+
+    // The module reports an all-zero account as `not_found` with no account.
+    let mut request = initialize_request();
+    request.market_price_oracle.status = String::from("not_found");
+    request.market_price_oracle.account = None;
+    ok(initialize_program_plan(request));
+
+    let mut request = initialize_request();
+    request.market_price_oracle.status = String::from("backend_error");
+    request.market_price_oracle.account = None;
+    assert_error(initialize_program_plan(request), "account_read_failed");
 }
 
 #[test]
@@ -1263,6 +1291,12 @@ fn refresh_plan_keeps_controller_quote_gates_soft() {
     let mut too_soon = refresh_request(false);
     too_soon.redemption_price_state = poke_redemption_read(POKE_NOW - 49);
     assert!(refresh_globals_plan(too_soon).is_ok());
+
+    // An oracle that does not exist yet (spec §3.2), as the module reports it.
+    let mut missing = refresh_request(false);
+    missing.market_price_oracle.status = String::from("not_found");
+    missing.market_price_oracle.account = None;
+    assert!(refresh_globals_plan(missing).is_ok());
 }
 
 #[test]
@@ -1828,8 +1862,9 @@ fn global_account_decoders_reject_legacy_and_unsupported_schema() {
     let accumulator = stability_fee_accumulator();
     let encoded_parameters = Data::from(&parameters).as_ref().to_vec();
     let encoded_accumulator = Data::from(&accumulator).as_ref().to_vec();
-    // Strip version and appended fields to reconstruct the exact legacy layouts.
-    let legacy_parameters = encoded_parameters[1..encoded_parameters.len() - 32].to_vec();
+    // Strip version, oracle owner and appended fields to reconstruct the exact legacy layouts.
+    let mut legacy_parameters = encoded_parameters[1..encoded_parameters.len() - 32].to_vec();
+    legacy_parameters.drain(240..272);
     let legacy_accumulator = encoded_accumulator[1..encoded_accumulator.len() - 16].to_vec();
     // Current main stores the total as well, but has no version byte.
     let current_legacy_accumulator = encoded_accumulator[1..].to_vec();

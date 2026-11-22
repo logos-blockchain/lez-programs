@@ -1,8 +1,7 @@
 #![cfg_attr(not(test), no_main)]
 
 use nssa_core::account::AccountWithMetadata;
-use spel_framework::context::ProgramContext;
-use spel_framework::prelude::*;
+use spel_framework::{context::ProgramContext, prelude::*};
 
 #[cfg(not(test))]
 risc0_zkvm::guest::entry!(main);
@@ -49,6 +48,7 @@ mod stablecoin {
         initial_admin_account_id: nssa_core::account::AccountId,
         minimum_debt_amount: u128,
         debt_ceiling: u128,
+        market_price_oracle_program_id: nssa_core::account::AccountId,
     ) -> SpelResult {
         let (post_states, chained_calls) =
             stablecoin_program::initialize_program::initialize_program(
@@ -75,6 +75,7 @@ mod stablecoin {
                     initial_admin_account_id,
                     minimum_debt_amount,
                     debt_ceiling,
+                    market_price_oracle_program_id,
                 },
             );
         Ok(spel_framework::SpelOutput::execute(
@@ -264,15 +265,16 @@ mod stablecoin {
         protocol_parameters: AccountWithMetadata,
         amount: u128,
     ) -> SpelResult {
-        let (post_states, chained_calls) = stablecoin_program::deposit_collateral::deposit_collateral(
-            owner,
-            position,
-            vault,
-            user_collateral_holding,
-            protocol_parameters,
-            ctx.self_account_id,
-            amount,
-        );
+        let (post_states, chained_calls) =
+            stablecoin_program::deposit_collateral::deposit_collateral(
+                owner,
+                position,
+                vault,
+                user_collateral_holding,
+                protocol_parameters,
+                ctx.self_account_id,
+                amount,
+            );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
             chained_calls,
@@ -497,12 +499,13 @@ mod stablecoin {
         #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_ratio: u128,
     ) -> SpelResult {
-        let (post_states, chained_calls) = stablecoin_program::admin::set_minimum_collateralization_ratio(
-            admin,
-            protocol_parameters,
-            ctx.self_account_id,
-            new_ratio,
-        );
+        let (post_states, chained_calls) =
+            stablecoin_program::admin::set_minimum_collateralization_ratio(
+                admin,
+                protocol_parameters,
+                ctx.self_account_id,
+                new_ratio,
+            );
         Ok(spel_framework::SpelOutput::execute(
             post_states,
             chained_calls,
@@ -611,8 +614,8 @@ mod stablecoin {
 
     /// Rotate the market-price oracle (spec §10.13).
     ///
-    /// Validates the replacement's shape and base/quote pair; its `program_owner`
-    /// is deliberately not pinned.
+    /// Binds the address and expected program owner together. Validates the
+    /// owner, shape, and base/quote pair of an existing replacement.
     ///
     /// # Errors
     /// Returns the host program's panic-converted error if any precondition
@@ -623,12 +626,14 @@ mod stablecoin {
         #[account(signer)] admin: AccountWithMetadata,
         #[account(mut)] protocol_parameters: AccountWithMetadata,
         new_oracle: AccountWithMetadata,
+        new_oracle_program_id: nssa_core::account::AccountId,
     ) -> SpelResult {
         let (post_states, chained_calls) = stablecoin_program::admin::set_market_price_oracle(
             admin,
             protocol_parameters,
             new_oracle,
             ctx.self_account_id,
+            new_oracle_program_id,
         );
         Ok(spel_framework::SpelOutput::execute(
             post_states,

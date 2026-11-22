@@ -67,6 +67,10 @@ const STABLECOIN_MASTER_HOLDING_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__MASTER_HOL
 /// Borsh encodes the variant as a leading tag byte, so variants are append-only:
 /// inserting one shifts the encoding of every variant after it.
 #[derive(Debug, BorshSerialize, BorshDeserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "decoded once per transaction; boxing would change the guest ABI surface"
+)]
 pub enum Instruction {
     /// Bootstrap the protocol. One-shot — fails if any of the five global PDAs
     /// is already initialized.
@@ -122,6 +126,8 @@ pub enum Instruction {
         minimum_debt_amount: u128,
         /// New-borrowing ceiling on accrued aggregate debt, in raw atomic units.
         debt_ceiling: u128,
+        /// Expected program owner of the market price oracle.
+        market_price_oracle_program_id: AccountId,
     },
     /// Advance the stability-fee accumulator to the clock's timestamp.
     /// Permissionless and idempotent — there is no minimum-interval throttle;
@@ -290,13 +296,15 @@ pub enum Instruction {
     },
     /// Rotate the market-price oracle (spec §10.13).
     ///
-    /// Validates the replacement's shape and base/quote pair against the
-    /// definitions bound at bootstrap. Its `program_owner` is deliberately not
-    /// pinned, so any producer emitting a well-formed `OraclePriceAccount` works.
+    /// Binds the replacement address and expected producer together. An existing
+    /// oracle must have that owner and quote the definitions bound at bootstrap.
     ///
     /// Required accounts (3), in order: `admin`, `protocol_parameters` (writable),
-    /// and `new_oracle` (initialized, read-only).
-    SetMarketPriceOracle,
+    /// and `new_oracle` (read-only; may not exist yet).
+    SetMarketPriceOracle {
+        /// Expected program owner, including when the oracle does not exist yet.
+        new_oracle_program_id: AccountId,
+    },
     /// Retune both timing parameters (spec §10.14). Bundled.
     ///
     /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
@@ -678,7 +686,9 @@ mod instruction_tests {
                 new_proportional_gain: -1,
                 new_integral_gain: 2,
             },
-            Instruction::SetMarketPriceOracle,
+            Instruction::SetMarketPriceOracle {
+                new_oracle_program_id: AccountId::new([4; 32]),
+            },
             Instruction::SetTimingParameters {
                 new_minimum_milliseconds_between_rate_updates: 4,
                 new_maximum_oracle_price_age_milliseconds: 5,
@@ -760,10 +770,21 @@ mod instruction_tests {
             initial_admin_account_id: AccountId::new([0xA0; 32]),
             minimum_debt_amount: 10,
             debt_ceiling: 1_000_000,
+            market_price_oracle_program_id: AccountId::new([4; 32]),
         };
         let encoded = borsh::to_vec(&original).expect("serialize");
         assert_eq!(encoded.first(), Some(&0), "initialization keeps tag zero");
-        let limits_offset = encoded.len() - 32;
+        let oracle_program_offset = encoded.len() - 32;
+        assert_eq!(
+            &encoded[oracle_program_offset..],
+            &[4; 32],
+            "the trusted oracle program is appended last"
+        );
+        assert!(
+            borsh::from_slice::<Instruction>(&encoded[..oracle_program_offset]).is_err(),
+            "initialization without the trusted oracle program must not decode"
+        );
+        let limits_offset = oracle_program_offset - 32;
         let admin_offset = limits_offset - 32;
         assert_eq!(
             &encoded[admin_offset..limits_offset],
@@ -793,6 +814,7 @@ mod instruction_tests {
                 initial_admin_account_id,
                 minimum_debt_amount,
                 debt_ceiling,
+                market_price_oracle_program_id,
             } => {
                 assert_eq!(minimum_debt_amount, 10);
                 assert_eq!(debt_ceiling, 1_000_000);
@@ -812,6 +834,7 @@ mod instruction_tests {
                 assert_eq!(initial_redemption_price, FIXED_POINT_ONE / 2);
                 assert_eq!(stablecoin_name, "test-stable");
                 assert_eq!(initial_admin_account_id, AccountId::new([0xA0; 32]));
+                assert_eq!(market_price_oracle_program_id, AccountId::new([4; 32]));
             }
             _ => panic!("decoded into wrong variant"),
         }
@@ -834,7 +857,9 @@ mod instruction_tests {
                 new_proportional_gain: 0,
                 new_integral_gain: 0,
             },
-            Instruction::SetMarketPriceOracle,
+            Instruction::SetMarketPriceOracle {
+                new_oracle_program_id: AccountId::new([4; 32]),
+            },
             Instruction::SetTimingParameters {
                 new_minimum_milliseconds_between_rate_updates: 1,
                 new_maximum_oracle_price_age_milliseconds: 1,

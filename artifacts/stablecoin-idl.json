@@ -108,6 +108,10 @@
         {
           "name": "debt_ceiling",
           "type": "u128"
+        },
+        {
+          "name": "market_price_oracle_program_id",
+          "type": "account_id"
         }
       ]
     },
@@ -508,7 +512,12 @@
           "init": false
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "new_oracle_program_id",
+          "type": "account_id"
+        }
+      ]
     },
     {
       "name": "set_timing_parameters",
@@ -895,6 +904,10 @@
           {
             "name": "maximum_oracle_price_age_milliseconds",
             "type": "u64"
+          },
+          {
+            "name": "market_price_oracle_program_id",
+            "type": "account_id"
           },
           {
             "name": "is_frozen",
