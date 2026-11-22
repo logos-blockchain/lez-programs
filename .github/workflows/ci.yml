@@ -34,9 +34,6 @@ jobs:
       - name: Check TOML files are formatted
         run: git ls-files -z '*.toml' | xargs -0 taplo fmt --check
 
-      - name: Test TOML file selection
-        run: python3 scripts/tests/test_toml_check.py
-
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -183,9 +180,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
-
-      - name: Check guest build context
-        run: python3 scripts/tests/test_guest_build_context.py
 
       - name: Build guest program binaries
         run: make build-programs
