@@ -370,6 +370,60 @@ mod tests {
     }
 
     #[test]
+    fn high_oracle_price_example_matches_documented_bounded_drift() {
+        use alloy_primitives::U512;
+
+        use crate::{
+            collateralization::collateralization_values,
+            math::{compute_current_redemption_price, MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS},
+        };
+
+        let initial_price = FIXED_POINT_ONE / 2;
+        let output = run_controller_tick(
+            initial_price,
+            FIXED_POINT_ONE,
+            0,
+            (FIXED_POINT_ONE / 10_000) as i128,
+            0,
+            100_000,
+        );
+        assert_eq!(output.controller_integral_term, 0);
+        assert_eq!(
+            output.redemption_rate_per_millisecond,
+            999_999_999_990_000_000_000_000_000
+        );
+        let projected = |milliseconds| {
+            compute_current_redemption_price(
+                initial_price,
+                output.redemption_rate_per_millisecond,
+                0,
+                milliseconds,
+            )
+        };
+        assert_eq!(projected(100_000), 499_999_500_000_249_997_416_644_487);
+        assert_eq!(
+            projected(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS),
+            496_985_126_168_360_495_482_630_600
+        );
+
+        let token_unit = 10_u128.pow(18);
+        let health = |price| {
+            collateralization_values(
+                100 * token_unit,
+                200 * token_unit,
+                U512::from(FIXED_POINT_ONE),
+                U512::from(price),
+                FIXED_POINT_ONE * 3 / 2,
+            )
+        };
+        // The clamp bounds drift per unit of time: even a full compounding
+        // window at the clamp leaves the borrow undercollateralized.
+        assert!(!health(initial_price).is_collateralized());
+        assert!(!health(projected(100_000)).is_collateralized());
+        assert!(!health(projected(MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS)).is_collateralized());
+    }
+
+    #[test]
     fn zero_error_keeps_rate_at_one() {
         let output = run_controller_tick(
             FIXED_POINT_ONE,

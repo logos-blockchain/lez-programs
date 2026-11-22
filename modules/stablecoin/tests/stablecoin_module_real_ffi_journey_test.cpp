@@ -1130,6 +1130,8 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
         {"maximumOraclePriceAgeMilliseconds", "900000"},
         {"initialRedemptionPrice", FIXED_ONE},
         {"stablecoinName", "Bootstrap"},
+        {"minimumDebtAmount", "1000"},
+        {"debtCeiling", "5000000"},
         {"feePayerId", CALLER_ID_HEX},
         // A caller cannot substitute a different deployment for the configured one.
         {"stablecoinProgramId", idHex(99)},
@@ -1137,13 +1139,13 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
 
     assertOk(response);
     LOGOS_ASSERT_EQ(response["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
-    // Pin tag zero, existing argument order, and the appended selected admin ID.
+    // Pin tag zero, existing argument order, then the selected admin ID and debt limits.
     std::string instruction_hex = "00" + freeze_authority_id + u128Le(FIXED_ONE)
         + i128Le("0") + i128Le("0") + u128Le(ratio);
     appendU64(instruction_hex, 300'000);
     appendU64(instruction_hex, 900'000);
     instruction_hex += u128Le(FIXED_ONE) + "09000000" + bytesHex("Bootstrap")
-        + CALLER_ID_HEX;
+        + CALLER_ID_HEX + u128Le("1000") + u128Le("5000000");
     const QByteArray instruction = QByteArray::fromHex(
         QByteArray::fromStdString(instruction_hex));
     const QVariantList signers{true, false, false, false, false, false, false, false, false};
@@ -1158,6 +1160,63 @@ LOGOS_TEST(real_ffi_initialize_uses_configured_header_signature_and_selected_adm
         }));
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
     LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "get_account_public"), 8);
+}
+
+LOGOS_TEST(real_ffi_future_oracle_blocks_strict_update_but_submits_fee_only_refresh) {
+    ScopedEnvironment program_id("STABLECOIN_PROGRAM_ID", PROGRAM_ID_HEX.c_str());
+    ScopedEnvironment program_binary("STABLECOIN_PROGRAM_BIN", nullptr);
+    LogosTestContext context("stablecoin_module");
+    LogosModules modules(context.api());
+    StablecoinModuleImpl module;
+    attachModules(module, modules);
+
+    const LogosMap info = module.programInfo();
+    assertOk(info);
+    const std::string protocol_id = info["protocolParametersIdHex"].get<std::string>();
+    const std::string accumulator_id = info["stabilityFeeAccumulatorIdHex"].get<std::string>();
+    const std::string redemption_id = info["redemptionPriceStateIdHex"].get<std::string>();
+    const std::string clock_id = info["clockIdHex"].get<std::string>();
+    const std::string oracle_id = idHex(5);
+    // This configured alternative producer deliberately publishes a future
+    // observation. A canonical TWAP producer's clock rules are not assumed.
+    expectRead(protocol_id, PROGRAM_OWNER_HEX, protocolData());
+    expectRead(accumulator_id, PROGRAM_OWNER_HEX, accumulatorData(FIXED_ONE, START));
+    expectRead(redemption_id, PROGRAM_OWNER_HEX,
+               redemptionData(FIXED_ONE, FIXED_ONE, "0", START));
+    expectRead(oracle_id, ORACLE_OWNER_HEX, oracleData(FIXED_ONE, DUE + 1));
+    expectRead(clock_id, PROGRAM_OWNER_HEX, clockData(DUE));
+    context.mockModule("lez_core", "list_accounts")
+        .returnsVariant(QVariant(walletAccounts()));
+    context.mockModule("lez_core", "send_generic_public_transaction")
+        .returns(successfulTransaction());
+
+    const LogosMap quote = module.redemptionRateUpdateQuote();
+    assertOk(quote);
+    LOGOS_ASSERT_EQ(quote["canSubmit"].get<bool>(), false);
+    LOGOS_ASSERT_EQ(quote["code"].get<std::string>(), std::string("blocked"));
+    LOGOS_ASSERT_EQ(quote["errors"].size(), std::size_t(1));
+    LOGOS_ASSERT_EQ(quote["errors"][0]["code"].get<std::string>(), std::string("oracle_future"));
+    LOGOS_ASSERT_EQ(quote["errors"][0]["details"]["clockTimestamp"].get<std::string>(),
+                    std::to_string(DUE));
+    LOGOS_ASSERT_EQ(quote["errors"][0]["details"]["oracleTimestamp"].get<std::string>(),
+                    std::to_string(DUE + 1));
+    LOGOS_ASSERT_TRUE(quote["nextRedemptionRatePerMillisecond"].is_null());
+    LOGOS_ASSERT_TRUE(quote["nextControllerIntegralTerm"].is_null());
+    LOGOS_ASSERT_EQ(module.updateRedemptionRate(CALLER_ID_HEX, CALLER_ID_HEX)["error"]
+                        .get<std::string>(), std::string("oracle_future"));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 0);
+
+    const LogosMap refreshed = module.refreshGlobals(CALLER_ID_HEX, CALLER_ID_HEX);
+    assertOk(refreshed);
+    LOGOS_ASSERT_EQ(refreshed["transactionId"].get<std::string>(), TRANSACTION_ID_HEX);
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith(
+        "lez_core", "send_generic_public_transaction",
+        submissionArguments(
+            {CALLER_ID_HEX, protocol_id, accumulator_id, idHex(3),
+             info["stablecoinMasterHoldingIdHex"].get<std::string>(), redemption_id, oracle_id,
+             clock_id},
+            3, PROGRAM_ID_HEX)));
+    LOGOS_ASSERT_EQ(context.moduleCallCount("lez_core", "send_generic_public_transaction"), 1);
 }
 
 LOGOS_TEST(real_ffi_journey_opens_position_with_two_wallet_signers) {
@@ -1799,8 +1858,11 @@ LOGOS_TEST(real_ffi_initialize_requires_explicit_debt_limits_and_preserves_paylo
     LOGOS_ASSERT_TRUE(planned != nullptr);
     const json envelope = json::parse(planned.get());
     LOGOS_ASSERT_TRUE(envelope["ok"].get<bool>());
-    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction",
-        submissionArguments(envelope["value"], std::vector<std::size_t>{0}, PROGRAM_ID_HEX)));
+    // The header signs at index 0; the selected admin pays the fee.
+    QVariantList expected =
+        submissionArguments(envelope["value"], std::vector<std::size_t>{0}, PROGRAM_ID_HEX);
+    expected[4] = QVariant(QString::fromStdString(CALLER_ID_HEX));
+    LOGOS_ASSERT_TRUE(context.moduleCalledWith("lez_core", "send_generic_public_transaction", expected));
     for (const char* key : {"minimumDebtAmount", "debtCeiling"}) {
         LogosMap missing = request;
         missing.erase(key);
