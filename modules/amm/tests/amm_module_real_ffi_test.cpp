@@ -207,24 +207,24 @@ LOGOS_TEST(real_ffi_rejects_foreign_owned_pool_for_reads_quotes_and_submits) {
     auto pool = json::parse(f.modules.lez_core.accounts.at(REAL_POOL));
     pool["program_owner"] = OTHER;
     f.modules.lez_core.accounts[REAL_POOL] = pool.dump();
-    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "bad_config");
-    assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10000, 50), "no_pool");
-    assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10000, 50), "no_pool");
+    assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_address_occupied");
+    assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10000, 50), "pool_address_occupied");
+    assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10000, 50), "pool_address_occupied");
     auto r = request();
-    assertError(f.module.addLiquidityQuote(r), "no_pool");
-    assertError(f.module.removeLiquidityQuote(r), "no_pool");
+    assertError(f.module.addLiquidityQuote(r), "pool_address_occupied");
+    assertError(f.module.removeLiquidityQuote(r), "pool_address_occupied");
     LOGOS_ASSERT_TRUE(
         f.module.swapExactInput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B, 10000, 1, 1000, PAYER)
             .empty());
     LOGOS_ASSERT_TRUE(
         f.module.swapExactOutput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B, 10000, 20000, 1000, PAYER)
             .empty());
-    assertError(f.module.addLiquidity(r), "no_pool");
-    assertError(f.module.removeLiquidity(r), "no_pool");
-    assertError(f.module.syncReserves(r), "no_pool");
-    assertError(f.module.createPool(r), "already_exists");
-    assertError(f.module.createPriceObservations(r), "no_pool");
-    assertError(f.module.createOraclePriceAccount(r), "no_pool");
+    assertError(f.module.addLiquidity(r), "pool_address_occupied");
+    assertError(f.module.removeLiquidity(r), "pool_address_occupied");
+    assertError(f.module.syncReserves(r), "pool_address_occupied");
+    assertError(f.module.createPool(r), "pool_address_occupied");
+    assertError(f.module.createPriceObservations(r), "pool_address_occupied");
+    assertError(f.module.createOraclePriceAccount(r), "pool_address_occupied");
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
@@ -240,8 +240,8 @@ LOGOS_TEST(real_ffi_pool_creation_requires_an_unoccupied_default_account) {
         else
             occupied[field] = "01" + std::string(30, '0');
         f.modules.lez_core.accounts[REAL_POOL] = occupied.dump();
-        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "bad_config");
-        assertError(f.module.createPool(request()), "already_exists");
+        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_address_occupied");
+        assertError(f.module.createPool(request()), "pool_address_occupied");
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
     f.modules.lez_core.accounts.erase(REAL_POOL);
@@ -256,8 +256,8 @@ LOGOS_TEST(real_ffi_oracle_setup_requires_an_amm_owned_pool) {
     assertError(f.module.createPriceObservations(request()), "no_pool");
     assertError(f.module.createOraclePriceAccount(request()), "no_pool");
     f.modules.lez_core.accounts[REAL_POOL] = snapshot(poolData(), OTHER).dump();
-    assertError(f.module.createPriceObservations(request()), "no_pool");
-    assertError(f.module.createOraclePriceAccount(request()), "no_pool");
+    assertError(f.module.createPriceObservations(request()), "pool_address_occupied");
+    assertError(f.module.createOraclePriceAccount(request()), "pool_address_occupied");
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
@@ -265,9 +265,9 @@ LOGOS_TEST(real_ffi_pool_read_failure_is_not_reported_as_a_vacant_pool) {
     RealFixture f;
     f.modules.lez_core.accounts[REAL_POOL] = "";
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_read_failed");
-    assertError(f.module.createPool(request()), "backend_error");
-    assertError(f.module.createPriceObservations(request()), "backend_error");
-    assertError(f.module.createOraclePriceAccount(request()), "backend_error");
+    assertError(f.module.createPool(request()), "pool_read_failed");
+    assertError(f.module.createPriceObservations(request()), "pool_read_failed");
+    assertError(f.module.createOraclePriceAccount(request()), "pool_read_failed");
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
@@ -372,7 +372,7 @@ LOGOS_TEST(real_ffi_oracle_targets_accept_only_default_accounts) {
         }
         // An unreadable target cannot be verified as available.
         f.modules.lez_core.accounts[target] = "";
-        assertError(invoke(), "backend_error");
+        assertError(invoke(), "account_read_failed");
         LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
     }
 }

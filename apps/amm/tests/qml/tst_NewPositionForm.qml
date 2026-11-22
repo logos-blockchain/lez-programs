@@ -119,10 +119,12 @@ TestCase {
         return [
             { tag: "read", code: "pool_read_failed", submission: false,
               message: "Could not read the pool account. Check the connection and retry." },
+            { tag: "occupied", code: "pool_address_occupied", submission: false,
+              message: "Another account occupies the pool address." },
             { tag: "configuration", code: "bad_config", submission: false,
-              message: "The AMM configuration is invalid or the pool address is occupied." },
-            { tag: "occupied", code: "already_exists", submission: true,
-              message: "The pool address is occupied. Refresh and retry." }
+              message: "The AMM app configuration is invalid." },
+            { tag: "exists", code: "already_exists", submission: true,
+              message: "A pool for this pair already exists. Refresh and retry." }
         ]
     }
 

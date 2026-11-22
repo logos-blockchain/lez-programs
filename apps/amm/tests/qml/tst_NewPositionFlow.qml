@@ -49,8 +49,8 @@ Item {
             return [
                 { tag: "read-failure", status: "error", error: "pool_read_failed",
                   creates: 0, adds: 0, exists: undefined, quoteError: "pool_read_failed" },
-                { tag: "occupied-address", status: "error", error: "bad_config",
-                  creates: 0, adds: 0, exists: undefined, quoteError: "bad_config" },
+                { tag: "occupied-address", status: "error", error: "pool_address_occupied",
+                  creates: 0, adds: 0, exists: undefined, quoteError: "pool_address_occupied" },
                 { tag: "missing", status: "error", error: "no_pool",
                   creates: 1, adds: 0, exists: false, quoteError: "quote_marker" },
                 { tag: "existing", status: "ok", error: "",

@@ -78,35 +78,33 @@ LOGOS_TEST(oracle_setup_accepts_numeric_windows_and_checks_price_account_target)
     LOGOS_ASSERT_EQ(f.modules.lez_core.submissions.size(), 1U);
 }
 
-LOGOS_TEST(foreign_owned_pool_data_is_not_forwarded_for_quotes_or_plans) {
-    MockFixture f;
-    f.modules.lez_core.accounts[POOL] = snapshot(poolData(), OTHER).dump();
-    for (const auto* name : {"amm_swap_exact_in_quote", "amm_swap_exact_out_quote",
-                             "amm_add_liquidity_quote", "amm_remove_liquidity_quote",
-                             "amm_swap_exact_in_plan", "amm_swap_exact_out_plan",
-                             "amm_add_liquidity_plan", "amm_remove_liquidity_plan",
-                             "amm_sync_reserves_plan"})
-        ffi::failure(name, "no_pool");
-    assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10, 1), "no_pool");
-    assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10, 1), "no_pool");
-    assertError(f.module.addLiquidityQuote(request()), "no_pool");
-    assertError(f.module.removeLiquidityQuote(request()), "no_pool");
-    LOGOS_ASSERT_TRUE(f.module.swapExactInput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B,
-                                             10, 1, 1000, PAYER).empty());
-    LOGOS_ASSERT_TRUE(f.module.swapExactOutput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B,
-                                              10, 20, 1000, PAYER).empty());
-    assertError(f.module.addLiquidity(request()), "no_pool");
-    assertError(f.module.removeLiquidity(request()), "no_pool");
-    assertError(f.module.syncReserves(request()), "no_pool");
-    for (const auto* name : {"amm_swap_exact_in_quote", "amm_swap_exact_out_quote",
-                             "amm_add_liquidity_quote", "amm_remove_liquidity_quote",
-                             "amm_swap_exact_in_plan", "amm_swap_exact_out_plan",
-                             "amm_add_liquidity_plan", "amm_remove_liquidity_plan",
-                             "amm_sync_reserves_plan"}) {
-        LOGOS_ASSERT_EQ(ffi::calls(name), 1);
-        LOGOS_ASSERT_EQ(ffi::lastRequest(name).at("poolData"), json(""));
+LOGOS_TEST(unusable_pool_reads_stop_quotes_and_plans_with_stable_codes) {
+    const std::vector<std::pair<std::string, const char*>> cases = {
+        {snapshot(poolData(), OTHER).dump(), "pool_address_occupied"},
+        {"", "pool_read_failed"},
+    };
+    for (const auto& [account, code] : cases) {
+        MockFixture f;
+        f.modules.lez_core.accounts[POOL] = account;
+        assertError(f.module.swapExactInQuote(TOKEN_A, TOKEN_B, 10, 1), code);
+        assertError(f.module.swapExactOutQuote(TOKEN_A, TOKEN_B, 10, 1), code);
+        assertError(f.module.addLiquidityQuote(request()), code);
+        assertError(f.module.removeLiquidityQuote(request()), code);
+        LOGOS_ASSERT_TRUE(f.module.swapExactInput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B,
+                                                 10, 1, 1000, PAYER).empty());
+        LOGOS_ASSERT_TRUE(f.module.swapExactOutput(TOKEN_A, TOKEN_B, HOLDING_A, HOLDING_B,
+                                                  10, 20, 1000, PAYER).empty());
+        assertError(f.module.addLiquidity(request()), code);
+        assertError(f.module.removeLiquidity(request()), code);
+        assertError(f.module.syncReserves(request()), code);
+        for (const auto* name : {"amm_swap_exact_in_quote", "amm_swap_exact_out_quote",
+                                 "amm_add_liquidity_quote", "amm_remove_liquidity_quote",
+                                 "amm_swap_exact_in_plan", "amm_swap_exact_out_plan",
+                                 "amm_add_liquidity_plan", "amm_remove_liquidity_plan",
+                                 "amm_sync_reserves_plan"})
+            LOGOS_ASSERT_EQ(ffi::calls(name), 0);
+        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
-    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
 LOGOS_TEST(occupied_pool_address_prevents_resolution_and_creation) {
@@ -122,14 +120,20 @@ LOGOS_TEST(occupied_pool_address_prevents_resolution_and_creation) {
         f.modules.lez_core.accounts[POOL] = occupied.dump();
         ffi::success("amm_resolve_pool", {{"status", "error"}, {"error", "no_pool"}});
         ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
-        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "bad_config");
-        assertError(f.module.createPool(request()), "already_exists");
+        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_address_occupied");
+        assertError(f.module.createPool(request()), "pool_address_occupied");
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
+    // An AMM-owned account at the address is the pool itself.
+    MockFixture f;
+    ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
+    assertError(f.module.createPool(request()), "already_exists");
+    LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
 }
 
 LOGOS_TEST(oracle_setup_requires_an_existing_amm_owned_pool) {
     for (bool foreign : {false, true}) {
+        const char* code = foreign ? "pool_address_occupied" : "no_pool";
         MockFixture f;
         if (foreign)
             f.modules.lez_core.accounts[POOL] = snapshot(poolData(), OTHER).dump();
@@ -138,8 +142,8 @@ LOGOS_TEST(oracle_setup_requires_an_existing_amm_owned_pool) {
         const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
         ffi::success("amm_create_price_observations_plan", p);
         ffi::success("amm_create_oracle_price_account_plan", p);
-        assertError(f.module.createPriceObservations(request()), "no_pool");
-        assertError(f.module.createOraclePriceAccount(request()), "no_pool");
+        assertError(f.module.createPriceObservations(request()), code);
+        assertError(f.module.createOraclePriceAccount(request()), code);
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }
@@ -152,8 +156,8 @@ LOGOS_TEST(pool_read_failure_is_distinct_from_an_uninitialized_pool) {
     ffi::success("amm_create_price_observations_plan", p);
     ffi::success("amm_create_oracle_price_account_plan", p);
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_read_failed");
-    assertError(f.module.createPriceObservations(request()), "backend_error");
-    assertError(f.module.createOraclePriceAccount(request()), "backend_error");
+    assertError(f.module.createPriceObservations(request()), "pool_read_failed");
+    assertError(f.module.createOraclePriceAccount(request()), "pool_read_failed");
     LOGOS_ASSERT_EQ(ffi::calls("amm_resolve_pool"), 0);
     LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     f.modules.lez_core.accounts.erase(POOL);
@@ -165,7 +169,7 @@ LOGOS_TEST(creation_rejects_failed_target_reads_before_submission) {
         MockFixture f;
         f.modules.lez_core.accounts[POOL] = "";
         ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
-        assertError(f.module.createPool(request()), "backend_error");
+        assertError(f.module.createPool(request()), "pool_read_failed");
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
     for (bool observations : {false, true}) {
@@ -176,7 +180,7 @@ LOGOS_TEST(creation_rejects_failed_target_reads_before_submission) {
         f.modules.lez_core.accounts[observations ? LP : OTHER] = "";
         const auto result = observations ? f.module.createPriceObservations(request())
                                          : f.module.createOraclePriceAccount(request());
-        assertError(result, "backend_error");
+        assertError(result, "account_read_failed");
         LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
     }
 }

@@ -444,8 +444,10 @@ Rectangle {
         if (root.poolLoading) return qsTr("Looking up pool…")
         if (root.poolError === "pool_read_failed")
             return qsTr("Could not read the pool account. Check the connection and retry.")
+        if (root.poolError === "pool_address_occupied")
+            return qsTr("Another account occupies the pool address.")
         if (root.poolError === "bad_config")
-            return qsTr("The AMM configuration is invalid or the pool address is occupied.")
+            return qsTr("The AMM app configuration is invalid.")
         if (root.poolError.length > 0) return root.poolError
         if (root.poolResolved && !root.poolExists) return qsTr("No pool / no liquidity for this pair.")
         if (root.outputExceedsLiquidity) return qsTr("Not enough liquidity for that output amount.")

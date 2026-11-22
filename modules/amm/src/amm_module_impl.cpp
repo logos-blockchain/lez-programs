@@ -361,6 +361,13 @@ nlohmann::json AmmModuleImpl::readPoolAccount(const std::string& account_id,
     return pool;
 }
 
+std::string AmmModuleImpl::poolAccountError(const nlohmann::json& pool) {
+    const std::string status = jStr(pool, "status");
+    if (status == "read_failed") return "pool_read_failed";
+    if (status == "foreign_owner") return "pool_address_occupied";
+    return {};
+}
+
 nlohmann::json AmmModuleImpl::walletAccountReads(bool wallet_open) {
     if (!wallet_open)
         return json::array();  // nothing to read while closed
@@ -467,12 +474,9 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     }
 
     const json pool = readPoolAccount(jStr(pairResult.value, "poolId"), amm_program_id);
-    // A foreign account occupies the PDA; it cannot be treated as a creatable pool.
-    if (jStr(pool, "status") == "foreign_owner")
-        return failed("bad_config");
-    // A failed read does not establish that the pool PDA is vacant.
-    if (jStr(pool, "status") == "read_failed")
-        return failed("pool_read_failed");
+    // Neither a failed read nor a foreign occupant establishes that the pool PDA is vacant.
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return failed(pool_error);
     // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
     // needs the config account to read it (it is no longer a pool field).
     const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
@@ -684,8 +688,8 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     // Both oracle instructions require an existing AMM-owned pool.
     if (accounts.size() > 1) {
         const json pool = readPoolAccount(accounts[1], amm_program_id);
-        if (jStr(pool, "status") == "read_failed")
-            return error("backend_error");
+        if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+            return error(pool_error);
         if (jStr(pool, "status") != "ok")
             return error("no_pool");
     }
@@ -696,7 +700,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (accounts.size() > target_index) {
         const json existing = readPublicAccount(accounts[target_index]);
         if (jStr(existing, "status") != "ok")
-            return error("backend_error");
+            return error("account_read_failed");
         if (!isDefaultAccount(existing.at("account")))
             return error("already_exists");
     }
@@ -767,6 +771,8 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult quoteResult = call(amm_swap_exact_in_quote, json{
@@ -831,6 +837,8 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult quoteResult = call(amm_swap_exact_out_quote, json{
@@ -906,6 +914,10 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (!poolAccountError(pool).empty()) {
+        AMM_TRACE("swapExactInput: FAIL pool read " << jStr(pool, "status"));
+        return {};
+    }
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_swap_exact_in_plan resolves the pool accounts, encodes SwapExactInput,
@@ -1003,6 +1015,10 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (!poolAccountError(pool).empty()) {
+        AMM_TRACE("swapExactOutput: FAIL pool read " << jStr(pool, "status"));
+        return {};
+    }
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_swap_exact_out_plan resolves the pool accounts, encodes SwapExactOutput,
@@ -1166,10 +1182,10 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     // A fresh pool PDA must still be default at submission time. The guest repeats
     // this check, which remains authoritative if another transaction wins the race.
     if (accounts.size() > 1) {
-        const json existing = readPublicAccount(accounts[1]);
-        if (jStr(existing, "status") != "ok")
-            return error("backend_error");
-        if (!isDefaultAccount(existing.at("account")))
+        const json pool = readPoolAccount(accounts[1], amm_program_id);
+        if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+            return error(pool_error);
+        if (jStr(pool, "status") == "ok")
             return error("already_exists");
     }
 
@@ -1230,6 +1246,8 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // slippageBps is a fraction of 100% in basis points; the pricing op uses it to derive
@@ -1312,6 +1330,8 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_add_liquidity_plan resolves the pool accounts (canonicalizing the pair), encodes
@@ -1393,6 +1413,8 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // slippageBps derives the minimumAmount*Raw floors the submit enforces. Require an integer
@@ -1473,6 +1495,8 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     // amm_remove_liquidity_plan resolves the pool accounts, encodes RemoveLiquidity (with the
@@ -1551,6 +1575,8 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
     const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
+        return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
 
     const FfiResult planResult = call(amm_sync_reserves_plan, json{

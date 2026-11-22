@@ -266,8 +266,10 @@ Item {
             return qsTr("Could not read the AMM config account. Is the wallet open and the sequencer reachable?")
         case "pool_read_failed":
             return qsTr("Could not read the pool account. Check the connection and retry.")
+        case "pool_address_occupied":
+            return qsTr("Another account occupies the pool address.")
         case "bad_config":
-            return qsTr("The AMM configuration is invalid or the pool address is occupied.")
+            return qsTr("The AMM app configuration is invalid.")
         case "same_token_pair":
             return qsTr("This pool is configured with the same token on both sides.")
         default:

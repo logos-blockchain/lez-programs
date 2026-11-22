@@ -232,8 +232,10 @@ Item {
             return [
                 { tag: "read", code: "pool_read_failed",
                   message: "Could not read the pool account. Check the connection and retry." },
+                { tag: "occupied", code: "pool_address_occupied",
+                  message: "Another account occupies the pool address." },
                 { tag: "configuration", code: "bad_config",
-                  message: "The AMM configuration is invalid or the pool address is occupied." }
+                  message: "The AMM app configuration is invalid." }
             ]
         }
 

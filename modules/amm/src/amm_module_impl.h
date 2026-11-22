@@ -46,7 +46,8 @@ public:
     /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_ID
     /// unset/unreadable/bad), `amm_not_initialized` (config undecodable), `bad_config`
     /// (bad ids / internal decode failure), `pool_read_failed` (wallet read failed),
-    /// `same_token_pair`, or `no_pool` for the
+    /// `pool_address_occupied` (a non-empty account the AMM does not own holds the pool
+    /// address), `same_token_pair`, or `no_pool` for the
     /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
     LogosMap resolvePoolAccount(const std::string& def_a_hex, const std::string& def_b_hex);
 
@@ -91,8 +92,10 @@ public:
     /// submits (chained into the oracle, seeded from validated pool state — nothing signs). On
     /// success `{ status:"ok", error:"", transactionId:<hex> }`; on failure
     /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_token_id`,
-    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `no_pool`, `wallet_submission_failed`,
-    /// `backend_error` (`already_exists` if the target account is already created).
+    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `no_pool`, `pool_read_failed`,
+    /// `pool_address_occupied`, `account_read_failed` (the target account read failed),
+    /// `wallet_submission_failed`, `backend_error` (`already_exists` if the target account is
+    /// already created).
     LogosMap createPriceObservations(const LogosMap& request);
     LogosMap createOraclePriceAccount(const LogosMap& request);
 
@@ -189,7 +192,8 @@ public:
     /// `{ status:"ok", error:"", transactionId:<hex tx hash> }`. On failure:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
     /// `invalid_account_id`, `bad_amount` (malformed amount/deadline),
-    /// `wallet_submission_failed`, `already_exists` (the pool PDA is occupied), or a plan code
+    /// `wallet_submission_failed`, `already_exists` (the pool already exists), `pool_read_failed`,
+    /// `pool_address_occupied`, or a plan code
     /// (e.g. `config_unavailable`). Unlike the
     /// swaps, a submit failure carries a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
@@ -323,6 +327,10 @@ private:
     // Accept pool contents only from the active AMM program.
     nlohmann::json readPoolAccount(const std::string& account_id,
                                    const std::string& amm_program_id);
+
+    // `pool_read_failed` or `pool_address_occupied` for a readPoolAccount result that
+    // must stop the caller; empty for an AMM-owned or uninitialized pool.
+    static std::string poolAccountError(const nlohmann::json& pool);
 
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.

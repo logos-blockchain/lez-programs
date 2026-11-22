@@ -226,6 +226,10 @@ Popup {
         switch (String(code)) {
         case "no_pool":
             return qsTr("This pool no longer exists on-chain.")
+        case "pool_read_failed":
+            return qsTr("Could not read the pool account. Check the connection and retry.")
+        case "pool_address_occupied":
+            return qsTr("Another account occupies the pool address.")
         case "insufficient_pool_liquidity":
             return qsTr("The pool cannot release this much — some liquidity is permanently locked.")
         case "amount_too_low":

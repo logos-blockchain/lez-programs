@@ -105,7 +105,8 @@ QtObject {
                     return
                 }
                 // A status:"error" result is EITHER the normal "no pool yet" case (error
-                // "no_pool") or a hard failure (no_program_bin, amm_not_initialized, bad_config).
+                // "no_pool") or a hard failure (no_program_bin, amm_not_initialized, bad_config,
+                // pool_read_failed, pool_address_occupied).
                 // Only the former is a create-pool signal; surface any other pool.error as a quote
                 // error instead of masking it as a create quote (which would enable the wrong flow).
                 var poolError = pool ? String(pool.error || "") : ""
