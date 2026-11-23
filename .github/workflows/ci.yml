@@ -9,9 +9,38 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Every program, module and app is its own job. The plan job picks the ones a
+# change touches and drops those listed in .github/known-broken.txt, so a
+# cross-cutting upgrade can land one layer at a time.
 jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      programs: ${{ steps.plan.outputs.programs }}
+      modules: ${{ steps.plan.outputs.modules }}
+      apps: ${{ steps.plan.outputs.apps }}
+      integration: ${{ steps.plan.outputs.integration }}
+      benchmark: ${{ steps.plan.outputs.benchmark }}
+      tools: ${{ steps.plan.outputs.tools }}
+      lez-core-version: ${{ steps.plan.outputs.lez-core-version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "${BASE}" ]; then
+            scripts/ci-plan.py --base "${BASE}"
+          else
+            scripts/ci-plan.py --all
+          fi
+
   fmt-rs:
-    name: Rust Format
+    name: Checks → Rust style
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -22,8 +51,16 @@ jobs:
       - name: Check Rust files are formatted
         run: cargo +nightly fmt --all -- --check
 
+      # allow_attributes_without_reason forces a reason; this rejects placeholder ones.
+      - name: Reject non-actionable lint suppression reasons
+        run: |
+          if rg -n -P -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|temporary|hack)' . -g '*.rs' -g '!*/target/*'; then
+            echo "Found non-actionable lint suppression reason"
+            exit 1
+          fi
+
   fmt-toml:
-    name: TOML Format
+    name: Checks → TOML format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -34,43 +71,170 @@ jobs:
       - name: Check TOML files are formatted
         run: git ls-files -z '*.toml' | xargs -0 taplo fmt --check
 
-  lint:
-    name: Lint
+  program:
+    name: Programs → ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.programs != '[]'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.programs) }}
+    env:
+      RISC0_DEV_MODE: 1
+      # The guest is linted and built below; don't also build it from methods/build.rs.
+      RISC0_SKIP_BUILD: 1
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/install-risc0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - uses: ./.github/actions/setup-rust
         with:
-          toolchain: "1.94.0"
+          cache-key: program-${{ matrix.name }}
           components: clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
       - name: Clippy
+        run: cargo clippy ${{ matrix.crates }} --all-targets -- -D warnings
+
+      - name: Guest clippy
+        run: cargo clippy --manifest-path programs/${{ matrix.name }}/methods/guest/Cargo.toml --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: cargo test ${{ matrix.test_crates }}
+
+      - name: Check IDL is up to date
         run: |
-          if rg -n -P -U --multiline '#\[(allow|expect)\([\s\S]*?reason\s*=\s*"(TODO|FIXME|fix later|temporary|hack)' . -g '*.rs' -g '!*/target/*'; then
-            echo "Found non-actionable lint suppression reason"
+          src="programs/${{ matrix.name }}/methods/guest/src/bin/${{ matrix.name }}.rs"
+          idl="artifacts/${{ matrix.name }}-idl.json"
+          cargo run -q -p idl-gen --release -- "${src}" > "${RUNNER_TEMP}/idl.json"
+          if ! diff -q "${idl}" "${RUNNER_TEMP}/idl.json" > /dev/null 2>&1; then
+            echo "IDL for '${{ matrix.name }}' is missing or out of date — regenerate with: cargo run -p idl-gen -- ${src} > ${idl}"
             exit 1
           fi
-          make clippy
 
-      - name: Guest Clippy
-        run: make clippy-guest
+      - name: Build guest binary
+        run: |
+          ./scripts/build-guests.sh ${{ matrix.name }}
+          test -s "target/guest/${{ matrix.name }}.bin"
+
+  module-ffi:
+    name: Modules → ${{ matrix.name }} → FFI
+    needs: plan
+    if: needs.plan.outputs.modules != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.modules) }}
+    env:
+      RISC0_DEV_MODE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-risc0
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: module-${{ matrix.name }}
+          components: clippy
+
+      - name: Clippy
+        run: cargo clippy -p ${{ matrix.crate }} --all-targets -- -D warnings
+        env:
+          RISC0_SKIP_BUILD: 1
+
+      - name: Unit tests
+        run: cargo test -p ${{ matrix.crate }}
+
+  module:
+    name: Modules → ${{ matrix.name }} → Logos module
+    needs: plan
+    if: needs.plan.outputs.modules != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-nix
+
+      - name: Module tests
+        run: nix build --no-link -L .#${{ matrix.name }}-module-tests
+
+  app:
+    name: Apps → ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.apps) }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-nix
+
+      - name: C++ and QML tests
+        run: ./scripts/test-apps.sh ${{ matrix.name }}
+
+  lez-core-version:
+    name: Checks → lez_core version
+    needs: plan
+    if: needs.plan.outputs.lez-core-version == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-nix
+
+      - name: Check lez_core version in metadata.json
+        run: make check-lez-core-version
+
+  integration-tests:
+    name: Programs → integration tests
+    needs: plan
+    if: needs.plan.outputs.integration == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RISC0_DEV_MODE: 1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/install-risc0
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: integration
+          components: clippy
+
+      - name: Clippy
+        run: cargo clippy -p integration_tests --all-targets -- -D warnings
+        env:
+          RISC0_SKIP_BUILD: 1
+
+      - name: Integration tests
+        run: cargo test -p integration_tests
+
+  tools:
+    name: Checks → tools
+    needs: plan
+    if: needs.plan.outputs.tools == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: tools
+          components: clippy
+
+      - name: Clippy
+        run: cargo clippy -p idl-gen -p risc0-packager --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test -p idl-gen -p risc0-packager
 
   benchmark:
-    name: Benchmark Compile Check
+    name: Programs → benchmark
+    needs: plan
+    if: needs.plan.outputs.benchmark == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -93,164 +257,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-benchmark-
 
+      # The benchmark enables risc0-zkvm's `prove` feature, whose recursion circuit build
+      # script downloads this zip from risc0's S3 bucket, which now answers 403. Fetch the
+      # same file from risc0's repo instead; the build script re-checks the hash.
+      - name: Fetch risc0 recursion circuit
+        run: |
+          zip="${RUNNER_TEMP}/recursion_zkr.zip"
+          curl -fsSL -o "${zip}" \
+            https://media.githubusercontent.com/media/risc0/risc0/v3.0.5/risc0/circuit/recursion/src/recursion_zkr.zip
+          echo "744b999f0a35b3c86753311c7efb2a0054be21727095cf105af6ee7d3f4d8849  ${zip}" | sha256sum -c -
+          echo "RECURSION_SRC_PATH=${zip}" >> "${GITHUB_ENV}"
+
       # Excluded from the workspace, so no other job compiles it.
       - name: Check benchmark
         run: make check-benchmark
-
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/install-risc0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94.0"
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Unit tests
-        run: cargo test --workspace --exclude integration_tests
-        env:
-          RISC0_DEV_MODE: 1
-
-  integration-tests:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: ./.github/actions/install-risc0
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94.0"
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Integration tests
-        run: cargo test -p integration_tests
-        env:
-          RISC0_DEV_MODE: 1
-
-  app-tests:
-    name: App Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            extra-substituters = https://logos-co.cachix.org
-            extra-trusted-public-keys = logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E=
-
-      - name: Check lez_core version in metadata.json
-        run: make check-lez-core-version
-
-      - name: Wallet, AMM and token C++ and QML tests
-        run: make test-apps
-
-  build-programs:
-    name: Build Guest Programs
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Build guest program binaries
-        run: make build-programs
-
-      - name: Check guest program binaries
-        run: |
-          set -eu
-          for manifest in programs/*/methods/guest/Cargo.toml; do
-            program="$(basename "$(dirname "$(dirname "$(dirname "${manifest}")")")")"
-            test -s "target/guest/${program}.bin"
-          done
-
-  check-idl:
-    name: Check IDL
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: "1.94.0"
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build idl-gen
-        run: cargo build -p idl-gen --release
-
-      - name: Check IDL files are present and up to date
-        run: |
-          set -e
-          failed=0
-          for src in $(find . -path '*/methods/guest/src/bin/*.rs' | sort); do
-            program=$(basename "$src" .rs)
-            idl="artifacts/${program}-idl.json"
-            if [ ! -f "$idl" ]; then
-              echo "Missing IDL for '${program}' — generate with: cargo run -p idl-gen -- ${src#./} > ${idl}"
-              failed=1
-              continue
-            fi
-            ./target/release/idl-gen "$src" > /tmp/${program}-idl.json
-            if ! diff "$idl" /tmp/${program}-idl.json > /dev/null 2>&1; then
-              echo "IDL for '${program}' is out of date — regenerate with: cargo run -p idl-gen -- ${src#./} > ${idl}"
-              failed=1
-            fi
-          done
-          exit $failed
-
-  module-tests:
-    name: Module Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31
-        with:
-          extra_nix_config: |
-            accept-flake-config = true
-            extra-substituters = https://logos-co.cachix.org
-            extra-trusted-public-keys = logos-co.cachix.org-1:12K8609ho1pCt0erUQrOrs/KmOuhWq/EhVwhzQRb35E=
-
-      - name: AMM, token, stablecoin and oracle module tests
-        run: make test-modules
