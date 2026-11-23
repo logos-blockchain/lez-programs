@@ -476,6 +476,100 @@ mod tests {
         assert_eq!(StablecoinState::decode(&state.encode()), Some(state));
     }
 
+    /// Distinct values for every `ProtocolParameters` field.
+    fn distinct_parameters() -> ProtocolParameters {
+        let id = |n: u8| AccountId::new([n; 32]);
+        ProtocolParameters {
+            admin_account_id: id(1),
+            freeze_authority_account_id: id(2),
+            token_program_id: id(3),
+            stablecoin_definition_id: id(4),
+            collateral_definition_id: id(5),
+            market_price_oracle_id: id(6),
+            market_price_oracle_program_id: id(7),
+            stability_fee_per_millisecond: 8,
+            controller_proportional_gain: -9,
+            controller_integral_gain: 10,
+            minimum_collateralization_ratio: 11,
+            minimum_milliseconds_between_rate_updates: 12,
+            maximum_oracle_price_age_milliseconds: 13,
+            is_frozen: true,
+            minimum_debt_amount: 14,
+            debt_ceiling: 15,
+        }
+    }
+
+    fn distinct_engine(pending: Option<Pending>) -> Engine {
+        Engine {
+            parameters: distinct_parameters(),
+            fee: StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: 16,
+                last_accrued_at: 17,
+                total_normalized_debt: 18,
+            },
+            redemption: RedemptionPriceState {
+                redemption_price_at_last_update: 19,
+                redemption_rate_per_millisecond: 20,
+                controller_integral_term: -21,
+                last_updated_at: 22,
+            },
+            pending,
+        }
+    }
+
+    #[test]
+    fn a_position_is_stored_as_tag_one_then_its_fields_in_order() {
+        let state = StablecoinState::Position(Position {
+            token_program_id: AccountId::new([1; 32]),
+            collateral_definition_id: AccountId::new([2; 32]),
+            collateral_amount: 3,
+            normalized_debt_amount: 4,
+        });
+        let mut expected = vec![1_u8];
+        expected.extend([1_u8; 32]);
+        expected.extend([2_u8; 32]);
+        expected.extend(3_u128.to_le_bytes());
+        expected.extend(4_u128.to_le_bytes());
+        assert_eq!(state.encode(), expected);
+    }
+
+    #[test]
+    fn an_engine_is_stored_as_tag_zero_then_the_parameters_in_order() {
+        let state = StablecoinState::Engine(distinct_engine(None));
+        let mut expected = vec![0_u8];
+        for n in 1_u8..=7 {
+            expected.extend([n; 32]);
+        }
+        expected.extend(8_u128.to_le_bytes());
+        expected.extend((-9_i128).to_le_bytes());
+        expected.extend(10_i128.to_le_bytes());
+        expected.extend(11_u128.to_le_bytes());
+        expected.extend(12_u64.to_le_bytes());
+        expected.extend(13_u64.to_le_bytes());
+        expected.push(1);
+        expected.extend(14_u128.to_le_bytes());
+        expected.extend(15_u128.to_le_bytes());
+        let encoded = state.encode();
+        assert_eq!(encoded.get(..expected.len()), Some(expected.as_slice()));
+    }
+
+    #[test]
+    fn an_engine_round_trips_with_and_without_a_pending_operation() {
+        for pending in [
+            None,
+            Some(Pending::GenerateDebt {
+                position: AccountId::new([23; 32]),
+                amount: 24,
+                to: AccountId::new([25; 32]),
+                collateral_amount: 26,
+                normalized_debt_amount: 27,
+            }),
+        ] {
+            let state = StablecoinState::Engine(distinct_engine(pending));
+            assert_eq!(StablecoinState::decode(&state.encode()), Some(state));
+        }
+    }
+
     #[test]
     #[should_panic(expected = "stablecoin state must decode")]
     fn garbage_bytes_panic() {

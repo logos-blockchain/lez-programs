@@ -490,7 +490,8 @@ mod tests {
                 },
             ),
             (
-                // The same value as today: accepted, and it changes only those two fields.
+                // A floor equal to the ceiling is accepted; the fixture's floor 10 and ceiling
+                // 1_000_000 both change, and nothing else does.
                 AdminAction::SetDebtLimits {
                     minimum_debt_amount: 20,
                     debt_ceiling: 20,

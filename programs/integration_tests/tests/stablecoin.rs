@@ -1003,14 +1003,17 @@ fn an_oracle_that_does_not_reply_fails_the_transaction() {
     .expect("the admin binds the silent oracle");
     tick(&mut world.state, T0 + 2_000);
 
+    // A refused transaction is rolled back: the engine is stored exactly as before it.
+    let before = engine_bytes(&world);
     let result = poke(
         &mut world,
         &[clock_actor(), source_actor()],
         &Message::UpdateRedemptionRate,
     );
     assert_refused(&result, "the market price oracle did not reply");
-    assert_eq!(engine(&world).pending, None);
+    assert_eq!(engine_bytes(&world), before);
 
+    let before = engine_bytes(&world);
     let mut past_root = poke_actors(&world);
     past_root.push(source_actor());
     let result = poke(
@@ -1021,7 +1024,8 @@ fn an_oracle_that_does_not_reply_fails_the_transaction() {
         },
     );
     assert_refused(&result, "the market price oracle did not reply");
-    assert_eq!(engine(&world).pending, None);
+    // Not even the fee accrual the refresh did before asking the oracle is kept.
+    assert_eq!(engine_bytes(&world), before);
 
     accrue(&mut world).expect("the engine still serves the next poke");
     assert_eq!(engine(&world).fee.last_accrued_at, T0 + 2_000);

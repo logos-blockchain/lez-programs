@@ -139,13 +139,15 @@ mod tests {
     }
 
     #[test]
-    fn position_a_deposit_is_allowed_while_frozen() {
-        // The position never asks the engine, so the protocol's frozen flag is not consulted.
+    fn position_a_deposit_sends_nothing_to_the_engine() {
+        // The deposit never asks the engine, so the protocol's frozen flag cannot stop it.
         let response = deposit(None, true, Some(&position(500)), 1);
-        assert_eq!(
-            response.post_state,
-            Response::set_state(position(501).encode()).post_state
-        );
+        assert!(response.async_messages.is_empty());
+        assert!(!response.sync_messages.is_empty());
+        for message in &response.sync_messages {
+            assert_ne!(message.to, engine());
+            assert_eq!(message.to.program_account_id, TOKEN);
+        }
     }
 
     #[test]

@@ -47,7 +47,9 @@ pub(crate) fn request_price(
     ]
 }
 
-/// Parks `Pending::OraclePrice { now, hard }` and asks the oracle for its price.
+/// Parks `Pending::OraclePrice { now, hard }` and asks the oracle for its price, followed by
+/// the engine's own [`Internal::AssertOracleReplied`] self-check (see [`request_price`]): an
+/// oracle that does not reply fails the transaction.
 ///
 /// # Panics
 /// - `"the engine is already waiting for a reply"` when another operation is parked.

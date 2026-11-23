@@ -722,6 +722,16 @@ pub fn engine(world: &World) -> Engine {
     }
 }
 
+/// The engine's stored actor state, byte for byte.
+pub fn engine_bytes(world: &World) -> Vec<u8> {
+    world
+        .state
+        .get_account_by_id(engine_id(world))
+        .data
+        .actor_state(world.stablecoin)
+        .to_vec()
+}
+
 pub fn position(world: &World, owner: AccountId) -> Option<Position> {
     match stablecoin_state(world, owner) {
         Some(StablecoinState::Position(position)) => Some(position),
