@@ -1,13 +1,21 @@
 //! `RepayDebt`: the owner burns stablecoin to reduce the position's debt. The position asks the
 //! engine, which accrues fees at the clock's time, caps the repayment at the debt, enforces the
-//! debt floor, burns from the owner's holding itself and tells the position how much normalized
-//! debt to remove. Repaying is allowed while the protocol is frozen.
+//! debt floor, burns the repayment and tells the position how much normalized debt to remove.
+//! Repaying is allowed while the protocol is frozen.
+//!
+//! The engine cannot see what the caller-named holding holds: a `Burn` sent straight to it would
+//! burn whatever token it holds, so a holding of any other token under the same token program
+//! would erase stablecoin debt. The repayment is therefore first transferred from that holding
+//! into the surplus holding, whose credit the token refuses for any token but the stablecoin
+//! ("recipient holds another token"), and then burned from the surplus holding under its seed.
+//! Messages run depth first, so the transfer's credit lands before the burn.
 
 use lee_core::{
     account::{AccountId, Actor},
-    program::{ReceiveInput, Response},
+    program::{ReceiveInput, Response, SyncMessage},
 };
 use stablecoin_core::{
+    compute_surplus_holding_pda, compute_surplus_holding_pda_seed,
     debt_limits::meets_debt_floor,
     event::{DebtRepaid, StablecoinEvent as _},
     math::compute_repayment,
@@ -15,8 +23,8 @@ use stablecoin_core::{
 };
 
 use crate::{
-    accrue_stability_fee::accrue, checks, clock, engine_state, position_state, save_engine,
-    save_position, stablecoin_actor,
+    accrue_stability_fee::accrue, checks, clock, engine_state, position_state, program_id,
+    save_engine, save_position, stablecoin_actor,
 };
 
 /// At the owner's actor, signed as a root message: ask the engine to burn up to `maximum_amount`
@@ -68,9 +76,13 @@ pub(crate) fn request(
 }
 
 /// At the engine, on the clock's reply: accrue to `now`, cap the repayment at the debt at the
-/// fresh accumulator, check the floor, then burn from `from_holding` (even a zero amount) and
-/// tell the position its debt delta. The surplus mint (if any) goes first. The ceiling is never
-/// checked.
+/// fresh accumulator, check the floor, then move the repayment from `from_holding` into the
+/// surplus holding and burn it there (even a zero amount), and tell the position its debt delta.
+/// The surplus mint (if any) goes first. The ceiling is never checked.
+///
+/// The transfer (authorized by `from_holding`'s signature, no seed) is what ties the repayment
+/// to the stablecoin: the token refuses to credit the surplus holding with another token. The
+/// burn runs at the surplus holding under the surplus seed.
 ///
 /// # Panics
 /// - `"Repayment decrement is capped at outstanding normalized debt"` (cannot happen: the decrement
@@ -109,13 +121,24 @@ pub(crate) fn finish(
         );
     }
     let token_program_id = engine.parameters.token_program_id;
+    let surplus_holding = compute_surplus_holding_pda(program_id(input));
     accrued
         .attach(save_engine(engine))
         .send_sync(
             Actor::new(from_holding, token_program_id),
-            &token_core::Message::Burn {
+            &token_core::Message::Transfer {
+                to: surplus_holding,
                 amount: repayment.amount_to_burn,
             },
+        )
+        .send(
+            SyncMessage::new(
+                Actor::new(surplus_holding, token_program_id),
+                &token_core::Message::Burn {
+                    amount: repayment.amount_to_burn,
+                },
+            )
+            .with_pda_seeds([compute_surplus_holding_pda_seed()]),
         )
         .send_sync(
             stablecoin_actor(input, position),
@@ -222,8 +245,21 @@ mod tests {
         )
     }
 
+    /// The repayment's two token messages: the transfer from the caller's holding into the
+    /// surplus holding, then the burn there under the surplus seed.
+    fn pay_in(amount: u128) -> SyncMessage {
+        SyncMessage::new(
+            token(HOLDING),
+            &token_core::Message::Transfer {
+                to: surplus_id(),
+                amount,
+            },
+        )
+    }
+
     fn burn(amount: u128) -> SyncMessage {
-        SyncMessage::new(token(HOLDING), &token_core::Message::Burn { amount })
+        SyncMessage::new(token(surplus_id()), &token_core::Message::Burn { amount })
+            .with_pda_seeds([stablecoin_core::compute_surplus_holding_pda_seed()])
     }
 
     fn repaid_message(delta: u128) -> SyncMessage {
@@ -337,14 +373,17 @@ mod tests {
     // --- engine, clock reply ---
 
     #[test]
-    fn engine_burns_and_tells_the_position_its_debt_delta() {
+    fn engine_pays_the_repayment_into_the_surplus_holding_burns_it_and_tells_the_position() {
         let before = parked(400, 1_000, FIXED_POINT_ONE);
         let response = finish(&before);
         let mut expected = before.clone();
         expected.pending = None;
         expected.fee.total_normalized_debt = 600;
         assert_eq!(saved_engine(&response), expected);
-        assert_eq!(response.sync_messages, vec![burn(400), repaid_message(400)]);
+        assert_eq!(
+            response.sync_messages,
+            vec![pay_in(400), burn(400), repaid_message(400)]
+        );
         assert_eq!(
             response.events,
             vec![accrued_event(FIXED_POINT_ONE, 0), repaid_event(400, 400)]
@@ -369,7 +408,7 @@ mod tests {
         .with_pda_seeds([stablecoin_core::compute_stablecoin_definition_pda_seed()]);
         assert_eq!(
             response.sync_messages,
-            vec![surplus_mint, burn(400), repaid_message(200)]
+            vec![surplus_mint, pay_in(400), burn(400), repaid_message(200)]
         );
         assert_eq!(saved_engine(&response).fee.total_normalized_debt, 800);
     }
@@ -378,14 +417,20 @@ mod tests {
     fn engine_caps_a_repayment_at_the_debt() {
         // Debt 100 at 1.5 costs 150 to clear.
         let response = finish(&parked(151, 100, FIXED_POINT_ONE * 3 / 2));
-        assert_eq!(response.sync_messages, vec![burn(150), repaid_message(100)]);
+        assert_eq!(
+            response.sync_messages,
+            vec![pay_in(150), burn(150), repaid_message(100)]
+        );
         assert_eq!(saved_engine(&response).fee.total_normalized_debt, 0);
     }
 
     #[test]
     fn engine_rounds_a_partial_decrement_down() {
         let response = finish(&parked(100, 100, FIXED_POINT_ONE * 3 / 2));
-        assert_eq!(response.sync_messages, vec![burn(100), repaid_message(66)]);
+        assert_eq!(
+            response.sync_messages,
+            vec![pay_in(100), burn(100), repaid_message(66)]
+        );
         assert_eq!(saved_engine(&response).fee.total_normalized_debt, 34);
     }
 
@@ -400,7 +445,7 @@ mod tests {
         let response = finish(&parked(1_000, 1_000, FIXED_POINT_ONE));
         assert_eq!(
             response.sync_messages,
-            vec![burn(1_000), repaid_message(1_000)]
+            vec![pay_in(1_000), burn(1_000), repaid_message(1_000)]
         );
     }
 
@@ -408,13 +453,19 @@ mod tests {
     fn engine_still_burns_zero_for_a_zero_repayment() {
         // The debt is under the floor already; a zero repayment does not check it.
         let response = finish(&parked(0, 5, FIXED_POINT_ONE));
-        assert_eq!(response.sync_messages, vec![burn(0), repaid_message(0)]);
+        assert_eq!(
+            response.sync_messages,
+            vec![pay_in(0), burn(0), repaid_message(0)]
+        );
     }
 
     #[test]
     fn engine_still_burns_zero_for_a_debt_free_position() {
         let response = finish(&parked(50, 0, FIXED_POINT_ONE));
-        assert_eq!(response.sync_messages, vec![burn(0), repaid_message(0)]);
+        assert_eq!(
+            response.sync_messages,
+            vec![pay_in(0), burn(0), repaid_message(0)]
+        );
     }
 
     #[test]
