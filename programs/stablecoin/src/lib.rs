@@ -28,10 +28,12 @@ mod checks;
 mod clock;
 mod close_position;
 mod deposit_collateral;
+mod generate_debt;
 mod initialize;
 mod open_position;
 mod oracle;
 mod refresh_globals;
+mod repay_debt;
 #[cfg(test)]
 mod test_utils;
 mod update_redemption_rate;
@@ -81,16 +83,29 @@ fn handle_internal(input: &ReceiveInput) -> Response {
             initial_collateral_amount,
         ),
         Internal::GenerateDebtRequest {
-            amount: _,
-            to: _,
-            collateral_amount: _,
-            normalized_debt_amount: _,
-        } => panic!("not ported yet"),
+            amount,
+            to,
+            collateral_amount,
+            normalized_debt_amount,
+        } => generate_debt::request(
+            input,
+            sender(input),
+            amount,
+            to,
+            collateral_amount,
+            normalized_debt_amount,
+        ),
         Internal::RepayDebtRequest {
-            maximum_amount: _,
-            from_holding: _,
-            normalized_debt_amount: _,
-        } => panic!("not ported yet"),
+            maximum_amount,
+            from_holding,
+            normalized_debt_amount,
+        } => repay_debt::request(
+            input,
+            sender(input),
+            maximum_amount,
+            from_holding,
+            normalized_debt_amount,
+        ),
         Internal::WithdrawRequest {
             amount,
             to,
@@ -117,11 +132,11 @@ fn handle_internal(input: &ReceiveInput) -> Response {
             initial_collateral_amount,
         ),
         Internal::DebtGenerated {
-            normalized_debt_delta: _,
-        } => panic!("not ported yet"),
+            normalized_debt_delta,
+        } => generate_debt::generated(input, normalized_debt_delta),
         Internal::DebtRepaid {
-            normalized_debt_delta: _,
-        } => panic!("not ported yet"),
+            normalized_debt_delta,
+        } => repay_debt::repaid(input, normalized_debt_delta),
         Internal::WithdrawApproved { amount, to } => {
             withdraw_collateral::approved(input, amount, to)
         }
@@ -150,11 +165,11 @@ fn handle_public(input: &ReceiveInput) -> Response {
         Message::WithdrawCollateral { to, amount } => {
             withdraw_collateral::withdraw_collateral(input, to, amount)
         }
-        Message::GenerateDebt { to: _, amount: _ } => panic!("not ported yet"),
+        Message::GenerateDebt { to, amount } => generate_debt::generate_debt(input, to, amount),
         Message::RepayDebt {
-            stablecoin_holding: _,
-            maximum_amount: _,
-        } => panic!("not ported yet"),
+            stablecoin_holding,
+            maximum_amount,
+        } => repay_debt::repay_debt(input, stablecoin_holding, maximum_amount),
         Message::ClosePosition => close_position::close_position(input),
         Message::SetMinimumCollateralizationRatio { new_ratio } => admin::forward(
             input,

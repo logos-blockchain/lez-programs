@@ -7,8 +7,8 @@ use lee_core::program::{ReceiveInput, Response};
 use stablecoin_core::{Engine, Pending};
 
 use crate::{
-    accrue_stability_fee, admin, engine_state, initialize, refresh_globals, save_engine,
-    update_redemption_rate, withdraw_collateral,
+    accrue_stability_fee, admin, engine_state, generate_debt, initialize, refresh_globals,
+    repay_debt, save_engine, update_redemption_rate, withdraw_collateral,
 };
 
 /// Each read returns the previous block's timestamp in milliseconds, unrounded.
@@ -68,18 +68,35 @@ pub(crate) fn on_reply(input: &ReceiveInput) -> Response {
         }
         Pending::ResetController => admin::finish_reset_controller(input, engine, now),
         Pending::GenerateDebt {
-            position: _,
-            amount: _,
-            to: _,
-            collateral_amount: _,
-            normalized_debt_amount: _,
-        } => panic!("not ported yet"),
+            position,
+            amount,
+            to,
+            collateral_amount,
+            normalized_debt_amount,
+        } => generate_debt::finish(
+            input,
+            engine,
+            position,
+            amount,
+            to,
+            collateral_amount,
+            normalized_debt_amount,
+            now,
+        ),
         Pending::RepayDebt {
-            position: _,
-            maximum_amount: _,
-            from_holding: _,
-            normalized_debt_amount: _,
-        } => panic!("not ported yet"),
+            position,
+            maximum_amount,
+            from_holding,
+            normalized_debt_amount,
+        } => repay_debt::finish(
+            input,
+            engine,
+            position,
+            maximum_amount,
+            from_holding,
+            normalized_debt_amount,
+            now,
+        ),
         Pending::Withdraw {
             position,
             amount,
