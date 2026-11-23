@@ -23,6 +23,7 @@ use stablecoin_core::{compute_engine_pda, Engine, Internal, Message, Position, S
 mod accrue_stability_fee;
 mod checks;
 mod clock;
+mod initialize;
 #[cfg(test)]
 mod test_utils;
 
@@ -53,10 +54,12 @@ fn handle_internal(input: &ReceiveInput) -> Response {
         borsh::from_slice(&input.message).expect("internal stablecoin message must decode");
     match message {
         Internal::CreateStablecoinToken {
-            name: _,
-            token_program_id: _,
-        } => panic!("not ported yet"),
-        Internal::InitializeEngine(_args) => panic!("not ported yet"),
+            name,
+            token_program_id,
+        } => initialize::create_stablecoin_token(input, sender(input), name, token_program_id),
+        Internal::InitializeEngine(args) => {
+            initialize::initialize_engine(input, sender(input), args)
+        }
         Internal::Admin(_action) => panic!("not ported yet"),
         Internal::OpenRequest {
             collateral_holding: _,
@@ -100,7 +103,7 @@ fn handle_public(input: &ReceiveInput) -> Response {
     let message: Message =
         borsh::from_slice(&input.message).expect("stablecoin message must decode");
     match message {
-        Message::Initialize(_args) => panic!("not ported yet"),
+        Message::Initialize(args) => initialize::initialize(input, args),
         Message::AccrueStabilityFee => accrue_stability_fee::accrue_stability_fee(input),
         Message::UpdateRedemptionRate => panic!("not ported yet"),
         Message::RefreshGlobals { consult_oracle: _ } => panic!("not ported yet"),
@@ -162,6 +165,13 @@ fn sent_by_configured_oracle(input: &ReceiveInput) -> bool {
         }
         Some(StablecoinState::Position(_)) | None => false,
     }
+}
+
+/// The sender of an [`Internal`] message; the router has checked it exists.
+fn sender(input: &ReceiveInput) -> Actor {
+    input
+        .from
+        .expect("an internal stablecoin message has a sender")
 }
 
 /// The program's own account id: the header account every PDA derives from.

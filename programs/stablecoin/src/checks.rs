@@ -114,7 +114,6 @@ pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
 ///
 /// The lower bound keeps the fee from decaying debt. The upper bound is the overflow guard: it
 /// keeps every accrual, including the setter's catch-up at the old rate, inside `u128`.
-#[cfg_attr(not(test), expect(dead_code, reason = "used from Task 3: initialize"))]
 pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
     assert!(rate >= FIXED_POINT_ONE, "{label} below FIXED_POINT_ONE");
     assert!(
@@ -124,7 +123,6 @@ pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
 }
 
 /// `1.1x <= ratio <= 10x`. Below 1.1x a position is insolvent on arrival.
-#[cfg_attr(not(test), expect(dead_code, reason = "used from Task 3: initialize"))]
 pub(crate) fn assert_collateralization_ratio_in_band(ratio: u128, label: &str) {
     assert!(ratio >= MIN_COLLATERALIZATION_RATIO, "{label} below 1.1x");
     assert!(ratio <= MAX_COLLATERALIZATION_RATIO, "{label} above 10x");
@@ -134,7 +132,6 @@ pub(crate) fn assert_collateralization_ratio_in_band(ratio: u128, label: &str) {
 ///
 /// Negative gains are rejected. The controller embeds the stabilizing direction, so a negative
 /// gain would be positive feedback and push the redemption price away from the market.
-#[cfg_attr(not(test), expect(dead_code, reason = "used from Task 3: initialize"))]
 pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_gain: i128) {
     assert!(
         (0..=MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN).contains(&proportional_gain),
@@ -148,7 +145,6 @@ pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_
 
 /// `1 <= milliseconds <= 86_400_000`. Zero would allow spam; beyond a day is self-evidently
 /// wrong for both the rate interval and oracle staleness.
-#[cfg_attr(not(test), expect(dead_code, reason = "used from Task 3: initialize"))]
 pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str) {
     assert!(milliseconds >= 1, "{label} below minimum 1ms");
     assert!(
