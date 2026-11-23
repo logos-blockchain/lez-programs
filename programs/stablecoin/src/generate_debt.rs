@@ -542,6 +542,92 @@ mod tests {
         let _ = finish(&parked(1_000, 1_500, 0, u128::MAX));
     }
 
+    // --- floor, ceiling and rounding boundaries ---
+
+    /// Accumulator 1.5, so one minted unit rounds up to one unit of normalized debt worth 1.5.
+    fn fractional(amount: u128, minimum_debt_amount: u128, debt_ceiling: u128) -> Engine {
+        let mut engine = parked(amount, 10_000, 0, 0);
+        engine.fee.accumulated_rate_at_last_accrual = FIXED_POINT_ONE * 3 / 2;
+        engine.parameters.minimum_debt_amount = minimum_debt_amount;
+        engine.parameters.debt_ceiling = debt_ceiling;
+        engine
+    }
+
+    #[test]
+    #[should_panic(expected = "Position debt is below minimum_debt_amount")]
+    fn engine_refuses_a_fractional_debt_below_the_floor() {
+        // Minting 1 adds normalized debt 1, whose exact accrued value 1.5 is under the floor 2.
+        let _ = finish(&fractional(1, 2, 100));
+    }
+
+    #[test]
+    #[should_panic(expected = "Global debt ceiling exceeded")]
+    fn engine_refuses_a_fractional_debt_above_the_ceiling() {
+        // The same 1.5 exceeds the ceiling 1 although only one token is minted.
+        let _ = finish(&fractional(1, 1, 1));
+    }
+
+    #[test]
+    fn engine_accepts_a_fractional_debt_at_the_floor_and_the_ceiling() {
+        let response = finish(&fractional(2, 3, 3));
+        assert_eq!(
+            response.sync_messages,
+            vec![user_mint(2), generated_message(2)]
+        );
+        assert_eq!(saved_engine(&response).fee.total_normalized_debt, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Global debt ceiling exceeded")]
+    fn engine_refuses_a_mint_when_accrued_fees_put_the_total_over_the_ceiling() {
+        // Total debt 100 at accumulator 2.0 is worth 200, above the ceiling 100.
+        let mut before = parked(1, 10_000, 100, 100);
+        before.fee.accumulated_rate_at_last_accrual = 2 * FIXED_POINT_ONE;
+        before.parameters.minimum_debt_amount = 1;
+        before.parameters.debt_ceiling = 100;
+        let _ = finish(&before);
+    }
+
+    #[test]
+    fn engine_compares_a_projected_price_beyond_u128_instead_of_overflowing() {
+        let mut before = parked(1, 1_000_000_000_000, 0, 0);
+        before.parameters.minimum_debt_amount = 1;
+        before.parameters.minimum_collateralization_ratio = FIXED_POINT_ONE * 11 / 10;
+        before.redemption.redemption_rate_per_millisecond =
+            FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000;
+        before.redemption.last_updated_at = NOW - 2_700_000;
+        let response = finish(&before);
+        assert_eq!(
+            response.sync_messages,
+            vec![user_mint(1), generated_message(1)]
+        );
+    }
+
+    #[test]
+    fn engine_replies_to_the_parked_position() {
+        let mut before = parked(1_000, 1_500, 0, 0);
+        before.pending = Some(Pending::GenerateDebt {
+            position: ADMIN,
+            amount: 1_000,
+            to: RECIPIENT,
+            collateral_amount: 1_500,
+            normalized_debt_amount: 0,
+        });
+        let response = finish(&before);
+        assert_eq!(
+            response.sync_messages,
+            vec![
+                user_mint(1_000),
+                SyncMessage::new(
+                    stablecoin(ADMIN),
+                    &Internal::DebtGenerated {
+                        normalized_debt_delta: 1_000,
+                    },
+                ),
+            ]
+        );
+    }
+
     // --- position, generated ---
 
     fn generated(from: Actor, pre: Option<&StablecoinState>, delta: u128) -> Response {

@@ -85,8 +85,9 @@ pub(crate) fn request(
 /// burn runs at the surplus holding under the surplus seed.
 ///
 /// # Panics
-/// - `"Repayment decrement is capped at outstanding normalized debt"` (cannot happen: the decrement
-///   is capped).
+/// - `"Repayment decrement is capped at outstanding normalized debt"`: defensive here, since
+///   `compute_repayment` already caps the decrement at the debt. It is reachable only in
+///   [`repaid`], from a forged or mismatched reply.
 /// - `"Total normalized debt underflow"` when the decrement exceeds the total debt.
 /// - `"Position debt is below minimum_debt_amount"` when a non-zero decrement leaves debt under the
 ///   floor.
@@ -351,7 +352,22 @@ mod tests {
     #[test]
     fn engine_parks_the_request_while_frozen() {
         let response = request_message(true);
-        assert!(saved_engine(&response).pending.is_some());
+        let mut expected = engine_at(NOW);
+        expected.parameters.is_frozen = true;
+        expected.pending = Some(Pending::RepayDebt {
+            position: OWNER,
+            maximum_amount: 400,
+            from_holding: HOLDING,
+            normalized_debt_amount: 1_000,
+        });
+        assert_eq!(saved_engine(&response), expected);
+        assert_eq!(
+            response.sync_messages,
+            vec![SyncMessage::new(
+                clock(),
+                &clock_core::Message::ReadTimestamp { granularity: 1 },
+            )]
+        );
     }
 
     #[test]
@@ -474,6 +490,84 @@ mod tests {
         let mut before = parked(400, 1_000, FIXED_POINT_ONE);
         before.fee.total_normalized_debt = 100;
         let _ = finish(&before);
+    }
+
+    // --- floor boundaries, ceiling and parked position ---
+
+    fn with_floor(mut engine: Engine, minimum_debt_amount: u128) -> Engine {
+        engine.parameters.minimum_debt_amount = minimum_debt_amount;
+        engine
+    }
+
+    #[test]
+    fn engine_leaves_a_debt_above_the_floor() {
+        let response = finish(&with_floor(parked(9, 20, FIXED_POINT_ONE), 10));
+        assert_eq!(saved_engine(&response).fee.total_normalized_debt, 11);
+    }
+
+    #[test]
+    fn engine_leaves_a_debt_exactly_at_the_floor() {
+        let response = finish(&with_floor(parked(10, 20, FIXED_POINT_ONE), 10));
+        assert_eq!(saved_engine(&response).fee.total_normalized_debt, 10);
+    }
+
+    #[test]
+    #[should_panic(expected = "Position debt is below minimum_debt_amount")]
+    fn engine_refuses_a_remainder_one_below_the_floor() {
+        let _ = finish(&with_floor(parked(11, 20, FIXED_POINT_ONE), 10));
+    }
+
+    #[test]
+    fn engine_clears_a_debt_of_twenty_despite_the_floor() {
+        let response = finish(&with_floor(parked(20, 20, FIXED_POINT_ONE), 10));
+        assert_eq!(saved_engine(&response).fee.total_normalized_debt, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Position debt is below minimum_debt_amount")]
+    fn engine_refuses_a_fractional_remainder_below_the_floor() {
+        // Debt 2 at 1.5, repaying 2 removes 1 and leaves 1 (worth 1.5) under the floor 2.
+        let _ = finish(&with_floor(parked(2, 2, FIXED_POINT_ONE * 3 / 2), 2));
+    }
+
+    #[test]
+    fn engine_clears_a_fractional_debt_with_enough_budget() {
+        let response = finish(&with_floor(parked(3, 2, FIXED_POINT_ONE * 3 / 2), 2));
+        assert_eq!(saved_engine(&response).fee.total_normalized_debt, 0);
+    }
+
+    #[test]
+    fn engine_allows_a_partial_repayment_while_the_total_is_over_the_ceiling() {
+        // Total debt 100 at accumulator 2.0 is worth 200, above the ceiling 100: minting is
+        // refused, repaying is not.
+        let mut before = with_floor(parked(20, 100, 2 * FIXED_POINT_ONE), 1);
+        before.parameters.debt_ceiling = 100;
+        let response = finish(&before);
+        assert_eq!(response.sync_messages[..2], [pay_in(20), burn(20)]);
+        assert_eq!(response.sync_messages.len(), 3);
+        assert_eq!(response.sync_messages[2], repaid_message(10));
+        assert_eq!(saved_engine(&response).fee.total_normalized_debt, 90);
+    }
+
+    #[test]
+    fn engine_replies_to_the_parked_position() {
+        let mut before = parked(400, 1_000, FIXED_POINT_ONE);
+        before.pending = Some(Pending::RepayDebt {
+            position: ADMIN,
+            maximum_amount: 400,
+            from_holding: HOLDING,
+            normalized_debt_amount: 1_000,
+        });
+        let response = finish(&before);
+        assert_eq!(
+            response.sync_messages.last(),
+            Some(&SyncMessage::new(
+                stablecoin(ADMIN),
+                &Internal::DebtRepaid {
+                    normalized_debt_delta: 400,
+                },
+            ))
+        );
     }
 
     // --- position, repaid ---
