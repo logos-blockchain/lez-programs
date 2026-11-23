@@ -2165,6 +2165,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "clock_core",
+ "fee_core",
  "integration-test-methods",
  "lee",
  "lee_core",
