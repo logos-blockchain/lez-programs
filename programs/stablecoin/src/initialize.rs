@@ -220,13 +220,13 @@ mod tests {
             collateral_definition_id: COLLATERAL_DEFINITION,
             market_price_oracle_id: ORACLE_PRICE,
             market_price_oracle_program_id: ORACLE_PROGRAM,
-            initial_stability_fee_per_millisecond: FIXED_POINT_ONE,
-            initial_controller_proportional_gain: 0,
-            initial_controller_integral_gain: 0,
+            initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1,
+            initial_controller_proportional_gain: 1,
+            initial_controller_integral_gain: 2,
             initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
             minimum_milliseconds_between_rate_updates: 1_000,
             maximum_oracle_price_age_milliseconds: 10_000,
-            initial_redemption_price: FIXED_POINT_ONE,
+            initial_redemption_price: FIXED_POINT_ONE / 2,
             stablecoin_name: "test-stable".to_owned(),
             minimum_debt_amount: 10,
             debt_ceiling: 1_000_000,
@@ -310,14 +310,19 @@ mod tests {
     #[test]
     fn the_engine_writes_its_state_and_asks_the_clock() {
         let expected = Engine {
-            parameters: parameters(),
+            parameters: ProtocolParameters {
+                stability_fee_per_millisecond: FIXED_POINT_ONE + 1,
+                controller_proportional_gain: 1,
+                controller_integral_gain: 2,
+                ..parameters()
+            },
             fee: StabilityFeeAccumulator {
                 accumulated_rate_at_last_accrual: FIXED_POINT_ONE,
                 last_accrued_at: 0,
                 total_normalized_debt: 0,
             },
             redemption: RedemptionPriceState {
-                redemption_price_at_last_update: FIXED_POINT_ONE,
+                redemption_price_at_last_update: FIXED_POINT_ONE / 2,
                 redemption_rate_per_millisecond: FIXED_POINT_ONE,
                 controller_integral_term: 0,
                 last_updated_at: 0,
@@ -432,109 +437,168 @@ mod tests {
         );
     }
 
-    fn rejects(expected: &str, change: impl FnOnce(&mut InitializeArgs)) {
-        let mut bad = args();
-        change(&mut bad);
-        let panic = std::panic::catch_unwind(|| engine_with(bad)).expect_err("must panic");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .expect("panic carries a message");
-        assert!(message.contains(expected), "got: {message}");
+    fn engine_with_changed_args(change: impl FnOnce(&mut InitializeArgs)) -> Response {
+        let mut changed = args();
+        change(&mut changed);
+        engine_with(changed)
     }
 
     #[test]
-    fn out_of_band_arguments_panic() {
-        rejects(
-            "initial_stability_fee_per_millisecond below FIXED_POINT_ONE",
-            |a| {
-                a.initial_stability_fee_per_millisecond = FIXED_POINT_ONE - 1;
-            },
-        );
-        rejects(
-            "initial_stability_fee_per_millisecond above sane upper bound",
-            |a| {
-                a.initial_stability_fee_per_millisecond = MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1;
-            },
-        );
-        rejects("initial_minimum_collateralization_ratio below 1.1x", |a| {
+    #[should_panic(expected = "initial_stability_fee_per_millisecond below FIXED_POINT_ONE")]
+    fn rejects_stability_fee_below_one() {
+        let _ = engine_with_changed_args(|a| {
+            a.initial_stability_fee_per_millisecond = FIXED_POINT_ONE - 1;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "initial_stability_fee_per_millisecond above sane upper bound")]
+    fn rejects_stability_fee_above_the_cap() {
+        let _ = engine_with_changed_args(|a| {
+            a.initial_stability_fee_per_millisecond = MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "initial_minimum_collateralization_ratio below 1.1x")]
+    fn rejects_collateralization_ratio_too_low() {
+        let _ = engine_with_changed_args(|a| {
             a.initial_minimum_collateralization_ratio = FIXED_POINT_ONE;
         });
-        rejects("initial_minimum_collateralization_ratio above 10x", |a| {
-            a.initial_minimum_collateralization_ratio = FIXED_POINT_ONE * 11;
-        });
-        rejects("controller_proportional_gain out of band", |a| {
-            a.initial_controller_proportional_gain = -1;
-        });
-        rejects("controller_integral_gain out of band", |a| {
-            a.initial_controller_integral_gain = -1;
-        });
-        rejects(
-            "minimum_milliseconds_between_rate_updates below minimum 1ms",
-            |a| {
-                a.minimum_milliseconds_between_rate_updates = 0;
-            },
-        );
-        rejects(
-            "minimum_milliseconds_between_rate_updates above maximum 86_400_000ms",
-            |a| {
-                a.minimum_milliseconds_between_rate_updates = 86_400_001;
-            },
-        );
-        rejects(
-            "maximum_oracle_price_age_milliseconds below minimum 1ms",
-            |a| {
-                a.maximum_oracle_price_age_milliseconds = 0;
-            },
-        );
-        rejects(
-            "maximum_oracle_price_age_milliseconds above maximum 86_400_000ms",
-            |a| {
-                a.maximum_oracle_price_age_milliseconds = 86_400_001;
-            },
-        );
     }
 
     #[test]
-    fn out_of_range_redemption_prices_panic() {
-        let bound = "initial_redemption_price must be within the §8 redemption-price bounds";
-        rejects(bound, |a| a.initial_redemption_price = 0);
-        rejects(bound, |a| {
+    #[should_panic(expected = "initial_minimum_collateralization_ratio above 10x")]
+    fn rejects_collateralization_ratio_too_high() {
+        let _ = engine_with_changed_args(|a| {
+            a.initial_minimum_collateralization_ratio = FIXED_POINT_ONE * 11;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_proportional_gain out of band")]
+    fn rejects_negative_proportional_gain() {
+        let _ = engine_with_changed_args(|a| {
+            a.initial_controller_proportional_gain = -1;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "controller_integral_gain out of band")]
+    fn rejects_negative_integral_gain() {
+        let _ = engine_with_changed_args(|a| {
+            a.initial_controller_integral_gain = -1;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "minimum_milliseconds_between_rate_updates below minimum 1ms")]
+    fn rejects_zero_rate_update_interval() {
+        let _ = engine_with_changed_args(|a| {
+            a.minimum_milliseconds_between_rate_updates = 0;
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "minimum_milliseconds_between_rate_updates above maximum 86_400_000ms"
+    )]
+    fn rejects_rate_update_interval_above_a_day() {
+        let _ = engine_with_changed_args(|a| {
+            a.minimum_milliseconds_between_rate_updates = 86_400_001;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "maximum_oracle_price_age_milliseconds below minimum 1ms")]
+    fn rejects_zero_oracle_max_age() {
+        let _ = engine_with_changed_args(|a| {
+            a.maximum_oracle_price_age_milliseconds = 0;
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "maximum_oracle_price_age_milliseconds above maximum 86_400_000ms")]
+    fn rejects_oracle_max_age_above_a_day() {
+        let _ = engine_with_changed_args(|a| {
+            a.maximum_oracle_price_age_milliseconds = 86_400_001;
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_zero_redemption_price() {
+        let _ = engine_with_changed_args(|a| {
+            a.initial_redemption_price = 0;
+        });
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_redemption_price_below_the_floor() {
+        let _ = engine_with_changed_args(|a| {
             a.initial_redemption_price = MINIMUM_REDEMPTION_PRICE - 1;
         });
-        rejects(bound, |a| {
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "initial_redemption_price must be within the §8 redemption-price bounds"
+    )]
+    fn rejects_redemption_price_above_the_ceiling() {
+        let _ = engine_with_changed_args(|a| {
             a.initial_redemption_price = MAXIMUM_REDEMPTION_PRICE + 1;
         });
     }
 
     #[test]
-    fn bad_names_panic() {
-        rejects("stablecoin_name must be 1 to 64 bytes", |a| {
+    #[should_panic(expected = "stablecoin_name must be 1 to 64 bytes")]
+    fn rejects_empty_name() {
+        let _ = engine_with_changed_args(|a| {
             a.stablecoin_name = String::new();
         });
-        rejects("stablecoin_name must be 1 to 64 bytes", |a| {
+    }
+
+    #[test]
+    #[should_panic(expected = "stablecoin_name must be 1 to 64 bytes")]
+    fn rejects_name_above_the_maximum() {
+        let _ = engine_with_changed_args(|a| {
             a.stablecoin_name = "x".repeat(MAX_NAME_LEN + 1);
         });
     }
 
     #[test]
-    fn a_name_of_exactly_the_maximum_length_is_accepted() {
-        let mut ok = args();
-        ok.stablecoin_name = "x".repeat(MAX_NAME_LEN);
-        let _ = engine_with(ok);
-    }
-
-    #[test]
-    fn invalid_debt_limits_panic() {
-        let message = "Debt limits require 0 < minimum_debt_amount <= debt_ceiling";
-        rejects(message, |a| {
+    #[should_panic(expected = "Debt limits require 0 < minimum_debt_amount <= debt_ceiling")]
+    fn rejects_zero_minimum_debt() {
+        let _ = engine_with_changed_args(|a| {
             a.minimum_debt_amount = 0;
             a.debt_ceiling = 100;
         });
-        rejects(message, |a| {
+    }
+
+    #[test]
+    #[should_panic(expected = "Debt limits require 0 < minimum_debt_amount <= debt_ceiling")]
+    fn rejects_minimum_debt_above_the_ceiling() {
+        let _ = engine_with_changed_args(|a| {
             a.minimum_debt_amount = 10;
             a.debt_ceiling = 9;
+        });
+    }
+
+    #[test]
+    fn a_name_of_exactly_the_maximum_length_is_accepted() {
+        let _ = engine_with_changed_args(|a| a.stablecoin_name = "x".repeat(MAX_NAME_LEN));
+    }
+
+    #[test]
+    fn a_minimum_debt_equal_to_the_ceiling_is_accepted() {
+        let _ = engine_with_changed_args(|a| {
+            a.minimum_debt_amount = 100;
+            a.debt_ceiling = 100;
         });
     }
 }
