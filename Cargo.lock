@@ -2574,6 +2574,7 @@ dependencies = [
  "lee_core",
  "risc0-zkvm",
  "serde",
+ "spel-attrs",
 ]
 
 [[package]]
@@ -3995,9 +3996,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "spel-attrs"
+version = "0.7.0"
+source = "git+https://github.com/logos-co/spel.git?rev=d7444f84cabee3371aca3bdee8ebc4c2fc45ebde#d7444f84cabee3371aca3bdee8ebc4c2fc45ebde"
+
+[[package]]
 name = "spel-framework-core"
 version = "0.7.0"
-source = "git+https://github.com/logos-co/spel.git?rev=c90ca0bc16c07c89d16425dd28a5f6a2d8428801#c90ca0bc16c07c89d16425dd28a5f6a2d8428801"
+source = "git+https://github.com/logos-co/spel.git?rev=d7444f84cabee3371aca3bdee8ebc4c2fc45ebde#d7444f84cabee3371aca3bdee8ebc4c2fc45ebde"
 dependencies = [
  "base58",
  "borsh",
@@ -4290,6 +4296,7 @@ dependencies = [
  "lee_core",
  "risc0-zkvm",
  "serde",
+ "spel-attrs",
 ]
 
 [[package]]
@@ -4527,6 +4534,7 @@ dependencies = [
  "risc0-zkvm",
  "ruint",
  "serde",
+ "spel-attrs",
  "uniswap_v3_math",
 ]
 
