@@ -8,7 +8,7 @@ use stablecoin_core::{Engine, Pending};
 
 use crate::{
     accrue_stability_fee, admin, engine_state, initialize, refresh_globals, save_engine,
-    update_redemption_rate,
+    update_redemption_rate, withdraw_collateral,
 };
 
 /// Each read returns the previous block's timestamp in milliseconds, unrounded.
@@ -81,12 +81,21 @@ pub(crate) fn on_reply(input: &ReceiveInput) -> Response {
             normalized_debt_amount: _,
         } => panic!("not ported yet"),
         Pending::Withdraw {
-            position: _,
-            amount: _,
-            to: _,
-            collateral_after: _,
-            normalized_debt_amount: _,
-        } => panic!("not ported yet"),
+            position,
+            amount,
+            to,
+            collateral_after,
+            normalized_debt_amount,
+        } => withdraw_collateral::finish(
+            input,
+            engine,
+            position,
+            amount,
+            to,
+            collateral_after,
+            normalized_debt_amount,
+            now,
+        ),
         Pending::OraclePrice { now: _, hard: _ } => {
             panic!("the engine is not waiting for the clock")
         }

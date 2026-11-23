@@ -68,10 +68,6 @@ pub(crate) fn assert_from_engine(input: &ReceiveInput) {
 ///
 /// # Panics
 /// - `"Position is undercollateralized"` when the inequality does not hold.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used from Task 5: generate_debt")
-)]
 pub(crate) fn assert_position_is_collateralized(
     collateral_amount: u128,
     normalized_debt_amount: u128,

@@ -35,6 +35,7 @@ mod refresh_globals;
 #[cfg(test)]
 mod test_utils;
 mod update_redemption_rate;
+mod withdraw_collateral;
 
 /// The guest entry point. Each kind of sender has one format: the clock's reply, [`Internal`]
 /// from stablecoin actors, the oracle's reply from the configured oracle, then a [`Message`]
@@ -91,11 +92,18 @@ fn handle_internal(input: &ReceiveInput) -> Response {
             normalized_debt_amount: _,
         } => panic!("not ported yet"),
         Internal::WithdrawRequest {
-            amount: _,
-            to: _,
-            collateral_after: _,
-            normalized_debt_amount: _,
-        } => panic!("not ported yet"),
+            amount,
+            to,
+            collateral_after,
+            normalized_debt_amount,
+        } => withdraw_collateral::request(
+            input,
+            sender(input),
+            amount,
+            to,
+            collateral_after,
+            normalized_debt_amount,
+        ),
         Internal::OpenApproved {
             token_program_id,
             collateral_definition_id,
@@ -114,7 +122,9 @@ fn handle_internal(input: &ReceiveInput) -> Response {
         Internal::DebtRepaid {
             normalized_debt_delta: _,
         } => panic!("not ported yet"),
-        Internal::WithdrawApproved { amount: _, to: _ } => panic!("not ported yet"),
+        Internal::WithdrawApproved { amount, to } => {
+            withdraw_collateral::approved(input, amount, to)
+        }
     }
 }
 
@@ -137,7 +147,9 @@ fn handle_public(input: &ReceiveInput) -> Response {
             collateral_holding,
             amount,
         } => deposit_collateral::deposit_collateral(input, collateral_holding, amount),
-        Message::WithdrawCollateral { to: _, amount: _ } => panic!("not ported yet"),
+        Message::WithdrawCollateral { to, amount } => {
+            withdraw_collateral::withdraw_collateral(input, to, amount)
+        }
         Message::GenerateDebt { to: _, amount: _ } => panic!("not ported yet"),
         Message::RepayDebt {
             stablecoin_holding: _,
