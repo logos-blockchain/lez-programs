@@ -75,6 +75,7 @@ pub(crate) fn apply(input: &ReceiveInput, from: Actor, action: AdminAction) -> R
             oracle_account_id,
             oracle_program_id,
         } => change(engine, signer, |parameters| {
+            checks::assert_oracle_program_is_set(oracle_program_id);
             parameters.market_price_oracle_id = oracle_account_id;
             parameters.market_price_oracle_program_id = oracle_program_id;
         }),
@@ -516,6 +517,15 @@ mod tests {
                 "{action:?}",
             );
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "Market price oracle program must not be the default owner")]
+    fn a_zero_oracle_program_id_panics() {
+        let _ = apply_as_admin(AdminAction::SetMarketPriceOracle {
+            oracle_account_id: OWNER,
+            oracle_program_id: AccountId::new([0; 32]),
+        });
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! setter. One definition means the two can't drift apart.
 
 use alloy_primitives::U512;
-use lee_core::program::ReceiveInput;
+use lee_core::{account::AccountId, program::ReceiveInput};
 use stablecoin_core::{
     collateralization::collateralization_values, math::FIXED_POINT_ONE,
     MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
@@ -97,6 +97,15 @@ pub(crate) fn assert_position_is_collateralized(
 pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
 pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
 pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
+
+/// The market price oracle's program id is not the all-zero id, which names no program.
+pub(crate) fn assert_oracle_program_is_set(oracle_program_id: AccountId) {
+    assert_ne!(
+        oracle_program_id,
+        AccountId::new([0; 32]),
+        "Market price oracle program must not be the default owner"
+    );
+}
 
 /// `FIXED_POINT_ONE <= rate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about 100% a year).
 ///

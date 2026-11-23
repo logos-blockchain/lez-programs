@@ -192,6 +192,7 @@ fn assert_args_in_bands(args: &InitializeArgs) {
         (1..=MAX_NAME_LEN).contains(&args.stablecoin_name.len()),
         "stablecoin_name must be 1 to 64 bytes"
     );
+    checks::assert_oracle_program_is_set(args.market_price_oracle_program_id);
     assert!(
         stablecoin_core::debt_limits::valid_debt_limits(
             args.minimum_debt_amount,
@@ -550,6 +551,14 @@ mod tests {
     fn rejects_name_above_the_maximum() {
         let _ = engine_with_changed_args(|a| {
             a.stablecoin_name = "x".repeat(MAX_NAME_LEN + 1);
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "Market price oracle program must not be the default owner")]
+    fn rejects_a_zero_oracle_program_id() {
+        let _ = engine_with_changed_args(|a| {
+            a.market_price_oracle_program_id = AccountId::new([0; 32]);
         });
     }
 
