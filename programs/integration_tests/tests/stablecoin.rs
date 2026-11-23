@@ -15,7 +15,7 @@ use stablecoin_core::{
     InitializeArgs, Message, Position, StablecoinState, FIXED_POINT_ONE,
 };
 use stablecoin_methods::STABLECOIN_ELF;
-use token_core::TokenState;
+use token_core::{TokenDefinition, TokenHolding, TokenState};
 use token_methods::TOKEN_ELF;
 use twap_oracle_methods::TWAP_ORACLE_ELF;
 
@@ -211,18 +211,26 @@ fn position(world: &World, owner: AccountId) -> Option<Position> {
     }
 }
 
-fn holding_balance(world: &World, account_id: AccountId) -> u128 {
+fn holding(world: &World, account_id: AccountId) -> TokenHolding {
     match token_state(world, account_id) {
-        Some(TokenState::Holding(holding)) => holding.balance,
+        Some(TokenState::Holding(holding)) => holding,
         other => panic!("expected a token holding, got {other:?}"),
     }
 }
 
-fn total_supply(world: &World, definition: AccountId) -> u128 {
-    match token_state(world, definition) {
-        Some(TokenState::Definition(definition)) => definition.total_supply,
+fn definition(world: &World, definition_id: AccountId) -> TokenDefinition {
+    match token_state(world, definition_id) {
+        Some(TokenState::Definition(definition)) => definition,
         other => panic!("expected a token definition, got {other:?}"),
     }
+}
+
+fn holding_balance(world: &World, account_id: AccountId) -> u128 {
+    holding(world, account_id).balance
+}
+
+fn total_supply(world: &World, definition_id: AccountId) -> u128 {
+    definition(world, definition_id).total_supply
 }
 
 // ── Initialize ───────────────────────────────────────────────────────────────────
@@ -236,6 +244,24 @@ fn initialize_creates_the_engine_and_the_stablecoin_token() {
     assert_eq!(engine.fee.last_accrued_at, 1_000_000);
     assert_eq!(engine.redemption.last_updated_at, 1_000_000);
     assert_eq!(engine.parameters.token_program_id, world.token);
+    assert_eq!(engine.fee.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
+    assert_eq!(engine.fee.total_normalized_debt, 0);
+    let parameters = &engine.parameters;
+    assert_eq!(parameters.admin_account_id, account(&world.admin));
+    assert_eq!(
+        parameters.freeze_authority_account_id,
+        account(&world.freeze_authority)
+    );
+    assert_eq!(parameters.stablecoin_definition_id, definition_id(&world));
+    assert_eq!(
+        parameters.collateral_definition_id,
+        world.collateral_definition
+    );
+    assert_eq!(parameters.market_price_oracle_id, ORACLE_PRICE);
+    assert_eq!(parameters.market_price_oracle_program_id, world.oracle);
+    assert_eq!(parameters.minimum_debt_amount, 10);
+    assert_eq!(parameters.debt_ceiling, 1_000_000_000);
+    assert!(!parameters.is_frozen);
     assert_eq!(
         total_supply(&world, compute_stablecoin_definition_pda(world.stablecoin)),
         0
@@ -243,6 +269,19 @@ fn initialize_creates_the_engine_and_the_stablecoin_token() {
     assert_eq!(
         holding_balance(&world, compute_surplus_holding_pda(world.stablecoin)),
         0
+    );
+    // The stablecoin definition is its own mint authority, so the engine can mint through it.
+    assert_eq!(
+        definition(&world, definition_id(&world)),
+        TokenDefinition {
+            name: "Stable".to_owned(),
+            total_supply: 0,
+            authority: Some(definition_id(&world)),
+        }
+    );
+    assert_eq!(
+        holding(&world, surplus_id(&world)).definition_id,
+        definition_id(&world)
     );
     assert_eq!(position(&world, account(&world.admin)), None);
 }
@@ -267,6 +306,7 @@ fn initialize_twice_is_refused() {
     let mut world = world();
     initialize(&mut world);
     let before = engine(&world);
+    let definition_before = definition(&world, definition_id(&world));
 
     let result = try_initialize(&mut world);
 
@@ -274,6 +314,7 @@ fn initialize_twice_is_refused() {
     // at the existing definition fails before the engine sees `InitializeEngine`.
     assert_refused(&result, "definition account must be empty");
     assert_eq!(engine(&world), before);
+    assert_eq!(definition(&world, definition_id(&world)), definition_before);
 }
 
 // ── AccrueStabilityFee ───────────────────────────────────────────────────────────
@@ -284,5 +325,9 @@ fn anyone_can_accrue_and_the_engine_follows_the_clock() {
     initialize(&mut world);
     tick(&mut world.state, 1_060_000);
     accrue(&mut world).unwrap();
-    assert_eq!(engine(&world).fee.last_accrued_at, 1_060_000);
+    let engine = engine(&world);
+    assert_eq!(engine.pending, None);
+    assert_eq!(engine.fee.last_accrued_at, 1_060_000);
+    // The fee is above 1.0 per millisecond, so 60_000 ms of the clock's time compound it.
+    assert!(engine.fee.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
 }
