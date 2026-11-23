@@ -24,12 +24,12 @@ pub(crate) fn update_redemption_rate(input: &ReceiveInput) -> Response {
 ///
 /// # Panics
 /// - `"update_redemption_rate called too soon since last update"` before the interval elapsed.
-pub(crate) fn finish(_input: &ReceiveInput, engine: Engine, now: u64) -> Response {
+pub(crate) fn finish(input: &ReceiveInput, engine: Engine, now: u64) -> Response {
     assert!(
         interval_is_due(&engine, now),
         "update_redemption_rate called too soon since last update"
     );
-    oracle::read_price(engine, now, true)
+    oracle::read_price(input, engine, now, true)
 }
 
 /// Whether `minimum_milliseconds_between_rate_updates` has elapsed since the last update.
@@ -151,7 +151,8 @@ mod tests {
         assert_eq!(
             response,
             Response::set_state(StablecoinState::Engine(parked).encode())
-                .send_sync(oracle(), &twap_oracle_core::ReadPrice),
+                .send_sync(oracle(), &twap_oracle_core::ReadPrice)
+                .send_sync(engine(), &Internal::AssertOracleReplied),
         );
     }
 

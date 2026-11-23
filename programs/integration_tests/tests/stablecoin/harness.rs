@@ -289,7 +289,7 @@ pub fn initialize(world: &mut World) {
 }
 
 /// The actors a poke that may mint the surplus reaches, past the engine.
-fn poke_actors(world: &World) -> Vec<Actor> {
+pub fn poke_actors(world: &World) -> Vec<Actor> {
     vec![
         clock_actor(),
         token(world, definition_id(world)),
@@ -298,7 +298,7 @@ fn poke_actors(world: &World) -> Vec<Actor> {
 }
 
 /// A permissionless poke at the engine. It needs no signature.
-fn poke(
+pub fn poke(
     world: &mut World,
     past_root: &[Actor],
     message: &Message,
@@ -589,7 +589,7 @@ fn source_key() -> PrivateKey {
 }
 
 /// The price source's actor on its key's account.
-fn source_actor() -> Actor {
+pub fn source_actor() -> Actor {
     Actor::new(account(&source_key()), SOURCE)
 }
 
@@ -631,6 +631,12 @@ fn forward(
             seeds,
         },
     )
+}
+
+/// Gives the price source's own actor a state, so LEZ admits messages to it: the stand-in for an
+/// oracle whose program accepts anything silently. Its actor is [`source_actor`].
+pub fn make_silent_oracle(world: &mut World) {
+    forward(world, source_actor(), &0_u8, vec![], &[]).expect("the price source stores a message");
 }
 
 /// Creates the price source's current-tick actor at `price` (Q64.64) and opens its window at the

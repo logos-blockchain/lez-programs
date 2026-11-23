@@ -947,6 +947,48 @@ fn update_refuses_a_stale_price() {
     assert_eq!(engine(&world).redemption, redemption_before);
 }
 
+/// An oracle whose program accepts `ReadPrice` and never replies (the price source stores what
+/// another actor sends it and sends nothing back) must fail the transaction, not leave the engine
+/// waiting for a reply that never comes.
+#[test]
+fn an_oracle_that_does_not_reply_fails_the_transaction() {
+    let mut world = world();
+    initialize(&mut world);
+    make_silent_oracle(&mut world);
+    admin(
+        &mut world,
+        &Message::SetMarketPriceOracle {
+            oracle_account_id: source_actor().account_id,
+            oracle_program_id: source_actor().program_account_id,
+        },
+    )
+    .expect("the admin binds the silent oracle");
+    tick(&mut world.state, T0 + 2_000);
+
+    let result = poke(
+        &mut world,
+        &[clock_actor(), source_actor()],
+        &Message::UpdateRedemptionRate,
+    );
+    assert_refused(&result, "the market price oracle did not reply");
+    assert_eq!(engine(&world).pending, None);
+
+    let mut past_root = poke_actors(&world);
+    past_root.push(source_actor());
+    let result = poke(
+        &mut world,
+        &past_root,
+        &Message::RefreshGlobals {
+            consult_oracle: true,
+        },
+    );
+    assert_refused(&result, "the market price oracle did not reply");
+    assert_eq!(engine(&world).pending, None);
+
+    accrue(&mut world).expect("the engine still serves the next poke");
+    assert_eq!(engine(&world).fee.last_accrued_at, T0 + 2_000);
+}
+
 // ── Every transaction leaves the engine idle ─────────────────────────────────────
 
 /// `send` asserts this after every transaction of every test; this one walks the refusals that

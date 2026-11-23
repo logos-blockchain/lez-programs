@@ -11,35 +11,71 @@ use lee_core::{
 };
 use stablecoin_core::{
     event::{RedemptionRateUpdated, StablecoinEvent as _},
-    Engine, Pending, ProtocolParameters,
+    Engine, Internal, Pending, ProtocolParameters,
 };
 use twap_oracle_core::{OraclePrice, PriceReply, ReadPrice};
 
-use crate::{clock, engine_state, save_engine, update_redemption_rate::advance_redemption_price};
+use crate::{
+    checks, clock, engine_actor, engine_state, save_engine,
+    update_redemption_rate::advance_redemption_price,
+};
 
-/// Parks the price read in `engine` and returns the `ReadPrice` to send, so a caller can attach
-/// other messages (the surplus mint) before it.
+/// Parks the price read in `engine` and returns the messages to send, in this order: `ReadPrice`
+/// to the oracle, then [`Internal::AssertOracleReplied`] to the engine itself. LEZ delivers
+/// depth-first, so the oracle's reply (which clears `pending`) runs before the assertion; an
+/// oracle that swallows `ReadPrice` fails the whole transaction instead of leaving the engine
+/// waiting forever. Callers attach other messages (the surplus mint) before these.
 ///
 /// # Panics
 /// - `"the engine is already waiting for a reply"` when another operation is parked.
-pub(crate) fn request_price(engine: &mut Engine, now: u64, hard: bool) -> SyncMessage {
+pub(crate) fn request_price(
+    input: &ReceiveInput,
+    engine: &mut Engine,
+    now: u64,
+    hard: bool,
+) -> [SyncMessage; 2] {
     clock::park(engine, Pending::OraclePrice { now, hard });
-    SyncMessage::new(
-        Actor::new(
-            engine.parameters.market_price_oracle_id,
-            engine.parameters.market_price_oracle_program_id,
+    [
+        SyncMessage::new(
+            Actor::new(
+                engine.parameters.market_price_oracle_id,
+                engine.parameters.market_price_oracle_program_id,
+            ),
+            &ReadPrice,
         ),
-        &ReadPrice,
-    )
+        SyncMessage::new(engine_actor(input), &Internal::AssertOracleReplied),
+    ]
 }
 
 /// Parks `Pending::OraclePrice { now, hard }` and asks the oracle for its price.
 ///
 /// # Panics
 /// - `"the engine is already waiting for a reply"` when another operation is parked.
-pub(crate) fn read_price(mut engine: Engine, now: u64, hard: bool) -> Response {
-    let request = request_price(&mut engine, now, hard);
-    save_engine(engine).send(request)
+pub(crate) fn read_price(
+    input: &ReceiveInput,
+    mut engine: Engine,
+    now: u64,
+    hard: bool,
+) -> Response {
+    let requests = request_price(input, &mut engine, now, hard);
+    requests
+        .into_iter()
+        .fold(save_engine(engine), Response::send)
+}
+
+/// At the engine, from the engine itself: the oracle must have replied by now.
+///
+/// # Panics
+/// - `"only the engine may send this"` when the sender is anyone else.
+/// - `"this actor is not the engine"` when the receiver holds no engine state.
+/// - `"the market price oracle did not reply"` when the price read is still parked.
+pub(crate) fn assert_replied(input: &ReceiveInput) -> Response {
+    checks::assert_from_engine(input);
+    assert!(
+        engine_state(input).pending.is_none(),
+        "the market price oracle did not reply"
+    );
+    Response::keep_state()
 }
 
 /// At the engine, from the configured oracle: apply the price it replied with.
@@ -309,7 +345,85 @@ mod tests {
     fn reading_the_price_while_another_operation_is_parked_panics() {
         let mut engine = engine_at(1_000);
         engine.pending = Some(Pending::AccrueStabilityFee);
-        let _ = read_price(engine, NOW, true);
+        let input = ReceiveInput {
+            receiver: self::engine(),
+            from: None,
+            is_authorized: false,
+            pre_state: lee_core::account::ActorState::default(),
+            message: Vec::new(),
+        };
+        let _ = read_price(&input, engine, NOW, true);
+    }
+
+    // --- the post-condition self-message ---
+
+    fn assert_replied_at(from: Option<Actor>, pending: Option<Pending>) -> Response {
+        let mut engine = engine_at(1_000);
+        engine.pending = pending;
+        run(
+            self::engine(),
+            from,
+            false,
+            Some(&StablecoinState::Engine(engine)),
+            &Internal::AssertOracleReplied,
+        )
+    }
+
+    #[test]
+    fn the_engine_asks_the_oracle_then_asserts_the_reply_to_itself() {
+        let input = ReceiveInput {
+            receiver: engine(),
+            from: None,
+            is_authorized: false,
+            pre_state: lee_core::account::ActorState::default(),
+            message: Vec::new(),
+        };
+        let response = read_price(&input, engine_at(1_000), NOW, true);
+        assert_eq!(
+            response.sync_messages,
+            vec![
+                SyncMessage::new(oracle(), &twap_oracle_core::ReadPrice),
+                SyncMessage::new(engine(), &Internal::AssertOracleReplied),
+            ],
+        );
+    }
+
+    #[test]
+    fn assert_replied_passes_once_the_reply_cleared_pending() {
+        assert_eq!(
+            assert_replied_at(Some(engine()), None),
+            Response::keep_state()
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "the market price oracle did not reply")]
+    fn assert_replied_fails_while_the_price_read_is_parked() {
+        let _ = assert_replied_at(
+            Some(engine()),
+            Some(Pending::OraclePrice {
+                now: NOW,
+                hard: true,
+            }),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "only the engine may send this")]
+    fn assert_replied_from_another_stablecoin_actor_panics() {
+        let _ = assert_replied_at(Some(stablecoin(OWNER)), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "this actor is not the engine")]
+    fn assert_replied_at_an_actor_that_is_not_the_engine_panics() {
+        let _ = run(
+            stablecoin(OWNER),
+            Some(engine()),
+            false,
+            None,
+            &Internal::AssertOracleReplied,
+        );
     }
 
     // The controller's numeric behaviour, through `advance_redemption_price`.

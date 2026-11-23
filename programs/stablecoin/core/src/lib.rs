@@ -355,6 +355,9 @@ pub enum Internal {
         amount: u128,
         to: AccountId,
     },
+    // Engine to itself, right after it asks the oracle for the price: the oracle's reply, which
+    // runs before this message, must have cleared `pending`.
+    AssertOracleReplied,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -524,6 +527,33 @@ mod tests {
         assert_ne!(
             compute_position_vault_pda(program, AccountId::new([1; 32])),
             compute_position_vault_pda(program, AccountId::new([2; 32])),
+        );
+    }
+
+    #[test]
+    fn internal_variants_keep_their_tags() {
+        // Append-only: these tags are the wire format.
+        assert_eq!(
+            borsh::to_vec(&Internal::CreateStablecoinToken {
+                name: String::new(),
+                token_program_id: AccountId::new([0; 32]),
+            })
+            .unwrap()
+            .first(),
+            Some(&0)
+        );
+        assert_eq!(
+            borsh::to_vec(&Internal::WithdrawApproved {
+                amount: 1,
+                to: AccountId::new([0; 32]),
+            })
+            .unwrap()
+            .first(),
+            Some(&10)
+        );
+        assert_eq!(
+            borsh::to_vec(&Internal::AssertOracleReplied).unwrap(),
+            vec![11]
         );
     }
 

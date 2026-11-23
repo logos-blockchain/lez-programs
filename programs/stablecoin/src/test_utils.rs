@@ -9,7 +9,7 @@ pub(crate) use lee_core::{
 };
 pub(crate) use stablecoin_core::{
     compute_engine_pda, compute_position_vault_pda, compute_stablecoin_definition_pda,
-    compute_surplus_holding_pda, Engine, Message, Pending, Position, ProtocolParameters,
+    compute_surplus_holding_pda, Engine, Internal, Message, Pending, Position, ProtocolParameters,
     RedemptionPriceState, StabilityFeeAccumulator, StablecoinState, FIXED_POINT_ONE,
 };
 pub(crate) use twap_oracle_core::{OraclePrice, PriceReply};

@@ -138,6 +138,7 @@ fn handle_internal(input: &ReceiveInput) -> Response {
         Internal::DebtRepaid {
             normalized_debt_delta,
         } => repay_debt::repaid(input, normalized_debt_delta),
+        Internal::AssertOracleReplied => oracle::assert_replied(input),
         Internal::WithdrawApproved { amount, to } => {
             withdraw_collateral::approved(input, amount, to)
         }

@@ -31,8 +31,10 @@ pub(crate) fn finish(
 ) -> Response {
     let accrued = accrue(input, &mut engine, now);
     if consult_oracle && interval_is_due(&engine, now) {
-        let request = oracle::request_price(&mut engine, now, false);
-        accrued.attach(save_engine(engine)).send(request)
+        let requests = oracle::request_price(input, &mut engine, now, false);
+        requests
+            .into_iter()
+            .fold(accrued.attach(save_engine(engine)), Response::send)
     } else {
         accrued.attach(save_engine(engine))
     }
@@ -129,7 +131,10 @@ mod tests {
         assert_eq!(after.fee.last_accrued_at, 3_000);
         assert_eq!(
             response.sync_messages,
-            vec![SyncMessage::new(oracle(), &twap_oracle_core::ReadPrice)],
+            vec![
+                SyncMessage::new(oracle(), &twap_oracle_core::ReadPrice),
+                SyncMessage::new(engine(), &Internal::AssertOracleReplied),
+            ],
         );
     }
 
@@ -155,7 +160,8 @@ mod tests {
             response.sync_messages,
             vec![
                 mint,
-                SyncMessage::new(oracle(), &twap_oracle_core::ReadPrice)
+                SyncMessage::new(oracle(), &twap_oracle_core::ReadPrice),
+                SyncMessage::new(engine(), &Internal::AssertOracleReplied),
             ],
         );
     }
