@@ -26,7 +26,6 @@ pub(crate) const ADMIN: AccountId = AccountId::new([2; 32]);
 pub(crate) const FREEZE_AUTHORITY: AccountId = AccountId::new([3; 32]);
 pub(crate) const COLLATERAL_DEFINITION: AccountId = AccountId::new([4; 32]);
 pub(crate) const ORACLE_PRICE: AccountId = AccountId::new([5; 32]);
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) const HOLDING: AccountId = AccountId::new([6; 32]);
 #[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) const RECIPIENT: AccountId = AccountId::new([7; 32]);
@@ -43,7 +42,6 @@ pub(crate) fn surplus_id() -> AccountId {
     compute_surplus_holding_pda(STABLECOIN)
 }
 
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) fn vault_id(owner: AccountId) -> AccountId {
     compute_position_vault_pda(STABLECOIN, owner)
 }

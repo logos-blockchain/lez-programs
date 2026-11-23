@@ -26,7 +26,10 @@ mod accrue_stability_fee;
 mod admin;
 mod checks;
 mod clock;
+mod close_position;
+mod deposit_collateral;
 mod initialize;
+mod open_position;
 mod oracle;
 mod refresh_globals;
 #[cfg(test)]
@@ -68,9 +71,14 @@ fn handle_internal(input: &ReceiveInput) -> Response {
         }
         Internal::Admin(action) => admin::apply(input, sender(input), action),
         Internal::OpenRequest {
-            collateral_holding: _,
-            initial_collateral_amount: _,
-        } => panic!("not ported yet"),
+            collateral_holding,
+            initial_collateral_amount,
+        } => open_position::approve(
+            input,
+            sender(input),
+            collateral_holding,
+            initial_collateral_amount,
+        ),
         Internal::GenerateDebtRequest {
             amount: _,
             to: _,
@@ -89,11 +97,17 @@ fn handle_internal(input: &ReceiveInput) -> Response {
             normalized_debt_amount: _,
         } => panic!("not ported yet"),
         Internal::OpenApproved {
-            token_program_id: _,
-            collateral_definition_id: _,
-            collateral_holding: _,
-            initial_collateral_amount: _,
-        } => panic!("not ported yet"),
+            token_program_id,
+            collateral_definition_id,
+            collateral_holding,
+            initial_collateral_amount,
+        } => open_position::opened(
+            input,
+            token_program_id,
+            collateral_definition_id,
+            collateral_holding,
+            initial_collateral_amount,
+        ),
         Internal::DebtGenerated {
             normalized_debt_delta: _,
         } => panic!("not ported yet"),
@@ -116,20 +130,20 @@ fn handle_public(input: &ReceiveInput) -> Response {
             refresh_globals::refresh_globals(input, consult_oracle)
         }
         Message::OpenPosition {
-            collateral_holding: _,
-            initial_collateral_amount: _,
-        } => panic!("not ported yet"),
+            collateral_holding,
+            initial_collateral_amount,
+        } => open_position::open_position(input, collateral_holding, initial_collateral_amount),
         Message::DepositCollateral {
-            collateral_holding: _,
-            amount: _,
-        } => panic!("not ported yet"),
+            collateral_holding,
+            amount,
+        } => deposit_collateral::deposit_collateral(input, collateral_holding, amount),
         Message::WithdrawCollateral { to: _, amount: _ } => panic!("not ported yet"),
         Message::GenerateDebt { to: _, amount: _ } => panic!("not ported yet"),
         Message::RepayDebt {
             stablecoin_holding: _,
             maximum_amount: _,
         } => panic!("not ported yet"),
-        Message::ClosePosition => panic!("not ported yet"),
+        Message::ClosePosition => close_position::close_position(input),
         Message::SetMinimumCollateralizationRatio { new_ratio } => admin::forward(
             input,
             AdminAction::SetMinimumCollateralizationRatio { new_ratio },
@@ -254,7 +268,6 @@ fn engine_state(input: &ReceiveInput) -> Engine {
 ///
 /// # Panics
 /// - `"this account has no position"` when the receiver holds no position state.
-#[expect(dead_code, reason = "used from Task 4: open_position")]
 fn position_state(input: &ReceiveInput) -> Position {
     match StablecoinState::decode(&input.pre_state) {
         Some(StablecoinState::Position(position)) => position,
@@ -266,7 +279,6 @@ fn save_engine(engine: Engine) -> Response {
     Response::set_state(StablecoinState::Engine(engine).encode())
 }
 
-#[expect(dead_code, reason = "used from Task 4: open_position")]
 fn save_position(position: Position) -> Response {
     Response::set_state(StablecoinState::Position(position).encode())
 }

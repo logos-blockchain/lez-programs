@@ -29,10 +29,6 @@ pub(crate) fn assert_owner(input: &ReceiveInput) {
 ///
 /// # Panics
 /// - `"only the engine may send this"` when the sender is anyone else.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used from Task 4: open_position")
-)]
 pub(crate) fn assert_from_engine(input: &ReceiveInput) {
     assert!(
         input.from == Some(engine_actor(input)),
