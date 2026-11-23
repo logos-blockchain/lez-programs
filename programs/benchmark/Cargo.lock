@@ -4552,6 +4552,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "spel-attrs"
+version = "0.7.0"
+source = "git+https://github.com/logos-co/spel.git?rev=d7444f84cabee3371aca3bdee8ebc4c2fc45ebde#d7444f84cabee3371aca3bdee8ebc4c2fc45ebde"
+
+[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5017,6 +5022,7 @@ dependencies = [
  "risc0-zkvm",
  "ruint",
  "serde",
+ "spel-attrs",
  "uniswap_v3_math",
 ]
 

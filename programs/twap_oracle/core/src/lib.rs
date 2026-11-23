@@ -52,6 +52,7 @@ pub const MAX_TAIL_INTERVALS: u64 = 4;
 /// The oracle's state on one account.
 ///
 /// An empty actor state means "nothing here yet" and is not an `OracleState`.
+#[spel_attrs::state]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum OracleState {
     CurrentTick(CurrentTickState),
@@ -237,6 +238,7 @@ pub struct OraclePrice {
 
 /// Messages anyone may send: a transaction author or another program. Each is refused from
 /// anyone but the sender it names.
+#[spel_attrs::message]
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum Message {
     /// Create the current-tick actor of a price source, at tick `price_to_tick(initial_price)`.

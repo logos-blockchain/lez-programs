@@ -16,6 +16,7 @@ pub const MAX_NAME_LEN: usize = 64;
 /// The token program's state on one account: a definition or a holding.
 ///
 /// An empty actor state means "nothing here yet" and is not a `TokenState`.
+#[spel_attrs::state]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum TokenState {
     Definition(TokenDefinition),
@@ -56,6 +57,7 @@ pub struct TokenHolding {
 }
 
 /// Messages anyone may send: a transaction author or another program.
+#[spel_attrs::message]
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum Message {
     /// Create a fungible token.

@@ -20,6 +20,7 @@ pub const MAX_CREATORS_LEN: usize = 256;
 /// The NFT program's state on one account: a definition, its master, or a printed copy.
 ///
 /// An empty actor state means "nothing here yet" and is not an `NftState`.
+#[spel_attrs::state]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum NftState {
     Definition(NftDefinition),
@@ -95,6 +96,7 @@ pub enum NftValue {
 }
 
 /// Messages anyone may send: a transaction author or another program.
+#[spel_attrs::message]
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum Message {
     /// Create an NFT with `printable_supply` units, all on the master.
