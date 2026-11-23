@@ -63,6 +63,12 @@ parallel experiments. Use `RISC0_DOCKER_BUILD_NETWORK` to opt in to a custom
 Docker build network mode, such as `host`, when the default Docker build
 network is not sufficient.
 
+## CI
+
+Each program, module and app is its own CI job. `scripts/ci-plan.py` picks the jobs a PR touches (all of them on pushes to `main` or when a global file such as `Cargo.lock` changes). When adding a program or module, register it in `COMPONENTS` in that script along with every in-repo crate it builds against; the plan job fails for unregistered ones.
+
+To land a cross-cutting change one layer at a time (e.g. a LEZ bump: programs first, then module FFIs, then apps), list the components that aren't ported yet in `.github/known-broken.txt`. CI skips them and adds a warning. Remove each entry in the PR that fixes that component. Dry-run locally with `scripts/ci-plan.py --files <path>...`.
+
 ## IDL Generation
 
 Using the `idl-gen` crate (no external toolchain required — this is what CI uses):

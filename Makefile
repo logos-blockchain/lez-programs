@@ -1,7 +1,8 @@
 .PHONY: build-programs clippy clippy-guest clippy-all check-benchmark test integration-test test-apps check-lez-core-version fmt idl changelog release
 
+# Builds every guest, or a subset: make build-programs PROGRAMS="amm token"
 build-programs:
-	./scripts/build-guests.sh
+	./scripts/build-guests.sh $(PROGRAMS)
 
 clippy:
 	RISC0_SKIP_BUILD=1 cargo clippy --workspace --all-targets -- -D warnings

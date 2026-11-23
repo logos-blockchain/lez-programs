@@ -1,0 +1,10 @@
+# Components CI skips because they are known not to build or pass on main yet,
+# typically mid-way through a cross-cutting upgrade (e.g. a LEZ bump that has
+# reached the programs but not the module FFIs).
+#
+# One component per line, with a reason after `#`:
+#   module:amm  # LEZ v0.4 port pending (#123)
+#
+# Components: program:<name>, module:<name>, app:<name>, integration, benchmark,
+# tools, lez-core-version. scripts/ci-plan.py rejects unknown names.
+# Remove the line in the PR that fixes the component, so CI checks it again.
