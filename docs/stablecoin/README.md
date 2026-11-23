@@ -320,8 +320,22 @@ fails the transaction:
   delivers depth first, so the oracle's reply, which clears `pending`, runs before it; if the
   oracle did not reply, `pending` is still set and the assertion fails the transaction with
   `"the market price oracle did not reply"`;
-- every other step is a synchronous message, and any failure anywhere fails the whole
-  transaction, so no half-finished state is committed.
+- every other step runs in the same transaction, and any failure anywhere fails it as a whole,
+  so no half-finished state is committed.
+
+Most of those steps are synchronous messages. The exception is a token credit: `Transfer` and
+`Mint` credit the recipient with an async `IncreaseBalance`. LEZ delivers a credit to a
+**declared** public actor in the same transaction, right after the sender's sync messages, so a
+credit that the token refuses (for instance `"recipient holds another token"`) still fails the
+whole transaction. The program does not leave that to the caller's choice of declared actors:
+each credit it relies on targets an actor the transaction is forced to declare, because a
+stablecoin actor also sends that actor a sync message, which LEZ refuses for an undeclared
+actor (`UndeclaredActor`):
+
+| Credit the program relies on | Sync message that forces the recipient to be declared |
+|---|---|
+| the vault, on `OpenPosition` (§10.5) and `DepositCollateral` (§10.6) | the position's `InitializeHolding` to `vault@token`, with the vault seed, sent before the transfer |
+| the surplus holding, on `RepayDebt` (§10.9) | the engine's `Burn` to `surplus@token`, with the surplus-holding seed |
 
 ## 4. State
 
@@ -405,6 +419,7 @@ The current price at `now` is
 | Field | Type | Meaning |
 |---|---|---|
 | `token_program_id` | `AccountId` | the token program the vault lives in, pinned when the position opened |
+| `collateral_definition_id` | `AccountId` | the collateral token's definition, pinned when the position opened; a deposit names it to pin the vault into the transaction (§10.6) |
 | `collateral_amount` | `u128` | collateral moved into the vault and not withdrawn, raw collateral units |
 | `normalized_debt_amount` | `u128` | debt divided by the accumulator at the time it was taken: nominal debt is `normalized_debt_amount × accumulator / FIXED_POINT_ONE` (§6.1) |
 
@@ -1037,7 +1052,9 @@ without one), `"this actor is the engine"` / `"this account already has a positi
 
 LEZ loads only the actors a transaction declares, and a message to an undeclared actor fails
 the whole transaction (`UndeclaredActor`, or `UnboundAsyncDestination` for the recipient of a
-token credit). The root must be declared too. The table lists, for each message, the full set
+token credit that no sync message reaches; leaving out the vault of a deposit fails with
+`UndeclaredActor`, because the deposit's `InitializeHolding` reaches it first). The root must
+be declared too. The table lists, for each message, the full set
 to declare and the accounts that must sign; it was verified end to end by removing one actor at
 a time.
 
@@ -1079,6 +1096,13 @@ separate from its stablecoin actor); then the owner's one signature covers both.
 
 The program requires no signature for the pokes. Fees are charged per transaction and paid by
 the client's fee payer, which signs for the fee, not for the program.
+
+**Keepers should poke from an account that holds no funds.** A poke that reads the price
+(`UpdateRedemptionRate`, `RefreshGlobals { consult_oracle: true }`) runs the configured
+oracle's code inside the keeper's transaction. A signature authorizes every actor on the signing
+account for the whole transaction (§9.3), so whatever the oracle's code sends on its way can act
+with that authorization. Pokes need no signature from the program's point of view; a keeper
+should not sign one with an account that holds funds.
 
 ## 10. Conversations
 
@@ -1228,8 +1252,17 @@ the oracle program refuses `ReadPrice` there, the transaction fails with that re
    price would only have been skipped.
 
 With `consult_oracle: false` the oracle is never contacted, so it is how a keeper pokes before
-the oracle exists (§3.2). With `consult_oracle: true` and the interval due, a missing price
-account fails the whole transaction, accrual included (§10.3). Allowed while frozen.
+the oracle exists (§3.2). With `consult_oracle: true` and the interval due, "best-effort" covers
+only an unusable price; three other cases fail the whole transaction, accrual included:
+
+- the price account does not exist (`UnadmittedPublicActor`, §10.3);
+- the account exists but holds no price state, so the oracle's own handler refuses `ReadPrice`
+  (the TWAP oracle panics with `"receiver is not a price actor"`), or the oracle refuses it for
+  any other reason;
+- the reply does not decode as a `PriceReply` (`"market price oracle reply must decode"`, §9.4);
+
+plus an oracle that does not reply at all (step 5). In each case a keeper falls back to
+`consult_oracle: false` (or `AccrueStabilityFee`) to keep fees accruing. Allowed while frozen.
 
 **Why keep all three pokes:**
 
@@ -1251,12 +1284,14 @@ signed by the owner.
 3. **engine → owner@stablecoin** (the sender): `OpenApproved { token_program_id,
    collateral_definition_id, collateral_holding, initial_collateral_amount }`. The position checks
    it still has no state and that the sender is the engine (`"only the engine may send this"`),
-   and writes `Position { token_program_id, collateral_amount: initial_collateral_amount,
-   normalized_debt_amount: 0 }`.
+   and writes `Position { token_program_id, collateral_definition_id, collateral_amount:
+   initial_collateral_amount, normalized_debt_amount: 0 }`.
 4. **owner@stablecoin → vault@token**: `InitializeHolding { definition: collateral_definition_id }`,
    granting the owner's vault seed. The token opens the vault as a collateral holding (asking
    `collateral_definition@token`). If the vault already holds the collateral (a position opened
-   and closed before on this account), this is a no-op.
+   and closed before on this account), this is a no-op. Because this sync message goes to
+   `vault@token` before the transfer, the transaction must declare the vault, so the transfer's
+   credit to it is delivered, and a wrong token refused, inside the transaction (§3.3).
 5. If `initial_collateral_amount > 0`: **owner@stablecoin → collateral_holding@token**:
    `Transfer { to: vault, amount: initial_collateral_amount }`. The token requires the holding's
    account to have signed (`"sender holding must authorize the transfer"`), refuses more than the
@@ -1274,13 +1309,27 @@ not change.
 owner. Only the position is involved, so it works while frozen.
 
 1. **owner@stablecoin**: the owner check; the account must have a position
-   (`"this account has no position"`). A zero `amount` stops here and changes nothing (no event).
-   Otherwise `collateral_amount += amount` (`"Position collateral_amount overflow"`).
-2. **owner@stablecoin → collateral_holding@token**: `Transfer { to: vault, amount }`, with the
-   token's checks of §10.5 step 5.
+   (`"this account has no position"`). A zero `amount` stops here and changes nothing (no
+   message, no event). Otherwise `collateral_amount += amount`
+   (`"Position collateral_amount overflow"`).
+2. **owner@stablecoin → vault@token**: `InitializeHolding { definition: collateral_definition_id }`
+   (the position's stored definition), granting the owner's vault seed. The vault already holds
+   the collateral, so the token changes nothing and sends nothing; a vault holding another token
+   would be refused (`"account already holds another token state"`).
+3. **owner@stablecoin → collateral_holding@token**: `Transfer { to: vault, amount }`, with no
+   seed, and the token's checks of §10.5 step 5.
 
 The position emits `CollateralDeposited { owner, amount }`. The vault is not read: tokens sent to
 the vault outside this message are not counted (§7 invariant 1).
+
+**Why step 2.** The position cannot read what `collateral_holding` holds; only the token's
+credit to the vault refuses another token (`"recipient holds another token"`), and that credit
+is an async `IncreaseBalance`. Step 2 is a sync message to `vault@token`, so a transaction that
+leaves the vault out of its declared actors fails with `UndeclaredActor` before anything is
+counted, and with the vault declared the credit is delivered, and a wrong token refused, inside
+the transaction (§3.3). Without it the guarantee would rest only on LEZ refusing an async message
+to an undeclared actor (`UnboundAsyncDestination`); with it, a deposit can never count collateral
+whose credit was deferred.
 
 ### 10.7 `WithdrawCollateral`
 
@@ -1302,7 +1351,8 @@ not sign.
    sender is the engine and subtracts `amount`. If `amount > 0`:
    **owner@stablecoin → vault@token**: `Transfer { to, amount }`, granting the vault seed. `to`
    must already be an initialized holding of the collateral: the token refuses a `to` with no
-   holding (`"recipient has no token holding; initialize it first"`) and one of another token
+   holding (`"recipient has no token holding; initialize it first"`), a token definition
+   (`"recipient is a token definition"`) and a holding of another token
    (`"recipient holds another token"`).
 
 The position emits `CollateralWithdrawn { owner, to, amount }` for a non-zero amount. The frozen
@@ -1332,7 +1382,8 @@ market price.
 5. The engine sends, in this order: the surplus mint (if any); **engine → definition@token**:
    `Mint { definition, to, amount }` with the definition seed (`to` must already be an
    initialized stablecoin holding: the token refuses
-   `"recipient has no token holding; initialize it first"` and `"recipient holds another token"`); **engine → owner@stablecoin**:
+   `"recipient has no token holding; initialize it first"`, `"recipient is a token definition"`
+   and `"recipient holds another token"`); **engine → owner@stablecoin**:
    `DebtGenerated { normalized_debt_delta: delta }`.
 6. **owner@stablecoin** checks the sender is the engine and adds `delta` to
    `normalized_debt_amount`.
@@ -1382,8 +1433,10 @@ debt. A transfer into the surplus holding is refused unless the source holds the
 (`"recipient holds another token"`), and the engine then burns from its own holding under its
 own seed. The transfer's credit is delivered before the burn: LEZ delivers a credit to a
 declared public holding right after the sender's sync messages, ahead of the engine's next
-message. The same token rule already protects deposits (the vault is a collateral holding) and
-mints (the credit comes from the stablecoin definition).
+message. The surplus holding is always declared because the burn is a sync message to it
+(§3.3). The same token rule already protects deposits (the vault is a collateral holding, and
+the deposit's `InitializeHolding` forces it to be declared, §10.6) and mints (the credit comes
+from the stablecoin definition).
 
 ### 10.10 `ClosePosition`
 
@@ -1557,7 +1610,7 @@ lists them with their fields.
 - **Repayment maximum above debt.** `RepayDebt` burns only the ceiling of execution-time debt, clears normalized debt, and leaves the unused buffer in the holding. The maximum may exceed the holding balance if the actual burn fits. If the token cannot move the actual amount, the whole transaction fails.
 - **Dust and timing on repayment.** Partial repayments keep the downward-rounded debt reduction (§6.3). Full repayment burns the ceiling, avoiding forgiveness of fractional raw-unit debt. A buffer is sufficient only when it covers debt at execution; if fees accrue past it, the program burns at most the maximum and leaves positive debt. A partial repayment that changes debt and leaves positive accrued debt below the floor fails (§6.7); choose a maximum that clears the position or leaves debt at or above the floor. Reread the position's debt before withdrawing everything or reporting the position clear.
 - **Repaying a debt-free position.** Any valid maximum burns zero, including `u128::MAX` with an empty holding. The owner check, the holding's signature and the clock read still apply, and the zero transfer and zero burn are still sent.
-- **Zero amounts.** Zero amounts do not bypass preconditions, including the freeze rules of §10.14. A zero withdrawal skips the clock, the projections and the health check, and sends no token message. A zero deposit changes nothing and emits no event. A zero `GenerateDebt` or `RepayDebt` still accrues.
+- **Zero amounts.** Zero amounts do not bypass preconditions, including the freeze rules of §10.14. A zero withdrawal skips the clock, the projections and the health check, and sends no token message. A zero deposit changes nothing, sends no message and emits no event. A zero `GenerateDebt` or `RepayDebt` still accrues.
 - **Tokens sent straight to a vault.** They are ignored: never counted as collateral, never withdrawable (§7 invariant 1, §16).
 
 ## 13. Out of scope (per RFP)
@@ -1582,11 +1635,11 @@ addressed, authorized and composed:
 
 1. **One position per account; no nonce.** A position is the stablecoin's state on the owner's own account, and its id is that account's id. There is no `position_nonce`, no position PDA, no stored owner or vault id. A second position needs a second account. Closing and re-opening on the same account works (v0.2.5 required a fresh nonce because the old vault lingered).
 2. **One engine account.** The three global accounts — `ProtocolParameters`, `StabilityFeeAccumulator` and `RedemptionPriceState`, each on its own PDA — are one engine state on one PDA (at the old protocol_parameters PDA seed), plus the `pending` slot.
-3. **`RefreshGlobals { consult_oracle }`.** v0.2.5's `refresh_globals` treated a missing oracle account as "no observation" and skipped the controller. An actor cannot read a missing account, and LEZ refuses a transaction that reaches one, so the caller now chooses: `consult_oracle: false` never contacts the oracle; `true` fails the transaction if the price account does not exist and the interval is due. A wrong pair, stale, future-dated or zero price is still skipped.
+3. **`RefreshGlobals { consult_oracle }`.** v0.2.5's `refresh_globals` treated a missing oracle account as "no observation" and skipped the controller. An actor cannot read a missing account, and LEZ refuses a transaction that reaches one, so the caller now chooses: `consult_oracle: false` never contacts the oracle; `true` fails the transaction, fee accrual included, when the interval is due and the price account does not exist, the account holds no price state (the oracle's own handler refuses `ReadPrice`), the reply does not decode (`"market price oracle reply must decode"`) or the oracle does not reply (§10.4). Keepers fall back to `consult_oracle: false`. A wrong pair, stale, future-dated or zero price is still skipped.
 4. **Pokes need no signer.** v0.2.5 required an authorized `caller` account to satisfy the runtime; the pokes now need no signature.
 5. **Deposits trust the stored amount; close checks stored amounts.** v0.2.5's `deposit_collateral` reconciled `collateral_amount` from the vault balance, folding donated tokens in, and `close_position` required the vault balance to be zero. The program never reads the vault now: a deposit adds exactly its amount, close checks only `collateral_amount` and `normalized_debt_amount`, and donated tokens are stranded.
 6. **`opened_at` removed.** Recording it would cost a clock read at open, which is otherwise clock-free.
-7. **The token and oracle program ids are stored and pinned.** `token_program_id` is a new `ProtocolParameters` field, set at `Initialize` and immutable; every position also pins it. `market_price_oracle_program_id` is set together with the oracle address, as before, and only a reply from that program's actor is accepted.
+7. **The token and oracle program ids are stored and pinned.** `token_program_id` is a new `ProtocolParameters` field, set at `Initialize` and immutable; every position also pins it, together with the collateral definition id, which a deposit names to pin the vault into the transaction (§10.6). `market_price_oracle_program_id` is set together with the oracle address, as before, and only a reply from that program's actor is accepted.
 8. **No setup validation by reading.** `Initialize` no longer checks that the collateral definition is a fungible token definition or that an existing oracle has the right owner and pair, and `SetMarketPriceOracle` no longer checks the new oracle account. The collateral is checked when a vault is opened, the pair on every price reply. Unchanged from v0.2.5: both still reject an all-zero oracle program id (`"Market price oracle program must not be the default owner"`).
 9. **Owner and admin messages must be signed root messages.** v0.2.5 accepted any input account marked authorized. Now each such message must be sent by a transaction, to the signer's own stablecoin actor, signed by that account (§9.3). Programs cannot send them.
 10. **No `schema_version`.** v0.2.5's global accounts carried a version byte and rejected legacy layouts. The actor state is new and lives under a new program id; versioning is the append-only `StablecoinState` enum (§4.9).
@@ -1632,20 +1685,20 @@ addressed, authorized and composed:
 
    | Transaction | Cycles | Share of 10M |
    |---|---:|---:|
-   | `Initialize` | 124,745 | 1.2% |
-   | `OpenPosition` (with collateral) | 115,479 | 1.1% |
-   | `DepositCollateral` | 45,969 | 0.4% |
-   | `GenerateDebt` (no time passed) | 139,884 | 1.3% |
-   | `GenerateDebt` (6 days, surplus mint) | 229,521 | 2.2% |
-   | `RepayDebt` (6 days, surplus mint; transfer + burn) | 247,455 | 2.4% |
-   | `WithdrawCollateral` (with debt, 6 days) | 207,918 | 2.0% |
-   | `AccrueStabilityFee` (6 days, surplus mint) | 156,340 | 1.5% |
-   | `RefreshGlobals { consult_oracle: true }` (6 days, price applied) | 236,983 | 2.4% |
-   | `UpdateRedemptionRate` (1 s after the refresh) | 170,306 | 1.7% |
+   | `Initialize` | 124,117 | 1.2% |
+   | `OpenPosition` (with collateral) | 116,244 | 1.1% |
+   | `DepositCollateral` (`InitializeHolding` + transfer) | 60,451 | 0.6% |
+   | `GenerateDebt` (no time passed) | 141,744 | 1.4% |
+   | `GenerateDebt` (6 days, surplus mint) | 231,440 | 2.3% |
+   | `RepayDebt` (6 days, surplus mint; transfer + burn) | 249,769 | 2.4% |
+   | `WithdrawCollateral` (with debt, 6 days) | 210,085 | 2.1% |
+   | `AccrueStabilityFee` (6 days, surplus mint) | 156,866 | 1.5% |
+   | `RefreshGlobals { consult_oracle: true }` (6 days, price applied) | 237,886 | 2.3% |
+   | `UpdateRedemptionRate` (1 s after the refresh) | 171,152 | 1.7% |
 
    Every transaction is far below the wallet's default `gas_limit` of 2,000,000 and the
    10,000,000 cap, so clients need not raise the default. The heaviest is `RepayDebt`
-   (247,455); the two oracle reads include the `AssertOracleReplied` self-check.
+   (249,769); the two oracle reads include the `AssertOracleReplied` self-check.
 7. **Two-step admin / freeze rotation.** `SetAdmin` / `SetFreezeAuthority` rotate in one step.
    A pending-plus-accept pair would protect against a mistyped id.
 8. **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants in v1 to keep
@@ -1662,6 +1715,10 @@ addressed, authorized and composed:
     clamp, but useful `Ki` values sit many orders of magnitude below the cap.
 11. **Liquidation and spending the surplus.** Tracked under RFP-014. Accrued fees are minted into
     the surplus holding (§6.6) and stay there.
+12. **The oracle's code runs in a keeper's transaction.** A price-reading poke executes the
+    configured oracle program inside the keeper's transaction, and a signature authorizes every
+    actor on the signing account for the whole transaction. A keeper should not sign a poke with
+    an account that holds funds; the program needs no signature for pokes (§9.5).
 
 ## 17. Sample scenarios
 
@@ -1686,7 +1743,7 @@ transaction amounts, balances, and normalized debt are stored in raw units
 
 | Actor | Field | Before | After |
 |---|---|---|---|
-| `alice@stablecoin` | (the whole state) | empty | `Position { token_program_id, collateral_amount: 600, normalized_debt_amount: 0 }` |
+| `alice@stablecoin` | (the whole state) | empty | `Position { token_program_id, collateral_definition_id, collateral_amount: 600, normalized_debt_amount: 0 }` |
 | `vault@token` (derived from `alice`) | balance | empty | 600 |
 | `alice_collateral@token` | balance | 1000 | 400 |
 
