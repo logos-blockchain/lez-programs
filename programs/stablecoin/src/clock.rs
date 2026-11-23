@@ -6,7 +6,10 @@ use clock_core::Reply;
 use lee_core::program::{ReceiveInput, Response};
 use stablecoin_core::{Engine, Pending};
 
-use crate::{accrue_stability_fee, admin, engine_state, initialize, save_engine};
+use crate::{
+    accrue_stability_fee, admin, engine_state, initialize, refresh_globals, save_engine,
+    update_redemption_rate,
+};
 
 /// Each read returns the previous block's timestamp in milliseconds, unrounded.
 const GRANULARITY: u64 = 1;
@@ -56,8 +59,10 @@ pub(crate) fn on_reply(input: &ReceiveInput) -> Response {
     match operation {
         Pending::AccrueStabilityFee => accrue_stability_fee::finish(input, engine, now),
         Pending::Initialize => initialize::finish(input, engine, now),
-        Pending::UpdateRedemptionRate => panic!("not ported yet"),
-        Pending::RefreshGlobals { consult_oracle: _ } => panic!("not ported yet"),
+        Pending::UpdateRedemptionRate => update_redemption_rate::finish(input, engine, now),
+        Pending::RefreshGlobals { consult_oracle } => {
+            refresh_globals::finish(input, engine, consult_oracle, now)
+        }
         Pending::SetStabilityFee { new_rate } => {
             admin::finish_set_stability_fee(input, engine, new_rate, now)
         }

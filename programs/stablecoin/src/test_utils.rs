@@ -5,13 +5,14 @@ pub(crate) use borsh::BorshSerialize;
 pub(crate) use clock_core::Reply;
 pub(crate) use lee_core::{
     account::{AccountId, Actor, ActorState},
-    program::{ReceiveInput, Response},
+    program::{ReceiveInput, Response, SyncMessage},
 };
 pub(crate) use stablecoin_core::{
     compute_engine_pda, compute_position_vault_pda, compute_stablecoin_definition_pda,
     compute_surplus_holding_pda, Engine, Message, Pending, Position, ProtocolParameters,
     RedemptionPriceState, StabilityFeeAccumulator, StablecoinState, FIXED_POINT_ONE,
 };
+pub(crate) use twap_oracle_core::{OraclePrice, PriceReply};
 
 use crate::handle_message;
 
@@ -67,7 +68,6 @@ pub(crate) fn clock() -> Actor {
 }
 
 /// The market price oracle's actor, as `parameters()` configures it.
-#[expect(dead_code, reason = "used by the oracle tests from the price reply on")]
 pub(crate) fn oracle() -> Actor {
     Actor::new(ORACLE_PRICE, ORACLE_PROGRAM)
 }
@@ -138,6 +138,20 @@ pub(crate) fn engine_at(now: u64) -> Engine {
 
 pub(crate) fn clock_reply(now: u64) -> Reply {
     Reply::Timestamp(now)
+}
+
+/// The oracle's reply to `ReadPrice`: the stablecoin priced in collateral.
+pub(crate) fn price_reply(price: u128, timestamp: u64) -> PriceReply {
+    PriceReply {
+        price: OraclePrice {
+            base_asset: definition_id(),
+            quote_asset: COLLATERAL_DEFINITION,
+            price,
+            timestamp,
+            source_id: ORACLE_PRICE,
+            confidence_interval: 0,
+        },
+    }
 }
 
 /// Decodes the engine the response saves.

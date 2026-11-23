@@ -27,8 +27,11 @@ mod admin;
 mod checks;
 mod clock;
 mod initialize;
+mod oracle;
+mod refresh_globals;
 #[cfg(test)]
 mod test_utils;
+mod update_redemption_rate;
 
 /// The guest entry point. Each kind of sender has one format: the clock's reply, [`Internal`]
 /// from stablecoin actors, the oracle's reply from the configured oracle, then a [`Message`]
@@ -46,7 +49,7 @@ pub fn handle_message(input: &ReceiveInput) -> Response {
         return handle_internal(input);
     }
     if sent_by_configured_oracle(input) {
-        panic!("not ported yet");
+        return oracle::on_reply(input);
     }
     handle_public(input)
 }
@@ -108,8 +111,10 @@ fn handle_public(input: &ReceiveInput) -> Response {
     match message {
         Message::Initialize(args) => initialize::initialize(input, args),
         Message::AccrueStabilityFee => accrue_stability_fee::accrue_stability_fee(input),
-        Message::UpdateRedemptionRate => panic!("not ported yet"),
-        Message::RefreshGlobals { consult_oracle: _ } => panic!("not ported yet"),
+        Message::UpdateRedemptionRate => update_redemption_rate::update_redemption_rate(input),
+        Message::RefreshGlobals { consult_oracle } => {
+            refresh_globals::refresh_globals(input, consult_oracle)
+        }
         Message::OpenPosition {
             collateral_holding: _,
             initial_collateral_amount: _,
