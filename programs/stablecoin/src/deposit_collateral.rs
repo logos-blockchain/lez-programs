@@ -1,19 +1,30 @@
 //! `DepositCollateral`: the owner adds collateral to an open position. Only the position is
 //! involved, so it works while the protocol is frozen.
+//!
+//! The token program credits the vault with an async `IncreaseBalance`, and that credit is
+//! what refuses a holding of another token ("recipient holds another token"). Neither the
+//! position nor the engine can read what a caller-named holding holds, so the deposit must make
+//! sure the credit is delivered inside this transaction, where a refusal fails the whole
+//! deposit. LEZ delivers an async message to a declared public actor in the same transaction,
+//! so the deposit first sends the vault a sync `InitializeHolding` of the collateral definition,
+//! with the vault's seed: a sync message forces `vault@token` to be declared, and on the vault's
+//! existing holding of that definition it changes nothing (a holding of another token is
+//! refused with "account already holds another token state").
 
 use lee_core::{
     account::{AccountId, Actor},
-    program::{ReceiveInput, Response},
+    program::{ReceiveInput, Response, SyncMessage},
 };
 use stablecoin_core::{
-    compute_position_vault_pda,
+    compute_position_vault_pda, compute_position_vault_pda_seed,
     event::{CollateralDeposited, StablecoinEvent as _},
 };
 
 use crate::{checks, position_state, program_id, save_position};
 
-/// At the owner's actor, signed as a root message: count `amount` into the position and pull it
-/// from `collateral_holding` into the vault. A deposit of zero changes nothing.
+/// At the owner's actor, signed as a root message: count `amount` into the position, pin the
+/// vault into the transaction with a seeded `InitializeHolding`, then pull `amount` from
+/// `collateral_holding` into the vault. A deposit of zero changes nothing and sends nothing.
 ///
 /// # Panics
 /// - `"only the account's owner may send this"` when the message is nested or unsigned.
@@ -36,7 +47,17 @@ pub(crate) fn deposit_collateral(
     let owner = input.receiver.account_id;
     let vault = compute_position_vault_pda(program_id(input), owner);
     let token_program_id = position.token_program_id;
+    let collateral_definition_id = position.collateral_definition_id;
     save_position(position)
+        .send(
+            SyncMessage::new(
+                Actor::new(vault, token_program_id),
+                &token_core::Message::InitializeHolding {
+                    definition: collateral_definition_id,
+                },
+            )
+            .with_pda_seeds([compute_position_vault_pda_seed(owner)]),
+        )
         .send_sync(
             Actor::new(collateral_holding, token_program_id),
             &token_core::Message::Transfer { to: vault, amount },
@@ -54,6 +75,7 @@ mod tests {
     fn position(collateral_amount: u128) -> StablecoinState {
         StablecoinState::Position(Position {
             token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
             collateral_amount,
             normalized_debt_amount: 7,
         })
@@ -82,6 +104,15 @@ mod tests {
         assert_eq!(
             deposit(None, true, Some(&position(500)), 300),
             Response::set_state(position(800).encode())
+                .send(
+                    SyncMessage::new(
+                        token(vault_id(OWNER)),
+                        &token_core::Message::InitializeHolding {
+                            definition: COLLATERAL_DEFINITION,
+                        },
+                    )
+                    .with_pda_seeds([compute_position_vault_pda_seed(OWNER)])
+                )
                 .send_sync(
                     token(HOLDING),
                     &token_core::Message::Transfer {

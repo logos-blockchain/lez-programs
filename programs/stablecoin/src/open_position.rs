@@ -66,6 +66,11 @@ pub(crate) fn approve(
 /// At the owner's actor, from the engine: write the position, initialize the vault's token
 /// holding and pull `initial_collateral_amount` in (no transfer when it is zero).
 ///
+/// The seeded `InitializeHolding` is a sync message to `vault@token` sent before the
+/// `Transfer`, so the transaction must declare the vault, and the transfer's async credit to it
+/// is delivered in the same transaction, where a holding of another token is refused. A
+/// deposit relies on the same pin (see `deposit_collateral`).
+///
 /// # Panics
 /// - `"this actor is the engine"` / `"this account already has a position"` when the receiver holds
 ///   state.
@@ -83,6 +88,7 @@ pub(crate) fn opened(
     let vault = compute_position_vault_pda(program_id(input), owner);
     let mut response = save_position(Position {
         token_program_id,
+        collateral_definition_id,
         collateral_amount: initial_collateral_amount,
         normalized_debt_amount: 0,
     })
@@ -137,6 +143,7 @@ mod tests {
     fn position_state_at_rest() -> StablecoinState {
         StablecoinState::Position(Position {
             token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
             collateral_amount: 1,
             normalized_debt_amount: 0,
         })
@@ -201,6 +208,7 @@ mod tests {
         Response::set_state(
             StablecoinState::Position(Position {
                 token_program_id: TOKEN,
+                collateral_definition_id: COLLATERAL_DEFINITION,
                 collateral_amount,
                 normalized_debt_amount: 0,
             })
@@ -294,6 +302,18 @@ mod tests {
                 )
                 .event(opened_event(500))
         );
+    }
+
+    #[test]
+    fn the_position_stores_the_collateral_definition_the_engine_names() {
+        let response = approved(500, engine(), None);
+        let state = response.post_state.expect("the position is written");
+        match StablecoinState::decode(&state) {
+            Some(StablecoinState::Position(position)) => {
+                assert_eq!(position.collateral_definition_id, COLLATERAL_DEFINITION);
+            }
+            other => panic!("expected a position, got {other:?}"),
+        }
     }
 
     #[test]

@@ -219,6 +219,7 @@ mod tests {
     fn position_with(collateral_amount: u128, normalized_debt_amount: u128) -> Position {
         Position {
             token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
             collateral_amount,
             normalized_debt_amount,
         }

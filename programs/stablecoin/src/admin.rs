@@ -329,6 +329,7 @@ mod tests {
     fn a_seat_that_also_holds_a_position_still_forwards() {
         let position = StablecoinState::Position(Position {
             token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
             collateral_amount: 5,
             normalized_debt_amount: 3,
         });

@@ -454,7 +454,8 @@ pub fn open_position(
     )
 }
 
-/// A deposit from `holding`'s account, which signs.
+/// A deposit from `holding`'s account, which signs. The vault must be declared: the deposit sends
+/// it a seeded `InitializeHolding` before the transfer credits it.
 pub fn deposit_from(
     world: &mut World,
     user: &User,

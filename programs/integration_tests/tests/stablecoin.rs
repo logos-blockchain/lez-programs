@@ -463,6 +463,44 @@ fn a_deposit_from_a_holding_of_another_token_is_refused() {
     assert_eq!(holding_balance(&world, vault_id(&world, user.id())), 1_500);
 }
 
+/// The vault's credit is an async `IncreaseBalance`. The deposit's seeded `InitializeHolding`
+/// is a sync message to the vault, so a caller who leaves the vault out of the declared actors
+/// cannot get the credit, and with it the refusal of another token, deferred: the transaction
+/// fails before anything is counted.
+#[test]
+fn a_deposit_that_leaves_the_vault_undeclared_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let other_holding = key(61);
+    create_token(&mut world, &key(60), "Other", 1_000, &other_holding);
+    let vault = vault_id(&world, user.id());
+
+    let past_root = [token(&world, account(&other_holding))];
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[&other_holding],
+        &Message::DepositCollateral {
+            collateral_holding: account(&other_holding),
+            amount: 100,
+        },
+    );
+
+    assert!(
+        matches!(
+            &result,
+            Err(LeeError::InvalidProgramBehavior(InvalidProgramBehaviorError::Execution(
+                ExecutionError::UndeclaredActor { actor }
+            ))) if *actor == token(&world, vault)
+        ),
+        "expected the vault to be undeclared, got {result:?}"
+    );
+    assert_eq!(collateral(&world, &user), 1_500);
+    assert_eq!(holding_balance(&world, vault), 1_500);
+    assert_eq!(holding_balance(&world, account(&other_holding)), 1_000);
+}
+
 // ── Debt ─────────────────────────────────────────────────────────────────────────
 
 #[test]

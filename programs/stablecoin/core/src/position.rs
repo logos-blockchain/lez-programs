@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 pub struct Position {
     /// The token program the vault lives in, pinned when the position opened.
     pub token_program_id: AccountId,
+    /// The collateral token's definition, pinned when the position opened. A deposit
+    /// initializes the vault's holding of it, which pins the vault into the transaction.
+    pub collateral_definition_id: AccountId,
     /// Collateral held in the position's vault, in raw collateral units.
     pub collateral_amount: u128,
     /// Debt divided by the stability fee accumulator at the time it was taken, so the debt

@@ -188,6 +188,7 @@ mod tests {
     fn position(normalized_debt_amount: u128) -> StablecoinState {
         StablecoinState::Position(Position {
             token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
             collateral_amount: 5_000,
             normalized_debt_amount,
         })

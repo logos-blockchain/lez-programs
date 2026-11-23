@@ -627,6 +627,11 @@
           "docs": "The token program the vault lives in, pinned when the position opened."
         },
         {
+          "name": "collateral_definition_id",
+          "type": "account_id",
+          "docs": "The collateral token's definition, pinned when the position opened. A deposit\ninitializes the vault's holding of it, which pins the vault into the transaction."
+        },
+        {
           "name": "collateral_amount",
           "type": "u128",
           "docs": "Collateral held in the position's vault, in raw collateral units."

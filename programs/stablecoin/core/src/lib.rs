@@ -469,6 +469,7 @@ mod tests {
     fn a_position_round_trips() {
         let state = StablecoinState::Position(Position {
             token_program_id: AccountId::new([7; 32]),
+            collateral_definition_id: AccountId::new([8; 32]),
             collateral_amount: 500,
             normalized_debt_amount: 20,
         });
