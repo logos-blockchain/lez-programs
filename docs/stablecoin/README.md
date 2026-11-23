@@ -185,6 +185,7 @@ flowchart TB
         Pos[owner@stablecoin<br/>Position state]
         Seat[admin / freeze authority<br/>@stablecoin, seat]
         Prog[program account<br/>Initialize root]
+        Relay[surplus relay<br/>surplus@stablecoin]
     end
     subgraph TK["token program"]
         Def[stablecoin definition<br/>own mint authority]
@@ -199,10 +200,13 @@ flowchart TB
     Engine -- replies --> Pos
     Seat -- Admin --> Engine
     Prog -- InitializeEngine --> Engine
+    Prog -- CreateStablecoinToken --> Relay
+    Relay -- NewDefinition --> Def
     Engine -- ReadTimestamp --> Clock
     Engine -- ReadPrice --> Oracle
-    Engine -- Mint / Burn / Transfer --> Def
+    Engine -- Mint --> Def
     Engine -- Burn --> Surplus
+    Engine -- Transfer (repayment) --> Holdings
     Pos -- InitializeHolding / Transfer --> Vault
     Pos -- Transfer --> Holdings
 ```
@@ -271,8 +275,7 @@ no position is written (the RAI accumulator, §6.1). Users can:
 
 - `DepositCollateral` (§10.6) to add collateral and improve the ratio.
 - `WithdrawCollateral` (§10.7) to take some back — indebted positions must stay above the safety
-  ratio and cannot withdraw while frozen. Positions with exactly zero normalized debt may
-  withdraw while frozen.
+  ratio (for withdrawals while frozen, see §10.14).
 - `RepayDebt` (§10.9) to burn stablecoin and lower the debt. To pay off accrued interest, users
   may need to buy extra stablecoin on the market.
 
@@ -291,11 +294,9 @@ the rate goes back to `1.0` and the integral to `0`, but the price stays where i
 projects.
 
 **Emergency.** If something goes wrong (a broken oracle, an exploit in progress), the freeze
-authority sends `Freeze` (§10.14), which sets `is_frozen`. After that, `OpenPosition`,
-`GenerateDebt`, and withdrawals from positions with nonzero normalized debt fail. An owner whose
-position has exactly zero normalized debt may still withdraw some or all collateral.
-`DepositCollateral`, `RepayDebt`, `ClosePosition`, the pokes and admin changes remain available,
-so users can pay down debt and leave, and operators can fix the problem. This deliberately
+authority sends `Freeze` (§10.14), which sets `is_frozen`. Borrowing and opening stop, and
+so do withdrawals backing debt; everything that lets users pay down debt and leave, and lets
+operators fix the problem, stays available (the table in §10.14 is the full list). This deliberately
 permits debt-free collateral to leave during an emergency: the freeze authority stops
 debt-increasing paths and withdrawals backing debt, but cannot hold a debt-free owner's
 collateral until unfreeze. The admin may configure a clean oracle with `SetMarketPriceOracle`,
@@ -308,11 +309,19 @@ the handler again. A reply carries no context of its own, so before the engine a
 the operation it is in the middle of into its own state, in the `pending` slot (§4.7), and
 reads it back when the reply arrives. This is called **parking**. The engine parks one
 operation at a time: asking while something is parked fails with
-`"the engine is already waiting for a reply"`. Every transaction either finishes the parked
-operation (the reply clears `pending`) or fails as a whole, so `pending` is empty between
-transactions.
+`"the engine is already waiting for a reply"`.
 
-The clock and the oracle are the only actors the engine asks. Token messages need no reply.
+The clock and the oracle are the only actors the engine asks; token messages need no reply.
+**`pending` is empty after every successful transaction**, because every ask is answered or
+fails the transaction:
+
+- the clock is LEZ's system actor and always replies to `ReadTimestamp`;
+- right after `ReadPrice` the engine sends itself `Internal::AssertOracleReplied` (§10.3). LEZ
+  delivers depth first, so the oracle's reply, which clears `pending`, runs before it; if the
+  oracle did not reply, `pending` is still set and the assertion fails the transaction with
+  `"the market price oracle did not reply"`;
+- every other step is a synchronous message, and any failure anywhere fails the whole
+  transaction, so no half-finished state is committed.
 
 ## 4. State
 
@@ -341,7 +350,7 @@ pub struct Engine {
     pub parameters: ProtocolParameters,      // §4.3
     pub fee: StabilityFeeAccumulator,        // §4.4
     pub redemption: RedemptionPriceState,    // §4.5
-    pub pending: Option<Pending>,            // §4.7; None between transactions
+    pub pending: Option<Pending>,            // §4.7; None after every transaction (§3.3)
 }
 ```
 
@@ -351,8 +360,8 @@ One engine per deployment, at the engine PDA (§3.1).
 
 | # | Field | Type | Meaning | Changed by |
 |---|---|---|---|---|
-| 1 | `admin_account_id` | `AccountId` | authority for every setter and admin rotation | `SetAdmin` |
-| 2 | `freeze_authority_account_id` | `AccountId` | authority for `Freeze` / `Unfreeze` | `SetFreezeAuthority` |
+| 1 | `admin_account_id` | `AccountId` | authority for every setter and admin rotation, and for `ResetRedemptionRateController` | `SetAdmin` |
+| 2 | `freeze_authority_account_id` | `AccountId` | authority for `Freeze` / `Unfreeze`, and for `ResetRedemptionRateController` | `SetFreezeAuthority` |
 | 3 | `token_program_id` | `AccountId` | the token program of the stablecoin, the collateral, the vaults and every holding the program touches | **immutable** |
 | 4 | `stablecoin_definition_id` | `AccountId` | the stablecoin definition PDA | **immutable** (changing it would break supply accounting against the existing float) |
 | 5 | `collateral_definition_id` | `AccountId` | the single accepted collateral | **immutable** (changing it would orphan every vault) |
@@ -364,7 +373,7 @@ One engine per deployment, at the engine PDA (§3.1).
 | 11 | `minimum_collateralization_ratio` | `u128` | fixed point; `1.5 × FIXED_POINT_ONE` = 150% | `SetMinimumCollateralizationRatio` |
 | 12 | `minimum_milliseconds_between_rate_updates` | `u64` | minimum interval between controller ticks (RFP F2) | `SetTimingParameters` |
 | 13 | `maximum_oracle_price_age_milliseconds` | `u64` | oracle staleness gate (RFP R3) | `SetTimingParameters` |
-| 14 | `is_frozen` | `bool` | blocks `OpenPosition`, `GenerateDebt` and withdrawals from indebted positions | `Freeze` / `Unfreeze` |
+| 14 | `is_frozen` | `bool` | the freeze flag; what it blocks is in §10.14 | `Freeze` / `Unfreeze` |
 | 15 | `minimum_debt_amount` | `u128` | position debt floor, raw stablecoin units (§6.7) | `SetDebtLimits` |
 | 16 | `debt_ceiling` | `u128` | global borrowing ceiling, raw stablecoin units (§6.7) | `SetDebtLimits` |
 
@@ -784,8 +793,9 @@ before anything else the operation sends.
 persisted accumulator and add it to / subtract it from `total_normalized_debt`. (RAI's core
 uses the stored rate, and its proxies call `taxSingle` first. Accruing inside the operation
 makes that ordering mandatory.) A transaction that can accrue must therefore declare the
-stablecoin definition and the surplus holding as token actors (§9.5); they are reached only
-when fees accrued.
+stablecoin definition and the surplus holding as token actors (§9.5); the surplus mint reaches
+them only when fees accrued. `RepayDebt` reaches both always, because the repayment is credited
+to the surplus holding and burned there (§10.9).
 
 **In plain English:** when fees accrue, the protocol prints exactly the coins the borrowers now owe on top of what they borrowed, and keeps them in its own holding. Supply always matches total debt (RFP R1), so the coins needed to repay everything exist. Today the surplus just accumulates; spending it — RAI auctions it for its governance token — is RFP-014's job (§16).
 
@@ -857,7 +867,7 @@ These are properties the program maintains across every transaction. Violations 
 
 7. **Supply tracks total debt (RFP R1).** `stablecoin_definition.total_supply` = (minted to users) − (burned on repayment) + (fees minted to the surplus holding). Repayments pass through the surplus holding and are burned there in the same transaction, so they leave its balance unchanged. After every accrual, `total_supply` equals `Σ nominal_debt` at the persisted accumulator, up to integer dust that always favours the protocol (§6.3, §6.6), less any stablecoin holders burned directly. Between accruals, the projected nominal debt runs ahead of supply by the fees not yet accrued, exactly as in RAI.
 
-8. **Frozen ⇒ debt-extending operations and withdrawals backing debt blocked.** `is_frozen = true` implies `OpenPosition` and `GenerateDebt` fail. `WithdrawCollateral` fails when the position has nonzero `normalized_debt_amount`, including for a zero-amount withdrawal. Exactly zero normalized debt permits partial, full, or zero-amount withdrawals. Other operations continue to work.
+8. **Frozen ⇒ debt-extending operations and withdrawals backing debt blocked**, exactly as the table in §10.14 lists.
 
 9. **Aggregate normalized debt.** `total_normalized_debt` equals the sum of every position's `normalized_debt_amount`. Mint and repay apply identical normalized deltas to both; nothing else changes either.
 
@@ -865,7 +875,7 @@ These are properties the program maintains across every transaction. Violations 
 
 11. **Borrowing admission ceiling.** Each successful non-zero mint satisfies the exact aggregate ceiling inequality in §6.7. Accrual and admin changes may put existing accrued debt above the ceiling.
 
-12. **Nothing parked between transactions.** `engine.pending` is `None` after every successful transaction (§3.3).
+12. **Nothing parked between transactions.** `engine.pending` is `None` after every successful transaction; §3.3 says why this holds.
 
 ## 8. Bound choices
 
@@ -887,13 +897,15 @@ These are properties the program maintains across every transaction. Violations 
 | `stablecoin_name` | 1 to 64 bytes | The token program's limit. |
 | `minimum_debt_amount`, `debt_ceiling` | `0 < minimum_debt_amount <= debt_ceiling <= u128::MAX` | Explicit operator-selected raw stablecoin atomic units; position floor and global borrowing admission ceiling (§6.7). |
 
-All bounds are enforced at `Initialize` (§10.1) and by the corresponding setter (§10.11). The
-refusals name the field: `"<field> below FIXED_POINT_ONE"`, `"<field> above sane upper bound"`
+All bounds are enforced at `Initialize` (§10.1) and by the corresponding setter: the fee band
+by `SetStabilityFeePerMillisecond` (§10.13), the debt limits by `SetDebtLimits` (§10.12), the
+others by the setters in §10.11. The refusals name the field: `"<field> below FIXED_POINT_ONE"`, `"<field> above sane upper bound"`
 (fee); `"<field> below 1.1x"`, `"<field> above 10x"` (ratio);
 `"controller_proportional_gain out of band"`, `"controller_integral_gain out of band"`;
 `"<field> below minimum 1ms"`, `"<field> above maximum 86_400_000ms"` (timing);
 `"initial_redemption_price must be within the §8 redemption-price bounds"`;
-`"stablecoin_name must be 1 to 64 bytes"`. `<field>` is the message's field name at
+`"stablecoin_name must be 1 to 64 bytes"`;
+`"Debt limits require 0 < minimum_debt_amount <= debt_ceiling"` (debt limits). `<field>` is the message's field name at
 `Initialize` (`initial_stability_fee_per_millisecond`, …) and the `new_…` name in the setters
 (`new_stability_fee_per_millisecond`, `new_minimum_collateralization_ratio`,
 `new_minimum_milliseconds_between_rate_updates`, `new_maximum_oracle_price_age_milliseconds`).
@@ -915,7 +927,7 @@ refusals name the field: `"<field> below FIXED_POINT_ONE"`, `"<field> above sane
 | 3 | `RefreshGlobals` | `consult_oracle: bool` | the engine | always (no signature) | allowed |
 | 4 | `OpenPosition` | `collateral_holding: AccountId`, `initial_collateral_amount: u128` | the owner's actor | signed by the owner, root | blocked |
 | 5 | `DepositCollateral` | `collateral_holding: AccountId`, `amount: u128` | the owner's actor | signed by the owner, root | allowed |
-| 6 | `WithdrawCollateral` | `to: AccountId`, `amount: u128` | the owner's actor | signed by the owner, root | only with zero normalized debt |
+| 6 | `WithdrawCollateral` | `to: AccountId`, `amount: u128` | the owner's actor | signed by the owner, root | only debt-free (§10.14) |
 | 7 | `GenerateDebt` | `to: AccountId`, `amount: u128` | the owner's actor | signed by the owner, root | blocked |
 | 8 | `RepayDebt` | `stablecoin_holding: AccountId`, `maximum_amount: u128` | the owner's actor | signed by the owner, root | allowed |
 | 9 | `ClosePosition` | — | the owner's actor | signed by the owner, root | allowed |
@@ -939,7 +951,10 @@ admin's or freeze authority's own account. Bytes that do not decode as a `Messag
 
 Stablecoin actors talk to each other with `stablecoin_core::Internal`. It is decoded only when
 the sender is an actor of this program (`"internal stablecoin message must decode"` otherwise
-fails), and each receiver checks the exact sender it expects.
+fails). Engine replies are accepted at a position only from the engine; the initialization steps
+only from the program account; `AssertOracleReplied` only from the engine itself. The engine
+accepts the position requests and `Admin` from any actor of this program, and reads the
+requesting account from the sender (§9.3).
 
 | Message | From → to | Purpose |
 |---|---|---|
@@ -954,6 +969,7 @@ fails), and each receiver checks the exact sender it expects.
 | `DebtGenerated { normalized_debt_delta }` | engine → position | §10.8 |
 | `DebtRepaid { normalized_debt_delta }` | engine → position | §10.9 |
 | `WithdrawApproved { amount, to }` | engine → position | §10.7 |
+| `AssertOracleReplied` | engine → engine | sent right after `ReadPrice`: the oracle must have replied (§10.3) |
 
 ### 9.3 Authorization rules
 
@@ -1112,8 +1128,9 @@ to the engine. Sent to `program@stablecoin`, signed by the program (header) acco
    non-empty definition or holding, so a second `Initialize` fails here.
 4. **program → engine@stablecoin**: `Internal::InitializeEngine(args)`, sync, granting the engine
    seed. The engine checks the sender (`"only the program account may send this"`), that it has
-   no state (`"the engine is already initialized"`), and every band of §8, the name length and
-   the debt limits. It writes the engine (below) with both timestamps 0 and parks `Initialize`.
+   no state (`"the engine is already initialized"`), every band of §8, the name length, the debt
+   limits, and that `market_price_oracle_program_id` is not the all-zero id
+   (`"Market price oracle program must not be the default owner"`). It writes the engine (below) with both timestamps 0 and parks `Initialize`.
 5. **engine → clock**: `ReadTimestamp { granularity: 1 }`.
 6. **clock → engine**: `Timestamp(now)`. The engine sets `fee.last_accrued_at` and
    `redemption.last_updated_at` to `now`, clears `pending` and emits `Initialized`.
@@ -1133,10 +1150,14 @@ surplus seed. That actor, now authorized, sends `NewDefinition` to the definitio
 definition seed, and the token's step at the surplus holding inherits the surplus holding's
 authorization.
 
-**Not checked:** that `collateral_definition_id` is a token definition, that the oracle exists
-or quotes the right pair, and that `token_program_id` is the token program. A wrong collateral
-makes every `OpenPosition` fail (the vault's `InitializeHolding` is refused); a wrong pair makes
-every price reply unusable. The oracle may not exist yet ("Day 0", §3.2). The admin need not
+**Not checked:** `collateral_definition_id` (that it is a token definition, or the intended
+one), `market_price_oracle_id` (that it exists or quotes the right pair), and
+`token_program_id` (that it is the token program); none of these, nor the admin and freeze
+authority ids, is checked against the zero id. A collateral id that is not a token definition
+makes every `OpenPosition` fail (the token refuses the vault's `InitializeHolding` with
+`"receiver is not a token definition"`). A mistyped id that is a real definition of another
+token is accepted: positions open and that token silently becomes the collateral. A wrong pair
+makes every price reply unusable. The oracle may not exist yet ("Day 0", §3.2). The admin need not
 sign; the program account has no rights after `Initialize`.
 
 ### 10.2 `AccrueStabilityFee`
@@ -1166,13 +1187,20 @@ Sent to the engine; no signature. Strict: every gate is a failure.
    `now − last_updated_at ≥ minimum_milliseconds_between_rate_updates`
    (`"update_redemption_rate called too soon since last update"`). Parks
    `OraclePrice { now, hard: true }`.
-4. **engine → oracle**: `ReadPrice`.
-5. **oracle → engine**: `PriceReply { price }`. The checks of §4.8, in order:
+4. The engine sends, in this order: **engine → oracle**: `ReadPrice`; then **engine → engine**:
+   `Internal::AssertOracleReplied`.
+5. **oracle → engine**: `PriceReply { price }` (delivered depth first, so before the
+   assertion). The engine takes the parked `OraclePrice`, clearing `pending`, and applies the
+   checks of §4.8, in order:
    `"Market price oracle does not quote the stablecoin in collateral"`,
    `"Market price oracle observation is dated in the future"`,
    `"Market price oracle observation is stale"`, `"Market price oracle reports zero price"`.
    Then the controller tick of §6.4 re-anchors `redemption`, and the engine emits
    `RedemptionRateUpdated`.
+6. **engine → engine**: `AssertOracleReplied`. Accepted only from the engine itself
+   (`"only the engine may send this"`); if `pending` is still set, the oracle did not reply and
+   the transaction fails (`"the market price oracle did not reply"`). This is what keeps an
+   oracle that swallows `ReadPrice` from leaving the engine parked (§3.3).
 
 No fee accrual, so the stablecoin token actors are not reached. Allowed while frozen.
 
@@ -1189,11 +1217,15 @@ the oracle program refuses `ReadPrice` there, the transaction fails with that re
 2. **engine → clock**: `ReadTimestamp`.
 3. **clock → engine**: `Timestamp(now)`. The engine accrues (§6.6) — surplus mint first, if
    any. If `consult_oracle` is true **and** the interval is due, it parks
-   `OraclePrice { now, hard: false }` and sends **engine → oracle**: `ReadPrice`. Otherwise it is
-   done.
-4. **oracle → engine**: `PriceReply { price }`. If the price passes §4.8, the controller runs and
-   the engine emits `RedemptionRateUpdated`. A wrong pair, a future-dated, stale or zero price
-   leaves `redemption` untouched, without a failure or an event.
+   `OraclePrice { now, hard: false }` and sends, after the surplus mint: **engine → oracle**:
+   `ReadPrice`, then **engine → engine**: `Internal::AssertOracleReplied`. Otherwise it is done.
+4. **oracle → engine**: `PriceReply { price }`; `pending` is cleared. If the price passes §4.8,
+   the controller runs and the engine emits `RedemptionRateUpdated`. A wrong pair, a
+   future-dated, stale or zero price leaves `redemption` untouched, without a failure or an
+   event.
+5. **engine → engine**: `AssertOracleReplied`, as in §10.3 step 6: an oracle that did not reply
+   fails the transaction (`"the market price oracle did not reply"`), even though an unusable
+   price would only have been skipped.
 
 With `consult_oracle: false` the oracle is never contacted, so it is how a keeper pokes before
 the oracle exists (§3.2). With `consult_oracle: true` and the interval due, a missing price
@@ -1229,7 +1261,9 @@ signed by the owner.
    `Transfer { to: vault, amount: initial_collateral_amount }`. The token requires the holding's
    account to have signed (`"sender holding must authorize the transfer"`), refuses more than the
    balance (`"insufficient balance"`), and refuses to credit the vault with any token but the
-   collateral (`"recipient holds another token"`).
+   collateral (`"recipient holds another token"`). A recipient with no token holding is refused
+   with `"recipient has no token holding; initialize it first"` (the vault was initialized in
+   step 4; in §10.6 it exists since the position opened).
 
 The position emits `PositionOpened { owner, vault, collateral_amount }`. The engine's state does
 not change.
@@ -1266,12 +1300,13 @@ not sign.
    `fee` and `redemption` are saved as they were, only `pending` is cleared.
 5. **engine → owner@stablecoin**: `WithdrawApproved { amount, to }`. The position checks the
    sender is the engine and subtracts `amount`. If `amount > 0`:
-   **owner@stablecoin → vault@token**: `Transfer { to, amount }`, granting the vault seed. The token
-   refuses to credit `to` unless it is a collateral holding (`"recipient holds another token"`).
+   **owner@stablecoin → vault@token**: `Transfer { to, amount }`, granting the vault seed. `to`
+   must already be an initialized holding of the collateral: the token refuses a `to` with no
+   holding (`"recipient has no token holding; initialize it first"`) and one of another token
+   (`"recipient holds another token"`).
 
 The position emits `CollateralWithdrawn { owner, to, amount }` for a non-zero amount. The frozen
-rule uses the position's stored normalized debt: even one normalized unit blocks every
-withdrawal, including a zero one, while frozen.
+rule of step 2 uses the position's stored normalized debt (§10.14).
 
 ### 10.8 `GenerateDebt`
 
@@ -1295,8 +1330,9 @@ market price.
    - projects the redemption price (wide), refuses zero (`"Redemption price projected to zero"`)
      and checks §6.2 with the new debt (`"Position is undercollateralized"`).
 5. The engine sends, in this order: the surplus mint (if any); **engine → definition@token**:
-   `Mint { definition, to, amount }` with the definition seed (the token refuses to credit `to`
-   unless it is a stablecoin holding); **engine → owner@stablecoin**:
+   `Mint { definition, to, amount }` with the definition seed (`to` must already be an
+   initialized stablecoin holding: the token refuses
+   `"recipient has no token holding; initialize it first"` and `"recipient holds another token"`); **engine → owner@stablecoin**:
    `DebtGenerated { normalized_debt_delta: delta }`.
 6. **owner@stablecoin** checks the sender is the engine and adds `delta` to
    `normalized_debt_amount`.
@@ -1318,7 +1354,7 @@ authorizes to burn. Allowed while frozen and when the total debt is above the ce
 4. **clock → engine**: `Timestamp(now)`. The engine:
    - accrues (§6.6);
    - computes the repayment of §6.3 at the new accumulator: `amount_to_burn = min(maximum_amount,
-     ceil(debt × A))` and the normalized decrement (all the debt when the maximum covers it,
+     ceil(N × A / FIXED_POINT_ONE))`, with `N` the position's normalized debt, and the normalized decrement (all the debt when the maximum covers it,
      otherwise rounded down);
    - subtracts the decrement from `total_normalized_debt` (`"Total normalized debt underflow"`);
    - if the decrement is non-zero, the remaining debt must be zero or meet the floor
@@ -1367,7 +1403,8 @@ Every seat message runs the same two hops:
 1. **seat@stablecoin** (the signer's own account): the owner check (`"only the account's owner may send this"`). Its state is left as it is, whatever it holds.
 2. **seat → engine**: `Internal::Admin(action)`. The engine checks the role against the seat's
    account id (§9.3), applies the band check of §8, writes, and emits `ParametersChanged {
-   parameters }` with the whole new parameter set.
+   parameters }` with the whole new parameter set. Exceptions: `Freeze` / `Unfreeze` emit
+   `FrozenChanged` instead (§10.14), and `ResetRedemptionRateController` emits nothing (§10.15).
 
 `SetStabilityFeePerMillisecond` and `ResetRedemptionRateController` read the clock first
 (§10.13, §10.15); `Freeze` / `Unfreeze` are in §10.14.
@@ -1376,7 +1413,7 @@ Every seat message runs the same two hops:
 |---|---|---|
 | `SetMinimumCollateralizationRatio { new_ratio }` | `minimum_collateralization_ratio` | §8 band. Tightening leaves existing positions under-collateralized; they cannot generate debt or withdraw until back above, but can deposit or repay. No liquidation here (RFP-014). |
 | `SetControllerGains { new_proportional_gain, new_integral_gain }` | both gains | §8 bands. Does **not** reset `controller_integral_term`. |
-| `SetMarketPriceOracle { oracle_account_id, oracle_program_id }` | `market_price_oracle_id`, `market_price_oracle_program_id` | No check: the oracle may not exist yet, and its pair is checked on every reply (§4.8). |
+| `SetMarketPriceOracle { oracle_account_id, oracle_program_id }` | `market_price_oracle_id`, `market_price_oracle_program_id` | Only that `oracle_program_id` is not the all-zero id (`"Market price oracle program must not be the default owner"`). The account is not checked: the oracle may not exist yet, and its pair is checked on every reply (§4.8). |
 | `SetTimingParameters { minimum_milliseconds_between_rate_updates, maximum_oracle_price_age_milliseconds }` | both timing fields | §8 bands. |
 | `SetAdmin { new_admin_account_id }` | `admin_account_id` | One-step rotation. |
 | `SetFreezeAuthority { new_freeze_authority_account_id }` | `freeze_authority_account_id` | One-step rotation. |
@@ -1512,7 +1549,7 @@ lists them with their fields.
 - **Long time since last poke.** `compound_rate` handles large `dt` via exponentiation by squaring (O(log dt)), but the result is NOT self-bounding: at extreme `dt` any rate > `FIXED_POINT_ONE` overflows. Callers therefore clamp `dt` to `MAXIMUM_COMPOUNDING_WINDOW_MILLISECONDS` (§5.3). The trade-off is that fee accrual and redemption drift pause beyond the window if no one pokes for that long; permissionless, cheap pokes make this a catastrophic-neglect-only scenario.
 - **Stale or wrong oracle, unfrozen.** `UpdateRedemptionRate` fails and `RefreshGlobals { consult_oracle: true }` skips the controller, so the rate stays at whatever it last was (RFP R3: a stale price never moves the rate). As in RAI, every position message — including `GenerateDebt` — continues, since none reads the market price. Non-zero withdrawals from indebted positions use the redemption price projected at the old rate. Zero-debt or zero-amount withdrawals skip both projections and the health check.
 - **Missing oracle.** Unlike a stale one, a price account that does not exist fails any transaction that reaches it (§10.3): `UpdateRedemptionRate` always, `RefreshGlobals { consult_oracle: true }` when the interval is due. Keepers use `consult_oracle: false` until it exists.
-- **Frozen + stale oracle.** `GenerateDebt` is blocked (frozen). `WithdrawCollateral` is blocked for any nonzero normalized debt, including a one-unit residue or a zero amount. Exactly zero normalized debt lets the owner withdraw all recorded collateral and close while frozen, with no clock or oracle read. `DepositCollateral`, `RepayDebt`, `ClosePosition` work. Anyone can still send `AccrueStabilityFee`.
+- **Frozen + stale oracle.** The freeze rules of §10.14 apply unchanged. A debt-free owner can withdraw everything and close with no clock or oracle read, and anyone can still send `AccrueStabilityFee`.
 - **Admin tightens `minimum_collateralization_ratio`.** Existing positions with healthy-old-ratio but underwater-new-ratio cannot `GenerateDebt` or `WithdrawCollateral` (with debt). They CAN `DepositCollateral` to recover, or `RepayDebt` to reduce their debt.
 - **Re-opening after close.** Works on the same account: the position is empty again, and the vault's `InitializeHolding` is a no-op on the existing empty collateral holding.
 - **A second position.** An account holds one position. A second `OpenPosition` on it fails with `"this account already has a position"`; use another account.
@@ -1520,7 +1557,7 @@ lists them with their fields.
 - **Repayment maximum above debt.** `RepayDebt` burns only the ceiling of execution-time debt, clears normalized debt, and leaves the unused buffer in the holding. The maximum may exceed the holding balance if the actual burn fits. If the token cannot move the actual amount, the whole transaction fails.
 - **Dust and timing on repayment.** Partial repayments keep the downward-rounded debt reduction (§6.3). Full repayment burns the ceiling, avoiding forgiveness of fractional raw-unit debt. A buffer is sufficient only when it covers debt at execution; if fees accrue past it, the program burns at most the maximum and leaves positive debt. A partial repayment that changes debt and leaves positive accrued debt below the floor fails (§6.7); choose a maximum that clears the position or leaves debt at or above the floor. Reread the position's debt before withdrawing everything or reporting the position clear.
 - **Repaying a debt-free position.** Any valid maximum burns zero, including `u128::MAX` with an empty holding. The owner check, the holding's signature and the clock read still apply, and the zero transfer and zero burn are still sent.
-- **Zero amounts.** Zero amounts do not bypass preconditions. `WithdrawCollateral` with 0 is permitted while frozen only with exactly zero normalized debt, and `GenerateDebt` with 0 remains blocked while frozen. A zero withdrawal skips the clock, the projections and the health check, and sends no token message. A zero deposit changes nothing and emits no event. A zero `GenerateDebt` or `RepayDebt` still accrues.
+- **Zero amounts.** Zero amounts do not bypass preconditions, including the freeze rules of §10.14. A zero withdrawal skips the clock, the projections and the health check, and sends no token message. A zero deposit changes nothing and emits no event. A zero `GenerateDebt` or `RepayDebt` still accrues.
 - **Tokens sent straight to a vault.** They are ignored: never counted as collateral, never withdrawable (§7 invariant 1, §16).
 
 ## 13. Out of scope (per RFP)
@@ -1550,14 +1587,16 @@ addressed, authorized and composed:
 5. **Deposits trust the stored amount; close checks stored amounts.** v0.2.5's `deposit_collateral` reconciled `collateral_amount` from the vault balance, folding donated tokens in, and `close_position` required the vault balance to be zero. The program never reads the vault now: a deposit adds exactly its amount, close checks only `collateral_amount` and `normalized_debt_amount`, and donated tokens are stranded.
 6. **`opened_at` removed.** Recording it would cost a clock read at open, which is otherwise clock-free.
 7. **The token and oracle program ids are stored and pinned.** `token_program_id` is a new `ProtocolParameters` field, set at `Initialize` and immutable; every position also pins it. `market_price_oracle_program_id` is set together with the oracle address, as before, and only a reply from that program's actor is accepted.
-8. **No setup validation by reading.** `Initialize` no longer checks that the collateral definition is a fungible token definition or that an existing oracle has the right owner and pair, and `SetMarketPriceOracle` no longer checks the new oracle. The collateral is checked when a vault is opened, the pair on every price reply.
+8. **No setup validation by reading.** `Initialize` no longer checks that the collateral definition is a fungible token definition or that an existing oracle has the right owner and pair, and `SetMarketPriceOracle` no longer checks the new oracle account. The collateral is checked when a vault is opened, the pair on every price reply. Unchanged from v0.2.5: both still reject an all-zero oracle program id (`"Market price oracle program must not be the default owner"`).
 9. **Owner and admin messages must be signed root messages.** v0.2.5 accepted any input account marked authorized. Now each such message must be sent by a transaction, to the signer's own stablecoin actor, signed by that account (§9.3). Programs cannot send them.
 10. **No `schema_version`.** v0.2.5's global accounts carried a version byte and rejected legacy layouts. The actor state is new and lives under a new program id; versioning is the append-only `StablecoinState` enum (§4.9).
 11. **Repayment through the surplus holding.** v0.2.5 burned at the user's holding. The engine now transfers the repayment into the surplus holding and burns it there, so only the stablecoin can repay stablecoin debt (§10.9). The repaying holding's account signs for the transfer.
-12. **`Initialize` at the program's own account.** v0.2.5's `initialize_program` took the header as a `deployment_authority` input among nine accounts. `Initialize` is now sent to the program's own actor, signed by it, and creates the token through the surplus relay (§10.1). Its arguments gained `token_program_id` and `collateral_definition_id`, which were accounts before.
+12. **`Initialize` at the program's own account.** v0.2.5's `initialize_program` took the header as a `deployment_authority` input among nine accounts. `Initialize` is now sent to the program's own actor, signed by it, and creates the token through the surplus relay (§10.1). `collateral_definition_id` and `market_price_oracle_id`, accounts before, are now fields; `token_program_id` is new; the field order differs from v0.2.5's `initialize_program`, so an old encoder cannot be reused.
 13. **Messages, not instructions.** There are no account lists, no `AccountWithMetadata` inputs, no post-states, no `ChainedCall`s and no `CLOCK_01` account input. Each message is Borsh with named fields; other actors are reached by messages, and the clock by a read (§5.4). The renamed fields: `RepayDebt`'s `amount` is `maximum_amount`; `SetMarketPriceOracle` takes `oracle_account_id` and `oracle_program_id` as fields; position messages name their holdings (`collateral_holding`, `to`, `stablecoin_holding`).
 14. **Vault seed.** The vault's seed pre-image is the owner's account id followed by `"POSITION_VAULT"` (v0.2.5 hashed the position PDA). The three fixed seeds are unchanged, so the engine, the stablecoin definition and the surplus holding (v0.2.5's master holding) keep their v0.2.5 seeds.
-15. **Private and group-owned flows** are not supported yet (§16).
+15. **Events are new.** v0.2.5 emitted no program events; the program now emits the eleven events of §11.
+16. **The oracle must answer.** Every price read is followed by a self-check that fails the transaction if the oracle did not reply (§10.3). v0.2.5 read the oracle account directly and had no such case.
+17. **Private and group-owned flows** are not supported yet (§16).
 
 ## 16. Known limitations and follow-ups
 
@@ -1577,17 +1616,16 @@ addressed, authorized and composed:
    with v0.2.5 arguments (`<program> globals`, `<program> <owner> <position_nonce>`); the
    example now takes `<program> [<owner>]` (§3.1).
 3. **Setup does not validate the collateral definition or the oracle pair** (§10.1, §10.11). A
-   wrong collateral surfaces as a failing `OpenPosition`; a wrong pair as unusable prices.
-   Neither `Initialize` nor `SetMarketPriceOracle` checks that an id is non-zero.
+   collateral id that is not a token definition surfaces as a failing `OpenPosition`; a real
+   definition of the wrong token is silently accepted as the collateral; a wrong pair surfaces
+   as unusable prices. Only the oracle program id is checked against the zero id; the oracle
+   account, the token program, the collateral definition, the admin and the freeze authority
+   are not.
 4. **Tokens sent straight to a vault are ignored and stranded.** Only `DepositCollateral` and
    `OpenPosition` count collateral; nothing reconciles or recovers a donation.
 5. **A zero deposit emits no event,** and neither does a zero withdrawal; nor does
    `ResetRedemptionRateController`.
-6. **The engine trusts the oracle program to answer or fail.** A configured oracle program that
-   accepted `ReadPrice` and neither replied nor failed would let the transaction finish with
-   `OraclePrice` parked, and every later clock or price read would fail with `"the engine is already waiting for a reply"`; no message clears `pending`. The TWAP oracle always replies
-   or fails. Configure only oracle programs that do.
-7. **Measured cost.** Charged cycles per transaction, measured through the real guests
+6. **Measured cost.** Charged cycles per transaction, measured through the real guests
    (`programs/integration_tests/tests/stablecoin_cycles.rs`, run with `--ignored`). Each "6 days"
    line follows a 6-day gap since the last anchor move, close to the worst-case compounding (the
    window clamp is 7 days).
@@ -1602,26 +1640,27 @@ addressed, authorized and composed:
    | `RepayDebt` (6 days, surplus mint; transfer + burn) | 247,455 | 2.4% |
    | `WithdrawCollateral` (with debt, 6 days) | 207,918 | 2.0% |
    | `AccrueStabilityFee` (6 days, surplus mint) | 156,340 | 1.5% |
-   | `RefreshGlobals { consult_oracle: true }` (6 days, price applied) | 212,589 | 2.1% |
-   | `UpdateRedemptionRate` (1 s after the refresh) | 145,851 | 1.4% |
+   | `RefreshGlobals { consult_oracle: true }` (6 days, price applied) | 236,983 | 2.4% |
+   | `UpdateRedemptionRate` (1 s after the refresh) | 170,306 | 1.7% |
 
    Every transaction is far below the wallet's default `gas_limit` of 2,000,000 and the
-   10,000,000 cap, so clients need not raise the default. The heaviest is `RepayDebt`.
-8. **Two-step admin / freeze rotation.** `SetAdmin` / `SetFreezeAuthority` rotate in one step.
+   10,000,000 cap, so clients need not raise the default. The heaviest is `RepayDebt`
+   (247,455); the two oracle reads include the `AssertOracleReplied` self-check.
+7. **Two-step admin / freeze rotation.** `SetAdmin` / `SetFreezeAuthority` rotate in one step.
    A pending-plus-accept pair would protect against a mistyped id.
-9. **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants in v1 to keep
+8. **Promote `INTEGRAL_CLAMP` and `RATE_DELTA_CLAMP` to admin-tunable.** Constants in v1 to keep
    the surface small. Promotion needs a new engine layout (a new `StablecoinState` variant,
    §4.9) and new setters.
-10. **Leaky integrator (RAI parity).** v1 uses a hard `INTEGRAL_CLAMP` for anti-windup (§6.4);
+9. **Leaky integrator (RAI parity).** v1 uses a hard `INTEGRAL_CLAMP` for anti-windup (§6.4);
     RAI uses a per-second integral leak that exponentially decays stale deviation. Switching is
     deferred to the controller-tuning pass.
-11. **Controller tuning.** The §8 bounds and gains are v1 estimates to be locked against
+10. **Controller tuning.** The §8 bounds and gains are v1 estimates to be locked against
     simulation. With `INTEGRAL_CLAMP = RATE_DELTA_CLAMP` (`10^16`), the maximum `Ki`
     (`FIXED_POINT_ONE`) swings the integral from one bound to the other within an hour on an
     error of about `5.6 × 10^9` raw units (`≈ 5.6 × 10^-18` of `FIXED_POINT_ONE`). At the gain cap
     the controller is therefore effectively bang-bang. That is acceptable under the §8 rate
     clamp, but useful `Ki` values sit many orders of magnitude below the cap.
-12. **Liquidation and spending the surplus.** Tracked under RFP-014. Accrued fees are minted into
+11. **Liquidation and spending the surplus.** Tracked under RFP-014. Accrued fees are minted into
     the surplus holding (§6.6) and stay there.
 
 ## 17. Sample scenarios
@@ -1807,15 +1846,8 @@ ample time for the freeze authority to act.
 |---|---|---|---|
 | engine | parameters.is_frozen | false | true |
 
-Effect:
-
-- `OpenPosition` — blocked.
-- `GenerateDebt` — blocked (no further borrowing).
-- `WithdrawCollateral` — blocked for positions with nonzero normalized debt, including zero-amount calls; allowed for owners with exactly zero normalized debt.
-- `DepositCollateral` — allowed (users can add collateral).
-- `RepayDebt` — allowed (users can reduce debt).
-- `ClosePosition` — allowed.
-- `AccrueStabilityFee`, `UpdateRedemptionRate`, `RefreshGlobals` — allowed subject to their own checks.
+Effect: the table in §10.14. No further borrowing or opening; users can still add collateral,
+repay and close, debt-free owners can withdraw, and the pokes keep running.
 
 **Step 4 — The admin replaces the oracle with `SetMarketPriceOracle`**
 
