@@ -20,7 +20,9 @@ use lee_core::{
 pub use stablecoin_core as core;
 use stablecoin_core::{compute_engine_pda, Engine, Internal, Message, Position, StablecoinState};
 
+mod accrue_stability_fee;
 mod checks;
+mod clock;
 #[cfg(test)]
 mod test_utils;
 
@@ -34,7 +36,7 @@ mod test_utils;
 /// - `"stablecoin message must decode"` when anyone else sends bytes that are not a [`Message`].
 pub fn handle_message(input: &ReceiveInput) -> Response {
     if input.from == Some(clock_core::clock_actor()) {
-        panic!("not ported yet");
+        return clock::on_reply(input);
     }
     if input.from_own_program() {
         return handle_internal(input);
@@ -99,10 +101,7 @@ fn handle_public(input: &ReceiveInput) -> Response {
         borsh::from_slice(&input.message).expect("stablecoin message must decode");
     match message {
         Message::Initialize(_args) => panic!("not ported yet"),
-        Message::AccrueStabilityFee => {
-            let _engine = engine_state(input);
-            panic!("not ported yet")
-        }
+        Message::AccrueStabilityFee => accrue_stability_fee::accrue_stability_fee(input),
         Message::UpdateRedemptionRate => panic!("not ported yet"),
         Message::RefreshGlobals { consult_oracle: _ } => panic!("not ported yet"),
         Message::OpenPosition {
@@ -203,7 +202,6 @@ fn position_state(input: &ReceiveInput) -> Position {
     }
 }
 
-#[expect(dead_code, reason = "used from Task 3: initialize")]
 fn save_engine(engine: Engine) -> Response {
     Response::set_state(StablecoinState::Engine(engine).encode())
 }

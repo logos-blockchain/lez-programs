@@ -9,7 +9,7 @@ pub(crate) use lee_core::{
 };
 pub(crate) use stablecoin_core::{
     compute_engine_pda, compute_position_vault_pda, compute_stablecoin_definition_pda,
-    compute_surplus_holding_pda, Engine, Message, Position, ProtocolParameters,
+    compute_surplus_holding_pda, Engine, Message, Pending, Position, ProtocolParameters,
     RedemptionPriceState, StabilityFeeAccumulator, StablecoinState, FIXED_POINT_ONE,
 };
 
@@ -38,7 +38,6 @@ pub(crate) fn definition_id() -> AccountId {
     compute_stablecoin_definition_pda(STABLECOIN)
 }
 
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) fn surplus_id() -> AccountId {
     compute_surplus_holding_pda(STABLECOIN)
 }
@@ -54,7 +53,6 @@ pub(crate) fn stablecoin(account_id: AccountId) -> Actor {
 }
 
 /// A token-program actor on `account_id`.
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) fn token(account_id: AccountId) -> Actor {
     Actor::new(account_id, TOKEN)
 }
@@ -64,7 +62,6 @@ pub(crate) fn engine() -> Actor {
     stablecoin(engine_id())
 }
 
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) fn clock() -> Actor {
     clock_core::clock_actor()
 }
@@ -139,7 +136,6 @@ pub(crate) fn engine_at(now: u64) -> Engine {
     }
 }
 
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
 pub(crate) fn clock_reply(now: u64) -> Reply {
     Reply::Timestamp(now)
 }
