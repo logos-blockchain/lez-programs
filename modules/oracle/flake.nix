@@ -10,6 +10,8 @@
     # lez_core 0.4.2 (v0.2.5-rc2 wallet-ffi). See the root flake.nix for the full
     # rationale.
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
+    # LEZ v0.2.5-rc2 plus the risc0 zkr download-URL fix; see the root flake.nix.
+    lez_core.inputs.logos-execution-zone.url = "github:logos-blockchain/logos-execution-zone?rev=6477ce33c311f82b962daae1583fb647b9894b39";
 
     # The repo-root flake supplies the oracle_ffi crate. oracle_ffi is a Cargo
     # workspace member (it path-depends on twap_oracle_core under programs/*),
