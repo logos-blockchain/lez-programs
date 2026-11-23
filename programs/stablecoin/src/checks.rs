@@ -18,10 +18,6 @@ use crate::engine_actor;
 ///
 /// # Panics
 /// - `"only the account's owner may send this"` when the message is nested or unsigned.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used from Task 4: open_position")
-)]
 pub(crate) fn assert_owner(input: &ReceiveInput) {
     assert!(
         input.is_authorized && input.from.is_none(),

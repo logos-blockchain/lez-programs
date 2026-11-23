@@ -18,9 +18,12 @@ use lee_core::{
     program::{ReceiveInput, Response},
 };
 pub use stablecoin_core as core;
-use stablecoin_core::{compute_engine_pda, Engine, Internal, Message, Position, StablecoinState};
+use stablecoin_core::{
+    compute_engine_pda, AdminAction, Engine, Internal, Message, Position, StablecoinState,
+};
 
 mod accrue_stability_fee;
+mod admin;
 mod checks;
 mod clock;
 mod initialize;
@@ -60,7 +63,7 @@ fn handle_internal(input: &ReceiveInput) -> Response {
         Internal::InitializeEngine(args) => {
             initialize::initialize_engine(input, sender(input), args)
         }
-        Internal::Admin(_action) => panic!("not ported yet"),
+        Internal::Admin(action) => admin::apply(input, sender(input), action),
         Internal::OpenRequest {
             collateral_holding: _,
             initial_collateral_amount: _,
@@ -122,33 +125,75 @@ fn handle_public(input: &ReceiveInput) -> Response {
             maximum_amount: _,
         } => panic!("not ported yet"),
         Message::ClosePosition => panic!("not ported yet"),
-        Message::SetMinimumCollateralizationRatio { new_ratio: _ } => panic!("not ported yet"),
+        Message::SetMinimumCollateralizationRatio { new_ratio } => admin::forward(
+            input,
+            AdminAction::SetMinimumCollateralizationRatio { new_ratio },
+        ),
         Message::SetControllerGains {
-            new_proportional_gain: _,
-            new_integral_gain: _,
-        } => panic!("not ported yet"),
+            new_proportional_gain,
+            new_integral_gain,
+        } => admin::forward(
+            input,
+            AdminAction::SetControllerGains {
+                new_proportional_gain,
+                new_integral_gain,
+            },
+        ),
         Message::SetMarketPriceOracle {
-            oracle_account_id: _,
-            oracle_program_id: _,
-        } => panic!("not ported yet"),
+            oracle_account_id,
+            oracle_program_id,
+        } => admin::forward(
+            input,
+            AdminAction::SetMarketPriceOracle {
+                oracle_account_id,
+                oracle_program_id,
+            },
+        ),
         Message::SetTimingParameters {
-            minimum_milliseconds_between_rate_updates: _,
-            maximum_oracle_price_age_milliseconds: _,
-        } => panic!("not ported yet"),
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+        } => admin::forward(
+            input,
+            AdminAction::SetTimingParameters {
+                minimum_milliseconds_between_rate_updates,
+                maximum_oracle_price_age_milliseconds,
+            },
+        ),
         Message::SetAdmin {
-            new_admin_account_id: _,
-        } => panic!("not ported yet"),
+            new_admin_account_id,
+        } => admin::forward(
+            input,
+            AdminAction::SetAdmin {
+                new_admin_account_id,
+            },
+        ),
         Message::SetFreezeAuthority {
-            new_freeze_authority_account_id: _,
-        } => panic!("not ported yet"),
-        Message::SetStabilityFeePerMillisecond { new_rate: _ } => panic!("not ported yet"),
-        Message::Freeze => panic!("not ported yet"),
-        Message::Unfreeze => panic!("not ported yet"),
-        Message::ResetRedemptionRateController => panic!("not ported yet"),
+            new_freeze_authority_account_id,
+        } => admin::forward(
+            input,
+            AdminAction::SetFreezeAuthority {
+                new_freeze_authority_account_id,
+            },
+        ),
+        Message::SetStabilityFeePerMillisecond { new_rate } => admin::forward(
+            input,
+            AdminAction::SetStabilityFeePerMillisecond { new_rate },
+        ),
+        Message::Freeze => admin::forward(input, AdminAction::Freeze),
+        Message::Unfreeze => admin::forward(input, AdminAction::Unfreeze),
+        Message::ResetRedemptionRateController => {
+            admin::forward(input, AdminAction::ResetRedemptionRateController)
+        }
         Message::SetDebtLimits {
-            minimum_debt_amount: _,
-            debt_ceiling: _,
-        } => panic!("not ported yet"),
+            minimum_debt_amount,
+            debt_ceiling,
+        } => admin::forward(
+            input,
+            AdminAction::SetDebtLimits {
+                minimum_debt_amount,
+                debt_ceiling,
+            },
+        ),
     }
 }
 

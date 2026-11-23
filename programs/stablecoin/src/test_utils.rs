@@ -67,7 +67,7 @@ pub(crate) fn clock() -> Actor {
 }
 
 /// The market price oracle's actor, as `parameters()` configures it.
-#[expect(dead_code, reason = "used by the operation tests from Task 3 on")]
+#[expect(dead_code, reason = "used by the oracle tests from the price reply on")]
 pub(crate) fn oracle() -> Actor {
     Actor::new(ORACLE_PRICE, ORACLE_PROGRAM)
 }
@@ -138,4 +138,13 @@ pub(crate) fn engine_at(now: u64) -> Engine {
 
 pub(crate) fn clock_reply(now: u64) -> Reply {
     Reply::Timestamp(now)
+}
+
+/// Decodes the engine the response saves.
+pub(crate) fn saved_engine(response: &Response) -> Engine {
+    let state = response.post_state.clone().expect("state is set");
+    match StablecoinState::decode(&state).expect("state decodes") {
+        StablecoinState::Engine(engine) => engine,
+        StablecoinState::Position(_) => panic!("the engine stays an engine"),
+    }
 }

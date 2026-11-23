@@ -6,7 +6,7 @@ use clock_core::Reply;
 use lee_core::program::{ReceiveInput, Response};
 use stablecoin_core::{Engine, Pending};
 
-use crate::{accrue_stability_fee, engine_state, initialize, save_engine};
+use crate::{accrue_stability_fee, admin, engine_state, initialize, save_engine};
 
 /// Each read returns the previous block's timestamp in milliseconds, unrounded.
 const GRANULARITY: u64 = 1;
@@ -16,17 +16,26 @@ const GRANULARITY: u64 = 1;
 /// # Panics
 /// - `"the engine is already waiting for a reply"` when another operation is parked.
 pub(crate) fn read_clock(mut engine: Engine, operation: Pending) -> Response {
-    assert!(
-        engine.pending.is_none(),
-        "the engine is already waiting for a reply"
-    );
-    engine.pending = Some(operation);
+    park(&mut engine, operation);
     save_engine(engine).send_sync(
         clock_core::clock_actor(),
         &clock_core::Message::ReadTimestamp {
             granularity: GRANULARITY,
         },
     )
+}
+
+/// Parks `operation` in the engine's state while it waits for a reply (the clock's or the
+/// oracle's).
+///
+/// # Panics
+/// - `"the engine is already waiting for a reply"` when another operation is parked.
+pub(crate) fn park(engine: &mut Engine, operation: Pending) {
+    assert!(
+        engine.pending.is_none(),
+        "the engine is already waiting for a reply"
+    );
+    engine.pending = Some(operation);
 }
 
 /// At the engine, from the clock: finish the parked operation at `now`.
@@ -49,8 +58,10 @@ pub(crate) fn on_reply(input: &ReceiveInput) -> Response {
         Pending::Initialize => initialize::finish(input, engine, now),
         Pending::UpdateRedemptionRate => panic!("not ported yet"),
         Pending::RefreshGlobals { consult_oracle: _ } => panic!("not ported yet"),
-        Pending::SetStabilityFee { new_rate: _ } => panic!("not ported yet"),
-        Pending::ResetController => panic!("not ported yet"),
+        Pending::SetStabilityFee { new_rate } => {
+            admin::finish_set_stability_fee(input, engine, new_rate, now)
+        }
+        Pending::ResetController => admin::finish_reset_controller(input, engine, now),
         Pending::GenerateDebt {
             position: _,
             amount: _,
