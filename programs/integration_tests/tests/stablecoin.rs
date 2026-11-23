@@ -10,10 +10,11 @@ mod harness;
 use clock_core::clock_actor;
 use harness::*;
 use integration_tests::{account, assert_refused, key, tick};
-use lee_core::{account::AccountId, program::TransactionEvent};
+use lee::error::{InvalidProgramBehaviorError, LeeError};
+use lee_core::{account::AccountId, execution_state::ExecutionError, program::TransactionEvent};
 use stablecoin_core::{
     event::{DebtRepaid, RedemptionRateUpdated, StabilityFeeAccrued},
-    math::compute_repayment,
+    math::mul_div,
     Message, FIXED_POINT_ONE,
 };
 use token_core::TokenDefinition;
@@ -30,19 +31,6 @@ fn stablecoin_balances(world: &World) -> Stablecoin {
         surplus: holding_balance(world, surplus_id(world)),
         supply: total_supply(world, definition_id(world)),
     }
-}
-
-/// The stablecoin it costs to clear `owner`'s debt at the engine's current accumulator.
-fn cost_to_clear(world: &World, owner: AccountId) -> u128 {
-    let debt = position(world, owner)
-        .expect("the owner has a position")
-        .normalized_debt_amount;
-    compute_repayment(
-        u128::MAX,
-        debt,
-        engine(world).fee.accumulated_rate_at_last_accrual,
-    )
-    .amount_to_burn
 }
 
 fn debt(world: &World, user: &User) -> u128 {
@@ -213,11 +201,15 @@ fn full_position_lifecycle() {
     assert_eq!(holding_balance(&world, user.stable_id()), 1_000);
     assert_eq!(total_supply(&world, definition_id(&world)), 1_000);
 
-    // A second owner provides the stablecoin to top the holding up for the accrued fee.
-    let donor = user_with_debt(&mut world, 40, 100);
+    // A second owner provides the stablecoin to top the holding up for the accrued fee. Their
+    // larger debt makes the repayment's own accrual mint whole units to the surplus.
+    let donor = harness::user(&mut world, 40, 20_000_000);
+    open_position(&mut world, &donor, 20_000_000).expect("the donor's position opens");
+    generate(&mut world, &donor, 10_000_000).expect("the donor's debt is generated");
     tick(&mut world.state, T0 + 60_000);
     transfer(&mut world, &donor.stable, user.stable_id(), 1).expect("the top-up arrives");
     let before = stablecoin_balances(&world);
+    let fee_before = engine(&world).fee;
 
     let events = repay(&mut world, &user, 2_000).expect("the debt is repaid");
 
@@ -232,11 +224,15 @@ fn full_position_lifecycle() {
             normalized_debt_delta: 1_000,
         }]
     );
-    assert_eq!(cost_to_clear(&world, donor.id()), 101);
-    let accrued: u128 = events_of::<StabilityFeeAccrued>(&events)
-        .iter()
-        .map(|event| event.accrued_fees)
-        .sum();
+    // The fees on 10_001_000 of normalized debt over the minute, from the engine's own
+    // accumulator, not from the events: about 13.
+    let accrued = mul_div(
+        fee_before.total_normalized_debt,
+        engine(&world).fee.accumulated_rate_at_last_accrual
+            - fee_before.accumulated_rate_at_last_accrual,
+        FIXED_POINT_ONE,
+    );
+    assert_eq!(accrued, 13);
     assert_eq!(holding_balance(&world, user.stable_id()), 0);
     // The repayment passes through the surplus holding and is burned there: the surplus moves
     // only by the accrued fees, the supply falls by the burn.
@@ -248,7 +244,7 @@ fn full_position_lifecycle() {
         }
     );
     assert_eq!(debt(&world, &user), 0);
-    assert_eq!(engine(&world).fee.total_normalized_debt, 100);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 10_000_000);
 
     withdraw(&mut world, &user, 1_500).expect("the collateral is withdrawn");
     assert_eq!(collateral(&world, &user), 0);
@@ -257,15 +253,6 @@ fn full_position_lifecycle() {
 
     close(&mut world, &user).expect("the position closes");
     assert_eq!(position(&world, user.id()), None);
-}
-
-/// A user (keys `byte..byte + 3`) with an open position of 10_000 collateral and `amount` of
-/// debt in their stablecoin holding.
-fn user_with_debt(world: &mut World, byte: u8, amount: u128) -> User {
-    let user = user(world, byte, 10_000);
-    open_position(world, &user, 10_000).expect("the position opens");
-    generate(world, &user, amount).expect("the debt is generated");
-    user
 }
 
 #[test]
@@ -556,6 +543,143 @@ fn repay_with_a_holding_of_another_token_is_refused() {
     assert_eq!(stablecoin_balances(&world), stablecoin_before);
 }
 
+/// The refusal when a holding the transaction did not sign for is asked to move tokens: no
+/// signature covers its account, and the stablecoin attaches no seed to the token messages it
+/// sends to a caller-named holding.
+const UNSIGNED_HOLDING: &str = "sender holding must authorize the transfer";
+
+#[test]
+fn repay_from_the_surplus_holding_is_refused() {
+    let (mut world, user) = world_with_user(200_000_000);
+    open_position(&mut world, &user, 150_000_000).expect("the position opens");
+    generate(&mut world, &user, 100_000_000).expect("the debt is generated");
+    tick(&mut world.state, T0 + 3_600_000);
+    accrue(&mut world).expect("the poke succeeds");
+    let before = stablecoin_balances(&world);
+    assert!(before.surplus > 0, "the surplus holds the accrued fees");
+    let surplus = surplus_id(&world);
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, definition_id(&world)),
+        token(&world, surplus),
+    ];
+
+    // The owner names the surplus holding as the stablecoin to repay with, and signs alone.
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::RepayDebt {
+            stablecoin_holding: surplus,
+            maximum_amount: 1_000,
+        },
+    );
+
+    // The transfer out of the surplus holding carries no seed and a PDA cannot sign, so the
+    // protocol's fees cannot be burned against the caller's debt.
+    assert_refused(&result, UNSIGNED_HOLDING);
+    assert_eq!(debt(&world, &user), 100_000_000);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 100_000_000);
+    assert_eq!(stablecoin_balances(&world), before);
+}
+
+#[test]
+fn repay_from_another_users_holding_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+    let other = harness::user(&mut world, 40, 10_000);
+    open_position(&mut world, &other, 1_500).expect("the other position opens");
+    generate(&mut world, &other, 1_000).expect("the other debt is generated");
+    let stablecoin_before = stablecoin_balances(&world);
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, definition_id(&world)),
+        token(&world, surplus_id(&world)),
+        token(&world, other.stable_id()),
+    ];
+
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::RepayDebt {
+            stablecoin_holding: other.stable_id(),
+            maximum_amount: 1_000,
+        },
+    );
+
+    assert_refused(&result, UNSIGNED_HOLDING);
+    assert_eq!(debt(&world, &user), 1_000);
+    assert_eq!(debt(&world, &other), 1_000);
+    assert_eq!(holding_balance(&world, other.stable_id()), 1_000);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 2_000);
+    assert_eq!(stablecoin_balances(&world), stablecoin_before);
+}
+
+#[test]
+fn a_deposit_from_a_vault_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let other = harness::user(&mut world, 40, 10_000);
+    open_position(&mut world, &other, 1_000).expect("the other position opens");
+    let own_vault = vault_id(&world, user.id());
+    let other_vault = vault_id(&world, other.id());
+
+    for vault in [own_vault, other_vault] {
+        let past_root = [token(&world, vault), token(&world, own_vault)];
+        let result = position_message(
+            &mut world,
+            &user,
+            &past_root,
+            &[],
+            &Message::DepositCollateral {
+                collateral_holding: vault,
+                amount: 100,
+            },
+        );
+
+        // A vault is a stablecoin PDA: it cannot sign, and a deposit carries no vault seed.
+        assert_refused(&result, UNSIGNED_HOLDING);
+        assert_eq!(collateral(&world, &user), 1_500);
+        assert_eq!(collateral(&world, &other), 1_000);
+        assert_eq!(holding_balance(&world, own_vault), 1_500);
+        assert_eq!(holding_balance(&world, other_vault), 1_000);
+    }
+}
+
+#[test]
+fn open_from_an_unsigned_holding_is_refused() {
+    let (mut world, user) = world_with_user(0);
+    let other = harness::user(&mut world, 40, 10_000);
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        token(&world, vault_id(&world, user.id())),
+        token(&world, world.collateral_definition),
+        token(&world, other.collateral_id()),
+    ];
+
+    // The owner names someone else's collateral holding and signs alone.
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::OpenPosition {
+            collateral_holding: other.collateral_id(),
+            initial_collateral_amount: 500,
+        },
+    );
+
+    assert_refused(&result, UNSIGNED_HOLDING);
+    assert_eq!(position(&world, user.id()), None);
+    assert_eq!(holding_balance(&world, other.collateral_id()), 10_000);
+}
+
 // ── Admin ────────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -778,17 +902,15 @@ fn launches_before_the_market_price_oracle_exists() {
 /// Panics unless `result` failed because the oracle's price account does not exist yet: LEZ
 /// does not admit a message to an empty public PDA actor nobody grants the seed for, so the
 /// oracle never runs and the whole transaction fails.
-fn assert_price_account_missing<T: std::fmt::Debug>(
-    world: &World,
-    result: &Result<T, lee::error::LeeError>,
-) {
-    let expected = format!(
-        "UnadmittedPublicActor {{ actor: {:?} }}",
-        price_actor(world)
-    );
+fn assert_price_account_missing<T: std::fmt::Debug>(world: &World, result: &Result<T, LeeError>) {
     assert!(
-        format!("{result:?}").contains(&expected),
-        "expected {expected}, got {result:?}"
+        matches!(
+            result,
+            Err(LeeError::InvalidProgramBehavior(InvalidProgramBehaviorError::Execution(
+                ExecutionError::UnadmittedPublicActor { actor }
+            ))) if *actor == price_actor(world)
+        ),
+        "expected the price actor to be unadmitted, got {result:?}"
     );
 }
 
@@ -852,7 +974,8 @@ fn the_engine_is_never_left_waiting() {
     );
     assert_eq!(engine(&world).pending, None);
 
-    // Failed while waiting for the oracle (its price account does not exist).
+    // The engine parks and asks the oracle, but LEZ rejects the delivery to the price account,
+    // which does not exist yet: the oracle never runs and the whole transaction is rejected.
     tick(&mut world.state, T0 + 2_000);
     let result = update_redemption_rate(&mut world);
     assert_price_account_missing(&world, &result);

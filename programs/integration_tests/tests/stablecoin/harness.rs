@@ -418,7 +418,7 @@ pub fn user(world: &mut World, byte: u8, collateral: u128) -> User {
 }
 
 /// A root message at the owner's position, signed by the owner and `also`.
-fn position_message(
+pub fn position_message(
     world: &mut World,
     user: &User,
     past_root: &[Actor],

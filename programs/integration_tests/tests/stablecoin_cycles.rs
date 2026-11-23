@@ -41,12 +41,13 @@ thread_local! {
     static CHARGED: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
+/// The dry run every measured transaction must pass; a failure panics with its cause.
 fn record_charge(state: &V03State, tx: &PublicTransaction) {
     let charged =
         ValidatedStateDiff::from_public_transaction_with_cycle_budget(tx, state, 1, 0, UNLIMITED)
             .map(|(_, charge)| charge.cycles)
-            .ok();
-    CHARGED.with(|cell| cell.set(charged));
+            .unwrap_or_else(|error| panic!("the metered dry run fails: {error:?}"));
+    CHARGED.with(|cell| cell.set(Some(charged)));
 }
 
 /// Runs `transaction` and returns what it was charged; it must succeed.
