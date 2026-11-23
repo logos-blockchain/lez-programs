@@ -176,6 +176,15 @@ mod tests {
         assert_eq!(after.fee.last_accrued_at, 5_000);
         assert_eq!(after.pending, None);
         assert!(response.sync_messages.is_empty());
+        assert_eq!(
+            response.events,
+            vec![StabilityFeeAccrued {
+                accumulated_rate: FIXED_POINT_ONE,
+                accrued_fees: 0,
+                now: 5_000,
+            }
+            .to_program_event()],
+        );
     }
 
     #[test]
@@ -186,6 +195,12 @@ mod tests {
         parked.fee.total_normalized_debt = 100;
         parked.pending = Some(Pending::AccrueStabilityFee);
         let (response, after) = reply_to_poke(parked, 1_001);
+        assert_eq!(
+            after.fee.accumulated_rate_at_last_accrual,
+            2 * FIXED_POINT_ONE
+        );
+        assert_eq!(after.fee.last_accrued_at, 1_001);
+        assert_eq!(after.pending, None);
         assert_eq!(
             response.sync_messages,
             vec![SyncMessage::new(
@@ -209,7 +224,8 @@ mod tests {
         );
     }
 
-    // The pure fee-math tests below are carried over from v0.2.5 unchanged.
+    // Pure fee-math tests on `accrue_fees` (new in the actor port; the v0.2.5 tests were
+    // account-based).
 
     fn accumulator(rate: u128, last_accrued_at: u64) -> StabilityFeeAccumulator {
         StabilityFeeAccumulator {
