@@ -10,7 +10,7 @@ Five programs are implemented:
 - **token** — Fungible and non-fungible token program (create, mint, burn, transfer, print NFTs)
 - **amm** — Automated market maker (constant product AMM with add/remove liquidity and swaps)
 - **ata** — Associated Token Account program (derives and initializes deterministic token accounts for a given owner and token definition)
-- **stablecoin** — Collateral-backed position program (open positions, repay debt, withdraw collateral)
+- **stablecoin** — Collateral-backed position program (RAI-style CDPs: open positions, deposit/withdraw collateral, generate/repay debt, fee accrual, PI-controlled redemption price); spec in `docs/stablecoin/README.md`
 - **twap_oracle** — TWAP oracle (provides canonical on-chain price accounts consumed by other programs)
 
 ## Build Commands
@@ -146,18 +146,19 @@ programs/
     src/                # Program logic: create, burn, transfer
     methods/            # Host-side zkVM method embedding
     methods/guest/      # Guest binary (separate workspace)
-  stablecoin/
-    core/src/lib.rs     # Data types & Instruction enum
-    src/                # Program logic: open_position, repay_debt, withdraw_collateral
+  stablecoin/           # Ported to the actor model
+    core/src/           # StablecoinState (Engine, Position), Message/Internal, PDAs, events, fixed-point math
+    src/                # Router and one module per operation; the engine reads the clock and the oracle
+    examples/           # stablecoin_pdas: prints the engine, definition, surplus holding and a vault
     methods/            # Host-side zkVM method embedding
-    methods/guest/      # Guest binary (separate workspace)
+    methods/guest/      # Guest binary on actor_entrypoint!(raw ..) (separate workspace)
   twap_oracle/          # Ported to the actor model
     core/src/           # OracleState, Message/Internal, ReadPrice/PriceReply, addresses, events, price math
     src/                # Router and one module per operation; the current-tick actor reads the clock
     methods/            # Host-side zkVM method embedding
     methods/guest/      # Guest binary on actor_entrypoint!(raw ..) (separate workspace)
   integration_tests/
-    tests/              # Through the real guests on a V03State (token, nft, twap_oracle)
+    tests/              # Through the real guests on a V03State (token, nft, twap_oracle, stablecoin)
     methods/guest/      # Test-only guests: a price source standing in for the AMM
 apps/
   amm/                  # QML-based UI for the AMM program (Nix flake)
@@ -182,6 +183,8 @@ Each program follows a layered pattern:
 **Program-Derived Addresses (PDAs)**: The AMM uses SHA-256-based PDAs (`compute_pool_pda`, `compute_vault_pda`, `compute_liquidity_token_pda` in `amm_core`) to derive deterministic account addresses for pools, vaults, and liquidity tokens.
 
 **Chained calls**: The AMM's swap and liquidity operations compose with the token program via `ChainedCall` — the AMM instructs the token program to execute transfers as part of the same atomic operation.
+
+**Stablecoin conversations**: the stablecoin is ported to the actor model. One engine actor on a PDA holds the parameters, the fee accumulator and the redemption price; a position is the stablecoin's state on its owner's own account (one per account). Owner and admin messages must be signed root messages (`is_authorized && from.is_none()`); admin messages go to the signer's own account (its seat), which forwards them to the engine. The engine parks the operation in `Engine::pending` while it waits for the clock's or the oracle's reply. `docs/stablecoin/README.md` is the spec.
 
 **`Instruction` variants and guest entries must land together**: `#[lez_program]` generates an exhaustive `match` over the program's `Instruction` enum, so every variant needs a matching `#[instruction]` guest function. Adding a variant to a `*_core` crate without its guest entry fails the guest build with `error[E0004]: non-exhaustive patterns`. Split work so the variant, host function, and guest entry ship in the same PR.
 

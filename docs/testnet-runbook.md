@@ -704,6 +704,11 @@ spel --idl artifacts/token-idl.json inspect <USER_HOLDING> --type TokenHolding
 
 ## 15. Stablecoin
 
+> **Not yet updated for the actor-model port.** This section describes the v0.2.5
+> deployment (`scripts/deploy-stablecoin.sh`, account-list instructions, three global
+> accounts). The stablecoin program now runs on LEZ's actor model; see
+> [`docs/stablecoin/README.md`](stablecoin/README.md) for its messages, actors and signers.
+
 **One command:** `scripts/deploy-stablecoin.sh` does all of the steps below (options in its
 header):
 
