@@ -2171,6 +2171,8 @@ dependencies = [
  "nft-methods",
  "nft_core",
  "programs",
+ "stablecoin-methods",
+ "stablecoin_core",
  "token-methods",
  "token_core",
  "twap-oracle-methods",
