@@ -91,6 +91,9 @@ pub(super) fn create_oracle_price_account_plan(
         &request.config,
     )?;
     let window = request.window_duration_ms;
+    if window < u64::from(twap_oracle_core::OBSERVATIONS_CAPACITY) {
+        return Err(String::from("invalid_window"));
+    }
     let oracle_price_account =
         compute_oracle_price_account_pda(pair.twap_oracle_program, pair.pool, window);
 

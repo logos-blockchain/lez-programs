@@ -32,7 +32,7 @@ jobs:
         run: cargo install --locked taplo-cli
 
       - name: Check TOML files are formatted
-        run: taplo fmt --check .
+        run: git ls-files -z '*.toml' | xargs -0 taplo fmt --check
 
   lint:
     name: Lint

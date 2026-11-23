@@ -115,6 +115,30 @@ TestCase {
         compare(form.amountB, "")
     }
 
+    function test_poolErrorsKeepPositionUnavailable_data() {
+        return [
+            { tag: "read", code: "pool_read_failed", submission: false,
+              message: "Could not read the pool account. Check the connection and retry." },
+            { tag: "occupied", code: "pool_address_occupied", submission: false,
+              message: "Another account occupies the pool address." },
+            { tag: "configuration", code: "bad_config", submission: false,
+              message: "The AMM app configuration is invalid." },
+            { tag: "exists", code: "already_exists", submission: true,
+              message: "A pool for this pair already exists. Refresh and retry." }
+        ]
+    }
+
+    function test_poolErrorsKeepPositionUnavailable(data) {
+        var form = createForm()
+        var state = flowState({ status: "error", code: data.code })
+        if (data.submission)
+            state.errorCode = data.code
+        form.flowState = state
+        compare(form.formErrorText(), data.message)
+        compare(form.missingPool, false)
+        compare(form.canConfirm, false)
+    }
+
     function test_displayOrderMapsToCanonicalRequestAfterSwap() {
         var form = createForm()
         var built = form.buildQuoteRequest()

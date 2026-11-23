@@ -87,7 +87,9 @@ class AmmUiBackend
     // defAHex, defBHex, vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB,
     // liquiditySupply, feeBps }` (A/B oriented to the requested order); otherwise
     // `{ status:"error", error:<code> }` — `no_pool` for the ordinary "no pool /
-    // no liquidity yet" state, else no_program_bin / amm_not_initialized / bad_config.
+    // no liquidity yet" state, else no_program_bin / amm_not_initialized / bad_config /
+    // pool_read_failed / pool_address_occupied. Every pool-reading call below reports a
+    // failed pool read and an occupied pool address with those same two codes.
     SLOT(QVariantMap resolvePoolAccount(QString defAHex, QString defBHex))
     // Decodes the singleton AMM config account: `{ status:"ok", error:"", configId,
     // ammProgramId, authority, tokenProgramId, twapOracleProgramId }` (ids base58), or
@@ -104,7 +106,8 @@ class AmmUiBackend
     // (chained into the oracle, seeded from validated pool state — nothing signs). Return
     // { status:"ok", error:"", transactionId:<hex> } or { status:"error", error:<code> }
     // (wallet_unavailable, config_missing, invalid_token_id, invalid_window, same_token_pair,
-    // config_unavailable, already_exists, wallet_submission_failed, backend_error).
+    // config_unavailable, no_pool, pool_read_failed, pool_address_occupied,
+    // account_read_failed, already_exists, wallet_submission_failed, backend_error).
     SLOT(QVariantMap createPriceObservations(QVariantMap request))
     SLOT(QVariantMap createOraclePriceAccount(QVariantMap request))
     // Submits a real on-chain SwapExactInput transaction against the pool for
@@ -198,6 +201,7 @@ class AmmUiBackend
     // { status:"ok", error:"", transactionId:<hex tx hash> } on success, else
     // { status:"error", error:<code> } (wallet_unavailable, config_missing,
     // invalid_account_id, bad_amount, bad_fee_bps_amount, invalid_fee_tier,
+    // already_exists, pool_read_failed, pool_address_occupied,
     // wallet_submission_failed, backend_error).
     SLOT(QVariantMap createPool(QVariantMap request))
     // Submits an AddLiquidity transaction into the request's existing pool. `request`

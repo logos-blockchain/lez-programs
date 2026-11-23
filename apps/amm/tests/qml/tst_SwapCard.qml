@@ -227,5 +227,25 @@ Item {
             compare(card.swapInProgress, false)
             compare(card.swapError, "Wallet or network changed. Review the updated swap and confirm again.")
         }
+
+        function test_poolFailureDisablesSwap_data() {
+            return [
+                { tag: "read", code: "pool_read_failed",
+                  message: "Could not read the pool account. Check the connection and retry." },
+                { tag: "occupied", code: "pool_address_occupied",
+                  message: "Another account occupies the pool address." },
+                { tag: "configuration", code: "bad_config",
+                  message: "The AMM app configuration is invalid." }
+            ]
+        }
+
+        function test_poolFailureDisablesSwap(data) {
+            var card = createCard(false)
+            card.doResolvePool()
+            runtime.latest("pool").success({ status: "error", error: data.code })
+            compare(card.poolStatusText, data.message)
+            compare(card.submitButtonText, "Pool unavailable")
+            compare(card.canSubmit, false)
+        }
     }
 }

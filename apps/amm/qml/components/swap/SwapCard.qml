@@ -426,6 +426,7 @@ Rectangle {
         if (root.swapInProgress) return qsTr("Submitting…")
         if (!hasAmount) return qsTr("Enter an amount")
         if (root.poolLoading || !root.poolResolved) return qsTr("Resolving pool…")
+        if (root.poolError.length > 0) return qsTr("Pool unavailable")
         if (!root.poolExists) return qsTr("No pool / no liquidity")
         if (root.quoteLoading) return qsTr("Quoting…")
         if (outputExceedsLiquidity) return qsTr("Insufficient liquidity")
@@ -441,6 +442,12 @@ Rectangle {
         if (!root.backend) return qsTr("Wallet backend not ready.")
         if (!tokensSelected) return ""
         if (root.poolLoading) return qsTr("Looking up pool…")
+        if (root.poolError === "pool_read_failed")
+            return qsTr("Could not read the pool account. Check the connection and retry.")
+        if (root.poolError === "pool_address_occupied")
+            return qsTr("Another account occupies the pool address.")
+        if (root.poolError === "bad_config")
+            return qsTr("The AMM app configuration is invalid.")
         if (root.poolError.length > 0) return root.poolError
         if (root.poolResolved && !root.poolExists) return qsTr("No pool / no liquidity for this pair.")
         if (root.outputExceedsLiquidity) return qsTr("Not enough liquidity for that output amount.")

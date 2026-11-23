@@ -61,6 +61,11 @@
     # fails under the nix cc-wrapper on Apple Silicon.)
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
 
+    # lez_core's own LEZ pin (v0.2.5-rc2) pre-fetches risc0's recursion zkr from
+    # the risc0-artifacts S3 bucket, which RISC Zero has since made private, so a
+    # from-source wallet-ffi build fails with a 403.
+    lez_core.inputs.logos-execution-zone.url = "github:logos-blockchain/logos-execution-zone?rev=6477ce33c311f82b962daae1583fb647b9894b39";
+
   };
 
   outputs =
@@ -302,7 +307,9 @@
         };
         tests = {
           dir = ./modules/amm/tests;
-          mockCLibs = [ "amm_ffi" ];
+          # The mock suite supplies its own stubs; the second suite links the real FFI.
+          mockCLibs = [ ];
+          extraCmakeFlags = [ "-DAMM_REAL_FFI_TESTS=ON" ];
         };
       };
       ammModulePkgs = ammModuleOutputs.packages or { };

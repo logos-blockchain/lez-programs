@@ -17,6 +17,8 @@
     # See the root flake.nix for why not the newer adapt-ffi-program-kind branch.
     # See the root flake.nix for the full rationale.
     lez_core.url = "github:logos-blockchain/logos-execution-zone-module?rev=825d2a41262b9882aa0f9ca837cb03635f7980c2";
+    # LEZ v0.2.5-rc2 plus the risc0 zkr download-URL fix; see the root flake.nix.
+    lez_core.inputs.logos-execution-zone.url = "github:logos-blockchain/logos-execution-zone?rev=6477ce33c311f82b962daae1583fb647b9894b39";
 
     # The AMM core module, resolved as the metadata.json `amm_module` dependency
     # (the builder reads its .lidl to generate modules().amm_module). Built from
