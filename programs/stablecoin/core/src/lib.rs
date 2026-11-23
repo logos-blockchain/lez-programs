@@ -116,7 +116,24 @@ impl StablecoinState {
 )]
 pub enum Message {
     // At the program account, signed by it, root only.
-    Initialize(InitializeArgs),
+    Initialize {
+        initial_admin_account_id: AccountId,
+        freeze_authority_account_id: AccountId,
+        token_program_id: AccountId,
+        collateral_definition_id: AccountId,
+        market_price_oracle_id: AccountId,
+        market_price_oracle_program_id: AccountId,
+        initial_stability_fee_per_millisecond: u128,
+        initial_controller_proportional_gain: i128,
+        initial_controller_integral_gain: i128,
+        initial_minimum_collateralization_ratio: u128,
+        minimum_milliseconds_between_rate_updates: u64,
+        maximum_oracle_price_age_milliseconds: u64,
+        initial_redemption_price: u128,
+        stablecoin_name: String,
+        minimum_debt_amount: u128,
+        debt_ceiling: u128,
+    },
 
     // At the engine, anyone, no signature.
     AccrueStabilityFee,
@@ -182,7 +199,7 @@ pub enum Message {
     },
 }
 
-/// Everything `Initialize` sets up.
+/// Everything `Initialize` sets up: the fields of `Message::Initialize`.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct InitializeArgs {
     pub initial_admin_account_id: AccountId,
@@ -201,6 +218,47 @@ pub struct InitializeArgs {
     pub stablecoin_name: String,
     pub minimum_debt_amount: u128,
     pub debt_ceiling: u128,
+}
+
+impl From<InitializeArgs> for Message {
+    fn from(args: InitializeArgs) -> Self {
+        let InitializeArgs {
+            initial_admin_account_id,
+            freeze_authority_account_id,
+            token_program_id,
+            collateral_definition_id,
+            market_price_oracle_id,
+            market_price_oracle_program_id,
+            initial_stability_fee_per_millisecond,
+            initial_controller_proportional_gain,
+            initial_controller_integral_gain,
+            initial_minimum_collateralization_ratio,
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+            initial_redemption_price,
+            stablecoin_name,
+            minimum_debt_amount,
+            debt_ceiling,
+        } = args;
+        Self::Initialize {
+            initial_admin_account_id,
+            freeze_authority_account_id,
+            token_program_id,
+            collateral_definition_id,
+            market_price_oracle_id,
+            market_price_oracle_program_id,
+            initial_stability_fee_per_millisecond,
+            initial_controller_proportional_gain,
+            initial_controller_integral_gain,
+            initial_minimum_collateralization_ratio,
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+            initial_redemption_price,
+            stablecoin_name,
+            minimum_debt_amount,
+            debt_ceiling,
+        }
+    }
 }
 
 /// The eleven seat-forwarded actions, with the fields of the `Message` variants they come
@@ -370,6 +428,33 @@ mod tests {
 
     fn seed_hex(seed: &PdaSeed) -> String {
         seed.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn initialize_message_encodes_like_its_args_after_the_tag() {
+        let id = |n: u8| AccountId::new([n; 32]);
+        let args = InitializeArgs {
+            initial_admin_account_id: id(1),
+            freeze_authority_account_id: id(2),
+            token_program_id: id(3),
+            collateral_definition_id: id(4),
+            market_price_oracle_id: id(5),
+            market_price_oracle_program_id: id(6),
+            initial_stability_fee_per_millisecond: 7,
+            initial_controller_proportional_gain: -8,
+            initial_controller_integral_gain: 9,
+            initial_minimum_collateralization_ratio: 10,
+            minimum_milliseconds_between_rate_updates: 11,
+            maximum_oracle_price_age_milliseconds: 12,
+            initial_redemption_price: 13,
+            stablecoin_name: "Stable".to_owned(),
+            minimum_debt_amount: 14,
+            debt_ceiling: 15,
+        };
+        let mut expected = vec![0_u8];
+        expected.extend(borsh::to_vec(&args).expect("args encode"));
+        let message = Message::from(args);
+        assert_eq!(borsh::to_vec(&message).expect("message encodes"), expected);
     }
 
     #[test]

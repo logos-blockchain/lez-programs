@@ -7,10 +7,68 @@
       "tag": 0,
       "fields": [
         {
-          "name": "0",
-          "type": {
-            "defined": "InitializeArgs"
-          }
+          "name": "initial_admin_account_id",
+          "type": "account_id"
+        },
+        {
+          "name": "freeze_authority_account_id",
+          "type": "account_id"
+        },
+        {
+          "name": "token_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "collateral_definition_id",
+          "type": "account_id"
+        },
+        {
+          "name": "market_price_oracle_id",
+          "type": "account_id"
+        },
+        {
+          "name": "market_price_oracle_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "initial_stability_fee_per_millisecond",
+          "type": "u128"
+        },
+        {
+          "name": "initial_controller_proportional_gain",
+          "type": "i128"
+        },
+        {
+          "name": "initial_controller_integral_gain",
+          "type": "i128"
+        },
+        {
+          "name": "initial_minimum_collateralization_ratio",
+          "type": "u128"
+        },
+        {
+          "name": "minimum_milliseconds_between_rate_updates",
+          "type": "u64"
+        },
+        {
+          "name": "maximum_oracle_price_age_milliseconds",
+          "type": "u64"
+        },
+        {
+          "name": "initial_redemption_price",
+          "type": "u128"
+        },
+        {
+          "name": "stablecoin_name",
+          "type": "string"
+        },
+        {
+          "name": "minimum_debt_amount",
+          "type": "u128"
+        },
+        {
+          "name": "debt_ceiling",
+          "type": "u128"
         }
       ]
     },
@@ -410,76 +468,6 @@
         {
           "name": "is_frozen",
           "type": "bool"
-        }
-      ]
-    },
-    {
-      "name": "InitializeArgs",
-      "kind": "struct",
-      "fields": [
-        {
-          "name": "initial_admin_account_id",
-          "type": "account_id"
-        },
-        {
-          "name": "freeze_authority_account_id",
-          "type": "account_id"
-        },
-        {
-          "name": "token_program_id",
-          "type": "account_id"
-        },
-        {
-          "name": "collateral_definition_id",
-          "type": "account_id"
-        },
-        {
-          "name": "market_price_oracle_id",
-          "type": "account_id"
-        },
-        {
-          "name": "market_price_oracle_program_id",
-          "type": "account_id"
-        },
-        {
-          "name": "initial_stability_fee_per_millisecond",
-          "type": "u128"
-        },
-        {
-          "name": "initial_controller_proportional_gain",
-          "type": "i128"
-        },
-        {
-          "name": "initial_controller_integral_gain",
-          "type": "i128"
-        },
-        {
-          "name": "initial_minimum_collateralization_ratio",
-          "type": "u128"
-        },
-        {
-          "name": "minimum_milliseconds_between_rate_updates",
-          "type": "u64"
-        },
-        {
-          "name": "maximum_oracle_price_age_milliseconds",
-          "type": "u64"
-        },
-        {
-          "name": "initial_redemption_price",
-          "type": "u128"
-        },
-        {
-          "name": "stablecoin_name",
-          "type": "string"
-        },
-        {
-          "name": "minimum_debt_amount",
-          "type": "u128"
-        },
-        {
-          "name": "debt_ceiling",
-          "type": "u128"
         }
       ]
     },

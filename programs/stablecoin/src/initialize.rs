@@ -238,13 +238,7 @@ mod tests {
     }
 
     fn initialize_with(args: InitializeArgs) -> Response {
-        run(
-            program_account(),
-            None,
-            true,
-            None,
-            &Message::Initialize(args),
-        )
+        run(program_account(), None, true, None, &Message::from(args))
     }
 
     fn engine_with(args: InitializeArgs) -> Response {
@@ -365,25 +359,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "only the program's own account may initialize it")]
     fn initialize_at_another_account_panics() {
-        let _ = run(
-            stablecoin(OWNER),
-            None,
-            true,
-            None,
-            &Message::Initialize(args()),
-        );
+        let _ = run(stablecoin(OWNER), None, true, None, &Message::from(args()));
     }
 
     #[test]
     #[should_panic(expected = "only the program's own account may initialize it")]
     fn an_unsigned_initialize_panics() {
-        let _ = run(
-            program_account(),
-            None,
-            false,
-            None,
-            &Message::Initialize(args()),
-        );
+        let _ = run(program_account(), None, false, None, &Message::from(args()));
     }
 
     #[test]
@@ -394,7 +376,7 @@ mod tests {
             Some(outsider(OWNER)),
             true,
             None,
-            &Message::Initialize(args()),
+            &Message::from(args()),
         );
     }
 

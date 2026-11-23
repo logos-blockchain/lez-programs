@@ -123,7 +123,7 @@ fn initialize_signed_by_anyone_else_is_refused() {
     let other = key(9);
     let root = stablecoin(&world, account(&other));
     let past_root = initialize_actors(&world);
-    let message = Message::Initialize(initialize_args(&world));
+    let message = Message::from(initialize_args(&world));
 
     let result = send(&mut world, root, &past_root, &[&other], &message);
 

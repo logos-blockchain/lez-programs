@@ -19,7 +19,8 @@ use lee_core::{
 };
 pub use stablecoin_core as core;
 use stablecoin_core::{
-    compute_engine_pda, AdminAction, Engine, Internal, Message, Position, StablecoinState,
+    compute_engine_pda, AdminAction, Engine, InitializeArgs, Internal, Message, Position,
+    StablecoinState,
 };
 
 mod accrue_stability_fee;
@@ -148,7 +149,44 @@ fn handle_public(input: &ReceiveInput) -> Response {
     let message: Message =
         borsh::from_slice(&input.message).expect("stablecoin message must decode");
     match message {
-        Message::Initialize(args) => initialize::initialize(input, args),
+        Message::Initialize {
+            initial_admin_account_id,
+            freeze_authority_account_id,
+            token_program_id,
+            collateral_definition_id,
+            market_price_oracle_id,
+            market_price_oracle_program_id,
+            initial_stability_fee_per_millisecond,
+            initial_controller_proportional_gain,
+            initial_controller_integral_gain,
+            initial_minimum_collateralization_ratio,
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+            initial_redemption_price,
+            stablecoin_name,
+            minimum_debt_amount,
+            debt_ceiling,
+        } => initialize::initialize(
+            input,
+            InitializeArgs {
+                initial_admin_account_id,
+                freeze_authority_account_id,
+                token_program_id,
+                collateral_definition_id,
+                market_price_oracle_id,
+                market_price_oracle_program_id,
+                initial_stability_fee_per_millisecond,
+                initial_controller_proportional_gain,
+                initial_controller_integral_gain,
+                initial_minimum_collateralization_ratio,
+                minimum_milliseconds_between_rate_updates,
+                maximum_oracle_price_age_milliseconds,
+                initial_redemption_price,
+                stablecoin_name,
+                minimum_debt_amount,
+                debt_ceiling,
+            },
+        ),
         Message::AccrueStabilityFee => accrue_stability_fee::accrue_stability_fee(input),
         Message::UpdateRedemptionRate => update_redemption_rate::update_redemption_rate(input),
         Message::RefreshGlobals { consult_oracle } => {

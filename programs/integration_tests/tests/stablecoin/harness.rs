@@ -279,7 +279,7 @@ pub fn initialize_actors(world: &World) -> Vec<Actor> {
 pub fn try_initialize(world: &mut World) -> Result<Vec<TransactionEvent>, LeeError> {
     let root = stablecoin(world, world.stablecoin);
     let past_root = initialize_actors(world);
-    let message = Message::Initialize(initialize_args(world));
+    let message = Message::from(initialize_args(world));
     let program_key = world.program_key.clone();
     send(world, root, &past_root, &[&program_key], &message)
 }
