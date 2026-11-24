@@ -8,7 +8,7 @@ const { test, run } = await import(resolve(frameworkRoot, "test-framework/framew
 
 test("amm ui: renders primary navigation", async (app) => {
   await app.waitFor(
-    async () => { await app.expectTexts(["Trade", "Liquidity", "Pools"]); },
+    async () => { await app.expectTexts(["Trade", "Explore", "Pool"]); },
     { timeout: 20000, interval: 500, description: "primary navigation" },
   );
 });

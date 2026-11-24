@@ -311,6 +311,7 @@
         // (if attrs ? lgx-portable then { amm-ui-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { amm-ui-install = attrs.install; } else { })
         // (if attrs ? install-portable then { amm-ui-install-portable = attrs.install-portable; } else { })
+        // (if attrs ? integration-test then { amm-ui-integration-test = attrs.integration-test; } else { })
       ) appPkgs;
 
       # AMM core module (modules/amm): the AMM business logic as a headless

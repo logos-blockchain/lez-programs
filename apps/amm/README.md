@@ -425,7 +425,7 @@ PNGs next to the test (`apps/amm/tests/e2e/swap-*.png`, git-ignored) for inspect
 **Headless CI variant** (no window, launches the app itself, pass/fail only):
 
 ```bash
-nix build .#integration-test -L
+nix build .#amm-ui-integration-test -L
 ```
 
 It runs the hermetic UI smoke test with `QT_QPA_PLATFORM=offscreen`. The

@@ -114,7 +114,7 @@ TEST_SEQ_POLL_TIMEOUT="${TEST_SEQ_POLL_TIMEOUT:-3s}"
 # Token D is created but LEFT OUT of the token config — the custom-token UI test
 # (apps/amm/tests/e2e/custom-token.mjs) adds it by id.
 # holder2 / holder2-a-holding are the "Token A Holder 2" pair for the faucet-swap UI
-# test (apps/amm/tests/faucet-swap.mjs): holder2 is the faucet recipient/signer and
+# test (apps/amm/tests/e2e/faucet-swap.mjs): holder2 is the faucet recipient/signer and
 # rate-limit subject; holder2-a-holding is its (initially empty) token A holding that
 # the faucet mints into. They deliberately start with NO token A so the test can prove
 # the account only appears in the swap picker after a faucet mint + UI refresh. The
@@ -236,7 +236,7 @@ REGISTRY_CONFIG_OUT="apps/amm/tests/testnet/amm-registry.json"
 CUSTOM_TOKEN_CONFIG_OUT="apps/amm/tests/testnet/custom-tokens.json"
 
 # Faucet manifest for the faucet-swap UI test (git-ignored, tests only). Everything
-# apps/amm/tests/faucet-swap.mjs needs to (a) submit a FaucetMint via spel and (b)
+# apps/amm/tests/e2e/faucet-swap.mjs needs to (a) submit a FaucetMint via spel and (b)
 # drive the swap from the freshly-funded holder2 account: bin/IDL paths, the six
 # FaucetMint account ids (recipient/allowance/holding/definition/authority/clock),
 # the token A definition id, and the fee payer every spel submission declares
@@ -947,7 +947,7 @@ kv "wrote" "$CUSTOM_TOKEN_CONFIG_OUT (empty)"
 # 14. Write the faucet manifest for the faucet-swap UI test
 ###############################################################################
 sec "Write faucet manifest -> $FAUCET_MANIFEST_OUT"
-# Everything apps/amm/tests/faucet-swap.mjs needs. The six faucet accounts are the
+# Everything apps/amm/tests/e2e/faucet-swap.mjs needs. The six faucet accounts are the
 # exact, ordered FaucetMint inputs (recipient, mint_allowance, user_holding,
 # token_definition, mint_authority, clock). tokenProgramId/tokenIdl let the test first
 # `initialize_account` holder2's token A holding (the faucet only mints into an
@@ -1063,7 +1063,7 @@ log "Then in another terminal: ${DIM}node apps/amm/tests/e2e/swap.mjs${RST}  (sw
 log "                   or:     ${DIM}node apps/amm/tests/e2e/create-pool.mjs${RST}  (create A/C pool)"
 log "                   or:     ${DIM}node apps/amm/tests/e2e/add-liquidity.mjs${RST}  (add A/B liquidity)"
 log "                   or:     ${DIM}node apps/amm/tests/e2e/custom-token.mjs${RST}  (add token D by id)"
-log "                   or:     ${DIM}node apps/amm/tests/faucet-swap.mjs${RST}  (faucet-mint TKA to holder2, then swap)"
+log "                   or:     ${DIM}node apps/amm/tests/e2e/faucet-swap.mjs${RST}  (faucet-mint TKA to holder2, then swap)"
 log ""
 log "The faucet-swap test reads ${DIM}$FAUCET_MANIFEST_OUT${RST} and needs ${DIM}spel${RST} +"
 log "${DIM}LEE_WALLET_HOME_DIR=$TEST_WALLET_HOME${RST} in its environment (same isolated wallet)."

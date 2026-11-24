@@ -21,7 +21,7 @@ inspector (framework from
   verifies the app resolves it, selects it, and **persists** it to the custom-token
   store — the "add an unlisted token by id" path. No pool / submit involved.
   Reads D's id from `testnet/custom-token-manifest.json`, written by the setup.
-- `faucet-swap.mjs` funds a **brand-new** account ("Token A Holder 2") that starts
+- `e2e/faucet-swap.mjs` funds a **brand-new** account ("Token A Holder 2") that starts
   with no token A: it `initialize_account`s the account's token A holding, then
   submits a **FaucetMint** through the token-mint-authority program (both via `spel`,
   out of band from the UI) to mint token A into it — the faucet only mints into an
@@ -80,13 +80,13 @@ node apps/amm/tests/e2e/custom-token.mjs  # add token D (unlisted) by id
 
 # faucet-swap needs spel on PATH + the isolated wallet home (so it can sign the mint)
 LEE_WALLET_HOME_DIR=$(pwd)/apps/amm/tests/testnet/.wallet \
-  node apps/amm/tests/faucet-swap.mjs # faucet-mint TKA to holder2, refresh, then swap
+  node apps/amm/tests/e2e/faucet-swap.mjs # faucet-mint TKA to holder2, refresh, then swap
 ```
 
 Hermetic headless smoke test (no wallet or sequencer required):
 
 ```bash
-nix build .#integration-test -L
+nix build .#amm-ui-integration-test -L
 ```
 
 ## Notes
@@ -116,7 +116,7 @@ nix build .#integration-test -L
 - `e2e/add-liquidity.mjs` — the end-to-end add-liquidity UI test (adds to the A/B pool).
 - `e2e/remove-liquidity.mjs` — the end-to-end remove-liquidity UI test (removes 50% from the A/B pool).
 - `e2e/custom-token.mjs` — the custom-token persistence test.
-- `faucet-swap.mjs` — faucet-mint token A to a fresh account, refresh the UI, then swap A→B.
+- `e2e/faucet-swap.mjs` — faucet-mint token A to a fresh account, refresh the UI, then swap A→B.
 - `testnet/setup-amm-testnet.sh` — isolated testnet + wallet bootstrap (TKA/TKB/TKC,
   seeds the A/B pool only; also deploys the faucet, sets every token's mint authority
   to the faucet PDA, and writes `testnet/faucet.json` for faucet-swap.mjs).
