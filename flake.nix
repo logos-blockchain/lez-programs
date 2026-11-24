@@ -98,6 +98,7 @@
         mkHostFfi =
           {
             package,
+            library ? package,
             sourceDir,
             header,
           }:
@@ -125,8 +126,8 @@
                 + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
                   # Use an absolute store install-name because the module
                   # builder does not stage external dylibs beside the plugin.
-                  if [ -f $out/lib/lib${package}.dylib ]; then
-                    install_name_tool -id "$out/lib/lib${package}.dylib" $out/lib/lib${package}.dylib
+                  if [ -f $out/lib/lib${library}.dylib ]; then
+                    install_name_tool -id "$out/lib/lib${library}.dylib" $out/lib/lib${library}.dylib
                   fi
                 '';
             }
@@ -155,30 +156,13 @@
           sourceDir = "modules/stablecoin/ffi";
           header = "stablecoin_ffi.h";
         };
-        walletDecoderArgs = {
-          inherit src;
-          strictDeps = true;
-          pname = "wallet-idl-decoder";
-          version = "0.1.0";
-          cargoExtraArgs = "-p wallet-idl-decoder";
-          doCheck = false;
+
+        walletDecoder = mkHostFfi {
+          package = "wallet-idl-decoder";
+          library = "wallet_idl_decoder";
+          sourceDir = "tools/wallet-idl-decoder";
+          header = "wallet_idl_decoder.h";
         };
-        walletDecoder = craneLib.buildPackage (
-          walletDecoderArgs
-          // {
-            cargoArtifacts = craneLib.buildDepsOnly walletDecoderArgs;
-            postInstall =
-              ''
-                mkdir -p $out/include
-                cp tools/wallet-idl-decoder/include/wallet_idl_decoder.h $out/include/
-              ''
-              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                if [ -f $out/lib/libwallet_idl_decoder.dylib ]; then
-                  install_name_tool -id "$out/lib/libwallet_idl_decoder.dylib" $out/lib/libwallet_idl_decoder.dylib
-                fi
-              '';
-          }
-        );
       in
       {
         packages.default = ammFfi;
@@ -205,8 +189,6 @@
         # direct dep too, so both the UI and amm_module resolve the one shared
         # wallet instance.
         flakeInputs = inputs // { amm_module = ammModuleOutputs; };
-        # The UI links no external lib of its own — the AMM brain (amm_ffi) is
-        # linked by amm_module, which the UI reaches via modules().amm_module.
         externalLibInputs = {
           wallet_idl_decoder = {
             input = self;
