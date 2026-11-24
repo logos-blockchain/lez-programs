@@ -1880,7 +1880,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "spel-attrs"
 version = "0.7.0"
-source = "git+https://github.com/logos-co/spel.git?rev=d7444f84cabee3371aca3bdee8ebc4c2fc45ebde#d7444f84cabee3371aca3bdee8ebc4c2fc45ebde"
+source = "git+https://github.com/logos-co/spel.git?rev=aa4f97175670dc791c82e5fc6163608ce4856ffb#aa4f97175670dc791c82e5fc6163608ce4856ffb"
 
 [[package]]
 name = "spel-framework"

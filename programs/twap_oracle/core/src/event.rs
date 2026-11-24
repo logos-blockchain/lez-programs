@@ -7,6 +7,7 @@ use risc0_zkvm::sha::{Impl, Sha256 as _};
 
 use crate::PriceSource;
 
+#[spel_attrs::event]
 pub trait OracleEvent: BorshSerialize {
     const NAME: &'static str;
 

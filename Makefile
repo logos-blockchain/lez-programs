@@ -36,15 +36,15 @@ fmt:
 	cargo +nightly fmt --all
 
 # IDLs of the programs ported to the actor model, generated from their core crates, which mark
-# their message enum and state types. The others keep their v1 IDLs in artifacts/ until their
-# ports. `make idl PROGRAM=<name>` generates only that one.
+# their message enum, state types and event trait. The others keep their v1 IDLs in artifacts/
+# until their ports. `make idl PROGRAM=<name>` generates only that one.
 IDL_PROGRAMS := token nft twap_oracle
 
 idl:
 	@for program in $(IDL_PROGRAMS); do \
 		[ -z "$(PROGRAM)" ] || [ "$$program" = "$(PROGRAM)" ] || continue; \
-		cargo run -q -p idl-gen -- programs/$$program/core --events event \
-			> "artifacts/$$program-idl.json.tmp" || exit 1; \
+		cargo run -q -p idl-gen -- programs/$$program/core > "artifacts/$$program-idl.json.tmp" \
+			|| exit 1; \
 		mv "artifacts/$$program-idl.json.tmp" "artifacts/$$program-idl.json"; \
 	done
 

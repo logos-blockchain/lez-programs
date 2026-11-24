@@ -7,6 +7,7 @@ use risc0_zkvm::sha::{Impl, Sha256 as _};
 
 use crate::NftValue;
 
+#[spel_attrs::event]
 pub trait NftEvent: BorshSerialize {
     const NAME: &'static str;
 

@@ -4,7 +4,8 @@
 //! Usage: idl-gen <CRATE_DIR> [--message <ENUM>] [--state <TYPE>]... [--events <MODULE>]
 //!   [--namespace <NAME>]
 //!
-//! Without --message or --state it reads the crate's `#[message]` and `#[state]` markers.
+//! Without --message, --state or --events it reads the crate's `#[message]`, `#[state]` and
+//! `#[event]` markers.
 
 use std::{path::PathBuf, process};
 
