@@ -70,3 +70,5 @@ target_include_directories(amm_swap_confirmation_test PRIVATE
 )
 target_link_libraries(amm_swap_confirmation_test PRIVATE Qt6::Core Qt6::Network Qt6::Test)
 add_test(NAME amm_swap_confirmation COMMAND amm_swap_confirmation_test)
+
+add_subdirectory(../portfolio-sync "${CMAKE_CURRENT_BINARY_DIR}/portfolio-sync")

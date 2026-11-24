@@ -470,13 +470,14 @@ QString WalletController::createAccount(bool isPublic)
         return {};
     }
     ++m_operationGeneration;
+    const bool restartRefresh = m_refreshInFlight;
+    m_refreshInFlight = false;
     if (creation.snapshot.ok()) {
-        // Account creation updates the cache but cannot complete an in-flight sync.
-        const bool wasSyncing = m_refreshInFlight;
-        m_refreshInFlight = false;
-        applySnapshot(creation.snapshot);
-        if (wasSyncing)
-            refreshSnapshot();
+        // Creation updates the account cache without completing a network sync.
+        applySnapshotData(creation.snapshot);
+        emit snapshotChanged();
+        emit stateChanged();
+        checkReachability();
     } else {
         qWarning() << "WalletController: account refresh failed"
                    << walletFailureCode(creation.snapshot.failure);
@@ -484,6 +485,8 @@ QString WalletController::createAccount(bool isPublic)
         m_state.syncError = walletFailureCode(creation.snapshot.failure);
         emit stateChanged();
     }
+    if (restartRefresh)
+        refreshSnapshot();
     return creation.accountId;
 }
 
@@ -578,7 +581,7 @@ void WalletController::selectFeePayer(const QVector<WalletAccount>& accounts)
     m_state.feePayerId = best ? best->address.toLower() : QString();
 }
 
-void WalletController::applySnapshot(const WalletSnapshot& snapshot, bool newSession)
+void WalletController::applySnapshotData(const WalletSnapshot& snapshot, bool newSession)
 {
     // Balance-only refreshes keep the session; a new one or changed accounts end it.
     QStringList identities;
@@ -603,15 +606,19 @@ void WalletController::applySnapshot(const WalletSnapshot& snapshot, bool newSes
     m_accountModel->setPrimaryAddress(primary);
     storePrimaryAccount(primary);
     updatePrimaryState(primary);
-
     m_state.lastSyncedBlock = blockValue(snapshot.lastSyncedBlock);
     m_state.currentBlockHeight = blockValue(snapshot.currentBlockHeight);
+    m_state.sequencerAddress = snapshot.sequencerAddress;
+}
+
+void WalletController::applySnapshot(const WalletSnapshot& snapshot, bool newSession)
+{
+    applySnapshotData(snapshot, newSession);
     m_state.syncProgressKnown = false;
     m_state.syncCurrentBlock = 0;
     m_state.syncTargetBlock = 0;
     m_state.syncRemainingBlocks = 0;
     m_state.initialSync = false;
-    m_state.sequencerAddress = snapshot.sequencerAddress;
     m_state.syncStatus = QStringLiteral("ready");
     m_state.syncError.clear();
     m_snapshotRetryDelayMs = SNAPSHOT_RETRY_INITIAL_MS;

@@ -768,15 +768,15 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation,
                                                 state->publicReads.at(index));
                                     }
                                     auto finish = [this, alive, generation, state, completed](int result) mutable {
-                                            if (!alive || generation != m_generation)
-                                                return;
-                                            if (result != WALLET_FFI_SUCCESS)
-                                                state->snapshot.failure = WalletFailure::SaveFailed;
-                                            if (state->snapshot.ok()) {
-                                                m_snapshot = state->snapshot;
-                                                m_snapshotReady = true;
-                                            }
-                                            (*completed)(std::move(state->snapshot));
+                                        if (!alive || generation != m_generation)
+                                            return;
+                                        if (result != WALLET_FFI_SUCCESS)
+                                            state->snapshot.failure = WalletFailure::SaveFailed;
+                                        if (state->snapshot.ok()) {
+                                            m_snapshot = state->snapshot;
+                                            m_snapshotReady = true;
+                                        }
+                                        (*completed)(std::move(state->snapshot));
                                     };
                                     if (synced)
                                         m_impl->logos->lez_core.saveAsync(std::move(finish));
@@ -793,6 +793,7 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation,
                                 for (qsizetype index = 0; index < entries.size(); ++index) {
                                     const WalletAccount account = state->snapshot.accounts.at(index);
                                     if (!account.isPublic) {
+                                        state->snapshot.accounts[index].readStatus = QStringLiteral("private");
                                         m_impl->logos->lez_core.get_balanceAsync(
                                             account.address, false,
                                             [state, finishOne, index](QString balance) {

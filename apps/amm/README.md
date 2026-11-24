@@ -213,7 +213,6 @@ verifies no registry signature and does not check those labels or token/pool
 identities against chain state. Cache storage adds no authenticity guarantee;
 display labels alone do not establish which asset an account represents.
 
-### AMM program id (without a registry)
 ### Network identity
 
 The shared wallet verifies the sequencer before it enables network-dependent
@@ -227,11 +226,9 @@ nix run .#amm-ui
 ```
 
 `devnet.json` must contain a 64-character lowercase-hex `channelId`. The
-legacy `AMM_UI_NETWORK` and `AMM_UI_DEVNET_FILE` names remain accepted. AMM
-deployment and token selection stay app-specific through `AMM_PROGRAM_BIN` and
-`TOKENS_CONFIG`.
+legacy `AMM_UI_NETWORK` and `AMM_UI_DEVNET_FILE` names remain accepted.
 
-### AMM program binary (required for swaps and liquidity)
+### AMM program id (without a registry)
 
 To execute a swap, the app must submit a transaction against the **exact AMM
 program you deployed**: its address determines every pool/vault/config PDA and

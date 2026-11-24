@@ -62,6 +62,8 @@ run() {
 # import path set above, which drops Qt Quick Controls.
 if [[ "${apps}" == *" wallet "* ]]; then
   run "wallet C++" "${build_dir}/wallet/logos_wallet_access_test"
+  run "wallet portfolio and sequencer C++" ctest --test-dir "${build_dir}/wallet" --output-on-failure \
+    -R '^logos_wallet_(portfolio_service|sequencer_.*)$'
   run "wallet QML" "${build_dir}/wallet/logos_wallet_qml_test"
   run "wallet AMM QML" "${build_dir}/wallet/logos_wallet_amm_qml_test"
 fi

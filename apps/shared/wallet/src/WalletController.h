@@ -92,6 +92,7 @@ private:
 
     void openOnStartup();
     bool beginOpen(const QString& config, const QString& storage);
+    void applySnapshotData(const WalletSnapshot& snapshot, bool newSession = false);
     void applySnapshot(const WalletSnapshot& snapshot, bool newSession = false);
     void selectFeePayer(const QVector<WalletAccount>& accounts);
     void applySyncProgress(const WalletSyncProgress& progress);

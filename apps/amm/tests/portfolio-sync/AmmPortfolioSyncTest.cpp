@@ -134,11 +134,15 @@ private slots:
 
         provider.deferAsync = true;
         backend.m_walletController->refresh();
-        QCOMPARE(backend.assetStatus, QStringLiteral("blocked"));
-        QCOMPARE(backend.assetError, QStringLiteral("loading"));
-        QVERIFY(backend.assets.isEmpty());
+        QCOMPARE(backend.assetStatus, QStringLiteral("ready"));
         const int resolved = backend.resolveTokenCalls;
         provider.snapshotResult.failure = WalletFailure::ReadFailed;
+        // The controller keeps the last good snapshot during transient failures.
+        for (int attempt = 0; attempt < 2; ++attempt) {
+            provider.finishSnapshot();
+            QCOMPARE(backend.assetStatus, QStringLiteral("ready"));
+            backend.m_walletController->refresh();
+        }
         provider.finishSnapshot();
         QCOMPARE(backend.m_walletController->state().syncStatus, QStringLiteral("error"));
         QVERIFY(backend.m_walletController->snapshot().ok());

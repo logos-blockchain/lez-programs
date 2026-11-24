@@ -560,7 +560,8 @@ void LogosWalletProviderTest::controllerCreationSupersedesPendingSnapshot()
     QVERIFY(controller.open());
     provider.deferAsync = true;
     controller.refresh();
-    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
+    QVERIFY(provider.pendingSnapshotCallback);
     const auto olderSnapshot = std::move(provider.pendingSnapshotCallback);
     provider.createAccountResult.accountId = ACCOUNT_B;
     provider.createAccountResult.snapshot.accounts = {
@@ -568,12 +569,14 @@ void LogosWalletProviderTest::controllerCreationSupersedesPendingSnapshot()
         { ACCOUNT_B, QStringLiteral("0"), true },
     };
     QCOMPARE(controller.createAccount(true), ACCOUNT_B);
+    QCOMPARE(provider.snapshotCalls, 2);
+    QVERIFY(provider.pendingSnapshotCallback);
     QCOMPARE(controller.accountModel()->count(), 2);
-    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
     olderSnapshot(provider.snapshotResult);
     QCOMPARE(controller.accountModel()->count(), 2);
     QCOMPARE(controller.snapshot().accounts.size(), 2);
-    QCOMPARE(controller.state().syncStatus, QStringLiteral("syncing"));
+    QCOMPARE(controller.state().syncStatus, QStringLiteral("ready"));
     provider.snapshotResult = provider.createAccountResult.snapshot;
     provider.finishSnapshot();
     QCOMPARE(controller.accountModel()->count(), 2);
@@ -840,6 +843,7 @@ void LogosWalletProviderTest::releasesCompletedSnapshotCallback()
     QVERIFY(provider.connect({}).ok());
     modules.lez_core.saveResult = saveResult;
     for (int attempt = 0; attempt < 3; ++attempt) {
+        modules.lez_core.currentBlockHeight = attempt + 1;
         auto retained = std::make_shared<int>(0);
         const std::weak_ptr<int> weak = retained;
         bool completed = false;
@@ -1747,7 +1751,7 @@ void LogosWalletProviderTest::controllerSeparatesSnapshotsFromCosmeticState()
     QCOMPARE(snapshotChanged.count(), 0);
 
     controller.refresh();
-    QCOMPARE(stateChanged.count(), 3);
+    QCOMPARE(stateChanged.count(), 2);
     QCOMPARE(snapshotChanged.count(), 1);
     settings.clear();
 }
