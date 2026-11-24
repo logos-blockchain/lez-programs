@@ -186,7 +186,7 @@ public:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
     /// `invalid_account_id`, `bad_amount` (malformed amount/deadline),
     /// `wallet_submission_failed`, `already_exists` (the pool already exists), `pool_read_failed`,
-    /// `pool_address_occupied`, or a plan code
+    /// or a plan code
     /// (e.g. `config_unavailable`). Unlike the
     /// swaps, a submit failure carries a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
@@ -312,16 +312,14 @@ private:
     nlohmann::json readConfig();
 
     // Reads a public account through the wallet module and returns the
-    // { id, status, account:{ program_owner, balance, nonce, data } } shape the
-    // amm_ffi ops expect (see the app-side accountReadJson). `account` is
-    // omitted when the read has no data (uninitialized/nonexistent).
-    nlohmann::json readPublicAccount(const std::string& account_id);
+    // full actor states plus the selected program's data for quote requests.
+    nlohmann::json readPublicAccount(const std::string& account_id,
+                                     const std::string& actor_program = {});
 
     // Accept pool contents only from the active AMM program.
     nlohmann::json readPoolAccount(const std::string& account_id);
 
-    // `pool_read_failed` or `pool_address_occupied` for a readPoolAccount result that
-    // must stop the caller; empty for an AMM-owned or uninitialized pool.
+    // A failed read must stop the caller; an empty AMM actor can be initialized.
     static std::string poolAccountError(const nlohmann::json& pool);
     // Resolve pool metadata and the current supply of its LP token definition.
     nlohmann::json resolvePool(const nlohmann::json& config, const nlohmann::json& pool,

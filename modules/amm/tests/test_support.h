@@ -51,10 +51,7 @@ class ScopedEnv {
 };
 
 inline json snapshot(const std::string& data = "abcd", const std::string& owner = PROGRAM) {
-    return {{"program_owner", owner},
-            {"balance", std::string(32, '0')},
-            {"nonce", std::string(32, '0')},
-            {"data", data}};
+    return {{"nonce", "0"}, {"actor_states", json::array({{{"program", owner}, {"data", data}}})}};
 }
 
 inline std::string littleHex(std::uint64_t value, int bytes) {
@@ -71,10 +68,10 @@ inline std::string littleHex(std::uint64_t value, int bytes) {
 
 // Borsh-encoded account data, with the same fields used by the real FFI fixture.
 inline std::string configData() {
-    return HOLDING_A + HOLDING_B + SIGNER + littleHex(30, 16) + littleHex(2000, 16);
+    return "00" + HOLDING_A + HOLDING_B + SIGNER + littleHex(30, 16) + littleHex(2000, 16);
 }
 inline std::string poolData() {
-    return TOKEN_A + TOKEN_B + std::string(64, 'c') + std::string(64, 'd') + std::string(64, '0') +
+    return "01" + CONFIG + TOKEN_A + TOKEN_B + std::string(64, 'c') + std::string(64, 'd') + std::string(64, '0') +
            littleHex(1000000, 16) + littleHex(1000000, 16) + littleHex(2000000, 16);
 }
 

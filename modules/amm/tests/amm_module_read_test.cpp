@@ -80,9 +80,12 @@ LOGOS_TEST(missing_configuration_returns_stable_errors_without_wallet_reads) {
 
 LOGOS_TEST(malformed_account_fields_are_not_forwarded_as_valid_reads) {
     MockFixture f;
-    for (const auto& field : {"program_owner", "balance", "nonce", "data"}) {
+    for (const auto& field : {"actor_states", "program", "nonce", "data"}) {
         auto malformed = snapshot(configData());
-        malformed[field] = std::string(field) == "data" ? "0" : "not-hex";
+        if (std::string(field) == "program" || std::string(field) == "data")
+            malformed["actor_states"][0][field] = "x";
+        else
+            malformed[field] = "invalid";
         f.modules.lez_core.accounts[CONFIG] = malformed.dump();
         assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "config_read_failed");
         ffi::success("amm_config_account", {{"status", "error"}, {"error", "config_unavailable"}});
@@ -163,6 +166,7 @@ LOGOS_TEST(quotes_forward_exact_amounts_and_pool_data) {
     ffi::success("amm_create_pool_quote", {{"expectedLp", "50"}});
     ffi::success("amm_swap_exact_in_quote", {{"expectedOut", "20"}});
     ffi::success("amm_swap_exact_out_quote", {{"requiredIn", "30"}});
+    ffi::success("amm_resolve_pool", {{"status", "ok"}, {"liquiditySupply", "1000"}});
     ffi::success("amm_add_liquidity_quote", {{"expectedLp", "40"}});
     ffi::success("amm_remove_liquidity_quote", {{"amountA", "10"}});
     auto r = request();

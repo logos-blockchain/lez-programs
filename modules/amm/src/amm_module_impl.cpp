@@ -307,7 +307,8 @@ std::string AmmModuleImpl::feePayerFor(const std::string& fee_payer_id,
     return amm_module::detail::resolveFeePayer(normalizeAccountId(fee_payer_id), accounts, signers);
 }
 
-nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
+nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id,
+                                               const std::string& actor_program) {
     // lez_core returns a decimal nonce and hex-encoded actor states.
     json result = {{"id", account_id}, {"status", "read_failed"}};
 
@@ -320,10 +321,11 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     const auto actors = obj.find("actor_states");
     if (nonce.empty() || nonce.find_first_not_of("0123456789") != std::string::npos
         || actors == obj.end() || !actors->is_array()) return result;
-    const std::string program = ammProgramId();
+    const std::string program = actor_program.empty() ? ammProgramId() : actor_program;
     std::string data;
     for (const auto& actor : *actors) {
         if (!actor.is_object() || !isHexLen(jStr(actor, "program"), 64)
+            || !actor.contains("data") || !actor.at("data").is_string()
             || !isHexEven(jStr(actor, "data"))) return result;
         if (jStr(actor, "program") == program) data = jStr(actor, "data");
     }
@@ -469,7 +471,7 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
     }
 
     const json pool = readPoolAccount(jStr(pairResult.value, "poolId"));
-    // Neither a failed read nor a foreign occupant establishes that the pool PDA is vacant.
+    // A failed read cannot establish whether the pool actor exists.
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return failed(pool_error);
     // resolve_pool returns status:"error"/no_pool for a missing pool (pass through) or
@@ -676,6 +678,22 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     const std::vector<uint8_t> instruction =
         jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
+
+    const auto root = plan.at("rootMention").get<std::size_t>();
+    const json pool = readPoolAccount(accounts.at(root));
+    if (const auto error_code = poolAccountError(pool); !error_code.empty())
+        return error(error_code);
+    if (jStr(pool, "status") != "ok")
+        return error("no_pool");
+
+    const auto& window_actors = plan.at("windowActors");
+    for (const auto& id : jsonStrVec(window_actors.at("accountIds"))) {
+        const json target = readPublicAccount(id, jStr(window_actors, "programId"));
+        if (jStr(target, "status") != "ok")
+            return error("account_read_failed");
+        if (!jStr(target.at("account"), "data").empty())
+            return error("already_exists");
+    }
 
     AMM_TRACE("oracleSetup(" << (observations ? "observations" : "priceAccount")
               << "): SUBMIT programId=" << program_id << " accounts=" << accounts.size());

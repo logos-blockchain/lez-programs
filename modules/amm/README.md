@@ -25,10 +25,9 @@ methods (the module API is generated from the header) are:
   definition so direct LP burns are reflected in pool shares. An absent /
   uninitialized pool or one with no liquidity is `{ status: "error", error:
   "no_pool", poolId }` (other codes: `no_program_bin`, `amm_not_initialized`,
-  `bad_config`, `lp_supply_unavailable`, `pool_read_failed`). A failed read or an
-  occupied foreign-owned pool address is not treated as a creatable pool. Every
-  method that reads a pool reports these two conditions with the same codes;
-  the swap submits, which return an empty string on failure, stop before planning.
+  `bad_config`, `lp_supply_unavailable`, `pool_read_failed`). Only the AMM actor at the pool address
+  supplies pool data. Other actors on the same account remain independent. Swap
+  submissions stop on a failed pool read and return an empty transaction hash.
 - `configAccount()` — decodes the AMM instance's config (authority, the
   token/oracle program ids it was initialized with, `swapFeeBps` — the
   instance-wide swap fee — and `protocolFeeBps` — the fraction of that swap fee

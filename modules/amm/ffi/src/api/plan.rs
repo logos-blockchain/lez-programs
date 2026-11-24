@@ -50,6 +50,7 @@ pub(super) fn pool_plan(program: &str, pair: PairIds, message: Message) -> Resul
     plan.add(pair.current_tick, pair.twap_oracle_program, false);
     plan.add(pair.vault_a, pair.token_program, false);
     plan.add(pair.vault_b, pair.token_program, false);
+    let mut window_actors = None;
     match message {
         Message::NewDefinition {
             user_holding_a,
@@ -109,16 +110,14 @@ pub(super) fn pool_plan(program: &str, pair: PairIds, message: Message) -> Resul
         | Message::CreateOraclePriceAccount { window_duration } => {
             let oracle = pair.twap_oracle_program;
             let tick = pair.current_tick;
-            plan.add(
-                compute_price_observations_pda(oracle, tick, window_duration),
-                oracle,
-                false,
-            );
-            plan.add(
-                compute_oracle_price_account_pda(oracle, tick, window_duration),
-                oracle,
-                false,
-            );
+            let observations = compute_price_observations_pda(oracle, tick, window_duration);
+            let price = compute_oracle_price_account_pda(oracle, tick, window_duration);
+            plan.add(observations, oracle, false);
+            plan.add(price, oracle, false);
+            window_actors = Some(json!({
+                "programId": account_id_hex(oracle),
+                "accountIds": [account_id_hex(observations), account_id_hex(price)],
+            }));
         }
         Message::SyncReserves => {}
         _ => return Err("unsupported pool message".into()),
@@ -129,7 +128,11 @@ pub(super) fn pool_plan(program: &str, pair: PairIds, message: Message) -> Resul
         let clock = clock_core::clock_actor();
         plan.add(clock.account_id, clock.program_account_id, false);
     }
-    Ok(plan.response(program, bytes))
+    let mut response = plan.response(program, bytes);
+    if let Some(actors) = window_actors {
+        response["windowActors"] = actors;
+    }
+    Ok(response)
 }
 
 pub(super) fn admin_plan(
