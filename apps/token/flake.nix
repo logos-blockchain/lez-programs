@@ -27,15 +27,11 @@
       url = "path:../../modules/token";
       inputs.lez_core.follows = "lez_core";
     };
+    lez_programs.follows = "token_module/lez_programs";
   };
 
-  # Self-contained so the release CI can build it as its own module
-  # (module_path=apps/token, `nix build .#lgx-portable`). The UI links no
-  # external lib of its own — the Token Program logic lives in token_ffi, linked
-  # by the token_module core module, which the UI reaches via
-  # modules().token_module. Kept in sync with the repo-root flake's
-  # tokenAppOutputs (preConfigure + the Basecamp-safe wallet staging in
-  # postInstall).
+  # The standalone release build links the shared wallet decoder. The token_module
+  # dependency supplies the on-chain program operations.
   outputs = inputs@{ logos-module-builder, shared_wallet, ... }:
     logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;
@@ -45,7 +41,9 @@
         cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${shared_wallet}")
         cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
       '';
-      externalLibInputs = { };
+      externalLibInputs = {
+        wallet_idl_decoder = { input = inputs.lez_programs; packages.default = "wallet_idl_decoder"; };
+      };
       postInstall = ''
         walletQmlDescriptor="$(find "$PWD" -type f -path '*/shared-wallet/qml/Logos/Wallet/qmldir' -print -quit)"
         if [ -z "$walletQmlDescriptor" ]; then

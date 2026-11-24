@@ -35,21 +35,21 @@ import { execFileSync } from "node:child_process";
 // Locate the test framework (see swap.mjs for the rationale / override env var).
 const fwRoot =
   process.env.LOGOS_QT_MCP ||
-  new URL("../result-mcp", import.meta.url).pathname;
+  new URL("../../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
 const SELL_AMOUNT = "100"; // same token A sell size swap.mjs uses against this pool
 
-// Repo root is three levels up from apps/amm/tests/. The manifest stores bin/IDL
+// Repo root is four levels up from apps/amm/tests/e2e/. The manifest stores bin/IDL
 // paths repo-relative, so spel is invoked with cwd = repoRoot.
-const REPO_ROOT = new URL("../../..", import.meta.url).pathname;
-const MANIFEST_PATH = new URL("./testnet/faucet.json", import.meta.url).pathname;
+const REPO_ROOT = new URL("../../../..", import.meta.url).pathname;
+const MANIFEST_PATH = new URL("../testnet/faucet.json", import.meta.url).pathname;
 
 // The isolated test wallet (matches setup-amm-testnet.sh's TEST_WALLET_HOME). spel
 // must sign the FaucetMint with the same keys the app uses.
 const WALLET_HOME =
   process.env.LEE_WALLET_HOME_DIR ||
-  new URL("./testnet/.wallet", import.meta.url).pathname;
+  new URL("../testnet/.wallet", import.meta.url).pathname;
 // The isolated wallet stores its keys in the clear (see setup), so spel signs
 // non-interactively; feed the test password on stdin anyway in case a build of
 // spel prompts, so the test never hangs.
@@ -544,4 +544,4 @@ run();
 
 // How to run: bring up the isolated setup + app exactly as for swap.mjs (see
 // apps/amm/README.md), ensure `spel` is on PATH and LEE_WALLET_HOME_DIR points at
-// apps/amm/tests/testnet/.wallet, then: node apps/amm/tests/faucet-swap.mjs
+// apps/amm/tests/testnet/.wallet, then: node apps/amm/tests/e2e/faucet-swap.mjs

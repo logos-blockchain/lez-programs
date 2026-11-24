@@ -199,6 +199,11 @@ public:
         deliver(QStringLiteral("list_accounts"), std::move(callback), list_accounts());
     }
 
+    QString account_id_to_base58(const QString& accountId) const
+    {
+        return QStringLiteral("base58-") + accountId;
+    }
+
     QString get_account_public(const QString& accountId)
     {
         ++publicReadCalls;

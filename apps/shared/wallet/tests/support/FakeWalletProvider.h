@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "WalletProvider.h"
 
 class FakeWalletProvider final : public WalletProvider {

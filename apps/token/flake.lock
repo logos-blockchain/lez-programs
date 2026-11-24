@@ -93180,6 +93180,10 @@
     "root": {
       "inputs": {
         "lez_core": "lez_core",
+        "lez_programs": [
+          "token_module",
+          "lez_programs"
+        ],
         "logos-module-builder": "logos-module-builder_11",
         "shared_wallet": "shared_wallet",
         "token_module": "token_module"

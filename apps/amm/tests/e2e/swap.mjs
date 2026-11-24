@@ -21,7 +21,7 @@ import { writeFile } from "node:fs/promises";
 // Override with LOGOS_QT_MCP=/abs/path/to/result-mcp if it lives elsewhere.
 const fwRoot =
   process.env.LOGOS_QT_MCP ||
-  new URL("../result-mcp", import.meta.url).pathname;
+  new URL("../../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
 const SELL_AMOUNT = "100";

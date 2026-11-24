@@ -82,10 +82,15 @@
         rustToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
-        # Whole Cargo workspace, excluding build outputs and non-Rust assets.
-        # Crane still sees Cargo.lock and every path dependency, while local
-        # target directories cannot become multi-gigabyte Nix source snapshots.
-        src = craneLib.cleanCargoSource ./.;
+        # Whole Cargo workspace, excluding build outputs and unrelated assets.
+        # Keep public C headers because host FFI packages install them after the
+        # Rust build. Crane still sees Cargo.lock and every path dependency.
+        src = pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter = path: type:
+            (pkgs.lib.hasSuffix ".h" path)
+            || (craneLib.filterCargoSources path type);
+        };
 
         # Scope every build to one host FFI package. The workspace also has
         # methods crates whose build scripts compile RISC Zero guests; package
@@ -93,6 +98,7 @@
         mkHostFfi =
           {
             package,
+            library ? package,
             sourceDir,
             header,
           }:
@@ -120,8 +126,8 @@
                 + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
                   # Use an absolute store install-name because the module
                   # builder does not stage external dylibs beside the plugin.
-                  if [ -f $out/lib/lib${package}.dylib ]; then
-                    install_name_tool -id "$out/lib/lib${package}.dylib" $out/lib/lib${package}.dylib
+                  if [ -f $out/lib/lib${library}.dylib ]; then
+                    install_name_tool -id "$out/lib/lib${library}.dylib" $out/lib/lib${library}.dylib
                   fi
                 '';
             }
@@ -150,6 +156,13 @@
           sourceDir = "modules/stablecoin/ffi";
           header = "stablecoin_ffi.h";
         };
+
+        walletDecoder = mkHostFfi {
+          package = "wallet-idl-decoder";
+          library = "wallet_idl_decoder";
+          sourceDir = "tools/wallet-idl-decoder";
+          header = "wallet_idl_decoder.h";
+        };
       in
       {
         packages.default = ammFfi;
@@ -157,6 +170,7 @@
         packages.oracle_ffi = oracleFfi;
         packages.stablecoin_ffi = stablecoinFfi;
         packages.token_ffi = tokenFfi;
+        packages.wallet_idl_decoder = walletDecoder;
       }
     );
 
@@ -175,17 +189,19 @@
         # direct dep too, so both the UI and amm_module resolve the one shared
         # wallet instance.
         flakeInputs = inputs // { amm_module = ammModuleOutputs; };
-        # The UI links no external lib of its own — the AMM brain (amm_ffi) is
-        # linked by amm_module, which the UI reaches via modules().amm_module.
-        externalLibInputs = { };
+        externalLibInputs = {
+          wallet_idl_decoder = {
+            input = self;
+            packages.default = "wallet_idl_decoder";
+          };
+        };
         # The AMM UI links the shared C++ wallet access lib and bundles the
-        # Logos.Wallet QML module (apps/shared/wallet). apps/amm/flake.nix wires
-        # these via its `shared_wallet` input; when built from this root flake
-        # the source lives in-tree, so point CMake straight at it and stage the
-        # built QML module the same way. Keep in sync with apps/amm/flake.nix.
+        # Logos.Wallet QML module (apps/shared/wallet). Point CMake at the
+        # in-tree source and stage the built QML module with the app.
         preConfigure = ''
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
           cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
+          cmakeFlagsArray+=("-DLEZ_IDL_ARTIFACTS_DIR=${./artifacts}")
         '';
         postInstall = ''
           walletQmlDescriptor="$(find "$PWD" -type f -path '*/shared-wallet/qml/Logos/Wallet/qmldir' -print -quit)"
@@ -220,7 +236,12 @@
         src = ./apps/token;
         configFile = ./apps/token/metadata.json;
         flakeInputs = inputs // { token_module = tokenModuleOutputs; };
-        externalLibInputs = { };
+        externalLibInputs = {
+          wallet_idl_decoder = {
+            input = self;
+            packages.default = "wallet_idl_decoder";
+          };
+        };
         preConfigure = ''
           cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${./apps/shared/wallet}")
           cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
@@ -265,10 +286,19 @@
       # and `appOutputs.packages.<sys>.default` (the UI launcher and its
       # bundle, respectively) are renamed to `amm-ui`; no `default` survives
       # for either attribute set.
+      # Headless tests launch the plugin directly and need the same wallet QML
+      # import path as the interactive app launchers.
+      withWalletTestImports = outputs: builtins.mapAttrs (_: attrs:
+        attrs // (if attrs ? integration-test then {
+          integration-test = attrs.integration-test.overrideAttrs (_: {
+            QML_IMPORT_PATH = "${attrs.default}/lib";
+          });
+        } else { })
+      ) (outputs.packages or { });
       appApps = appOutputs.apps or { };
-      appPkgs = appOutputs.packages or { };
+      appPkgs = withWalletTestImports appOutputs;
       tokenAppApps = tokenAppOutputs.apps or { };
-      tokenAppPkgs = tokenAppOutputs.packages or { };
+      tokenAppPkgs = withWalletTestImports tokenAppOutputs;
 
       # Keep the token UI's Basecamp install artifacts addressable after the
       # core token module is merged into the same package set. Both builders
@@ -290,6 +320,7 @@
         // (if attrs ? lgx-portable then { amm-ui-lgx-portable = attrs.lgx-portable; } else { })
         // (if attrs ? install then { amm-ui-install = attrs.install; } else { })
         // (if attrs ? install-portable then { amm-ui-install-portable = attrs.install-portable; } else { })
+        // (if attrs ? integration-test then { amm-ui-integration-test = attrs.integration-test; } else { })
       ) appPkgs;
 
       # AMM core module (modules/amm): the AMM business logic as a headless
@@ -432,10 +463,11 @@
           pkgs = import nixpkgs { inherit system; overlays = [ rust-overlay.overlays.default ]; };
           ammFfi = crateOutputs.packages.${system}.amm_ffi;
           moduleDir = appPkgs.${system}.default;
+          walletDecoder = crateOutputs.packages.${system}.wallet_idl_decoder;
         in
         app // {
           program = "${pkgs.writeShellScript "run-amm-ui" ''
-            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+            export DYLD_FALLBACK_LIBRARY_PATH="${ammFfi}/lib:${walletDecoder}/lib''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
             export QML_IMPORT_PATH="${moduleDir}/lib''${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
             exec ${app.program} "$@"
           ''}";

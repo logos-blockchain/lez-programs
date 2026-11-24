@@ -25,13 +25,13 @@ import { readFile, rm } from "node:fs/promises";
 
 const fwRoot =
   process.env.LOGOS_QT_MCP ||
-  new URL("../result-mcp", import.meta.url).pathname;
+  new URL("../../result-mcp", import.meta.url).pathname;
 const { test, run } = await import(resolve(fwRoot, "test-framework/framework.mjs"));
 
 // Token D's definition id, written by the setup script. Read from here rather than
 // from a wallet label: labels move to other accounts if the wallet is re-restored
 // against a chain that already holds the setup's state.
-const MANIFEST_PATH = new URL("./testnet/custom-token-manifest.json", import.meta.url).pathname;
+const MANIFEST_PATH = new URL("../testnet/custom-token-manifest.json", import.meta.url).pathname;
 
 // Where the app persists custom tokens. Defaults to the isolated test store; set
 // CUSTOM_TOKEN_CONFIG to override. IMPORTANT: launch the app with the SAME path
@@ -40,7 +40,7 @@ const MANIFEST_PATH = new URL("./testnet/custom-token-manifest.json", import.met
 // from a stale slate. Only used to pre-clear; persistence is verified through the app.
 const CUSTOM_TOKEN_CONFIG =
   process.env.CUSTOM_TOKEN_CONFIG ||
-  new URL("./testnet/custom-tokens.json", import.meta.url).pathname;
+  new URL("../testnet/custom-tokens.json", import.meta.url).pathname;
 
 // --- small helpers (mirror create-pool.mjs) --------------------------------
 

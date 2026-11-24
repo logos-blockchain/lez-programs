@@ -93199,6 +93199,10 @@
       "inputs": {
         "amm_module": "amm_module",
         "lez_core": "lez_core_2",
+        "lez_programs": [
+          "amm_module",
+          "lez_programs"
+        ],
         "logos-module-builder": "logos-module-builder_27",
         "shared_wallet": "shared_wallet"
       }

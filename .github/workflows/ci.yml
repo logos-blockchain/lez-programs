@@ -226,10 +226,10 @@ jobs:
           components: clippy
 
       - name: Clippy
-        run: cargo clippy -p idl-gen -p risc0-packager --all-targets -- -D warnings
+        run: cargo clippy -p idl-gen -p risc0-packager -p wallet-idl-decoder --all-targets -- -D warnings
 
       - name: Tests
-        run: cargo test -p idl-gen -p risc0-packager
+        run: cargo test -p idl-gen -p risc0-packager -p wallet-idl-decoder
 
   benchmark:
     name: Programs → benchmark

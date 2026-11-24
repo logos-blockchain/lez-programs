@@ -28,21 +28,21 @@
       url = "path:../../modules/amm";
       inputs.lez_core.follows = "lez_core";
     };
+    lez_programs.follows = "amm_module/lez_programs";
   };
 
-  # Self-contained so the release CI can build it as its own module
-  # (module_path=apps/amm, `nix build .#lgx-portable`). The UI links no external
-  # lib of its own — the AMM logic lives in amm_ffi, linked by the amm_module
-  # core module, which the UI reaches via modules().amm_module. Kept in sync with
-  # the repo-root flake's appOutputs (preConfigure + the Basecamp-safe wallet
-  # staging in postInstall).
+  # The standalone release build links the shared wallet decoder. The amm_module
+  # dependency supplies the on-chain program operations.
   outputs = inputs@{ logos-module-builder, shared_wallet, ... }:
     logos-module-builder.lib.mkLogosQmlModule {
       src = ./.;
       configFile = ./metadata.json;
       flakeInputs = inputs;
-      externalLibInputs = { };
+      externalLibInputs = {
+        wallet_idl_decoder = { input = inputs.lez_programs; packages.default = "wallet_idl_decoder"; };
+      };
       preConfigure = ''
+        cmakeFlagsArray+=("-DLEZ_IDL_ARTIFACTS_DIR=${inputs.lez_programs}/artifacts")
         cmakeFlagsArray+=("-DLOGOS_WALLET_SOURCE_DIR=${shared_wallet}")
         cmakeFlagsArray+=("-DLOGOS_WALLET_GENERATED_DIR=$PWD/generated_code/include")
       '';
