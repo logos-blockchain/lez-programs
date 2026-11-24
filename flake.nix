@@ -286,10 +286,19 @@
       # and `appOutputs.packages.<sys>.default` (the UI launcher and its
       # bundle, respectively) are renamed to `amm-ui`; no `default` survives
       # for either attribute set.
+      # Headless tests launch the plugin directly and need the same wallet QML
+      # import path as the interactive app launchers.
+      withWalletTestImports = outputs: builtins.mapAttrs (_: attrs:
+        attrs // (if attrs ? integration-test then {
+          integration-test = attrs.integration-test.overrideAttrs (_: {
+            QML_IMPORT_PATH = "${attrs.default}/lib";
+          });
+        } else { })
+      ) (outputs.packages or { });
       appApps = appOutputs.apps or { };
-      appPkgs = appOutputs.packages or { };
+      appPkgs = withWalletTestImports appOutputs;
       tokenAppApps = tokenAppOutputs.apps or { };
-      tokenAppPkgs = tokenAppOutputs.packages or { };
+      tokenAppPkgs = withWalletTestImports tokenAppOutputs;
 
       # Keep the token UI's Basecamp install artifacts addressable after the
       # core token module is merged into the same package set. Both builders
