@@ -11,7 +11,7 @@ Essential programs for the **Logos Execution Zone (LEZ)** — a zkVM-based execu
 | **ata** | Associated Token Account program — derives and initializes deterministic token holding accounts for a given owner and token definition |
 | **stablecoin** | Collateral-backed position program — open collateral positions as a foundation for stablecoin debt issuance |
 | **twap_oracle** | TWAP oracle — provides canonical on-chain price accounts consumed by other programs (e.g. stablecoin) |
-| **token-mint-authority** | Testnet faucet mint authority — holds the mint authority for faucet token definitions and lets any account self-mint a fixed amount, rate-limited to once per day per account and token, via a chained call to the token program |
+| **token-mint-authority** | Testnet faucet. An authorized recipient can claim 10,000 tokens every 24 hours per definition. Each token deployment has its own faucet mint-authority PDA. |
 
 ## Apps
 
@@ -172,7 +172,7 @@ spel generate-idl programs/amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.
 spel generate-idl programs/ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
 spel generate-idl programs/stablecoin/methods/guest/src/bin/stablecoin.rs > artifacts/stablecoin-idl.json
 spel generate-idl programs/twap_oracle/methods/guest/src/bin/twap_oracle.rs > artifacts/twap_oracle-idl.json
-spel generate-idl programs/token_mint_authority/methods/guest/src/bin/token_mint_authority.rs > artifacts/token_mint_authority-idl.json
+spel generate-idl programs/token_mint_authority/core > artifacts/token_mint_authority-idl.json
 ```
 
 Generated IDL files are committed under `artifacts/`. CI will fail if a program's IDL is missing or out of date.
@@ -188,7 +188,6 @@ spel --idl artifacts/amm-idl.json --program <AMM_PROGRAM_ID> --fee-payer <FEE_PA
 spel --idl artifacts/ata-idl.json --program <ATA_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 spel --idl artifacts/stablecoin-idl.json --program <STABLECOIN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 spel --idl artifacts/twap_oracle-idl.json --program <TWAP_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-spel --idl artifacts/token_mint_authority-idl.json --program <FAUCET_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 ```
 
 - `--program` is the program's header account id (see [Deployment](#deployment)); spel
@@ -199,4 +198,34 @@ spel --idl artifacts/token_mint_authority-idl.json --program <FAUCET_PROGRAM_ID>
 - spel reports `Transaction confirmed` even when the program rejected the instruction, so
   check the result with `spel --idl <IDL> inspect <ACCOUNT_ID> --type <TYPE>`.
 
-See [docs/testnet-runbook.md](docs/testnet-runbook.md) for complete, ordered examples.
+The testnet runbook covers the v0.2.5 guest and CLI. [v0.2.5 runbook](docs/testnet-runbook.md)
+
+### Claim from the v0.4 faucet
+
+Derive the mint authority and allowance from the **deployed faucet and token program IDs**.
+Use the first address as the token definition’s `mint_authority`. The second is specific
+to the claimant and definition. Both commands take base58 account IDs.
+
+```bash
+cargo run -q -p token_mint_authority_program --example mint_authority -- \
+  "$FAUCET" "$TOKEN"
+cargo run -q -p token_mint_authority_program --example faucet_allowance -- \
+  "$FAUCET" "$TOKEN" "$CLAIMANT" "$DEFINITION"
+```
+
+With a v2 IDL-compatible `spel`, send a public claim to the claimant’s faucet actor.
+Set `AUTHORITY` and `ALLOWANCE` to the addresses above. The clock actor below comes
+from `clock_core::clock_actor()` in LEZ v0.4.0-rc3. This example credits an existing
+holding. Add `--signer "$HOLDING"` when opening a fresh holding in the same claim.
+
+```bash
+CLOCK_ACTOR=4BdcjoXkq786TMWcBGGHqcxeLYMZmn17rL4eM9ZyRWNT@2hwaRW8sMnyKLLRbDRw8k68tiv9bnfq98oxcdtcp157Z
+spel --idl artifacts/token_mint_authority-idl.json --program "$FAUCET" --fee-payer "$PAYER" \
+  send --root "$CLAIMANT" --signer "$CLAIMANT" --no-auto-actors \
+  --actor "$ALLOWANCE" --actor "$CLOCK_ACTOR" --actor "$HOLDING" \
+  --actor "$HOLDING@$TOKEN" --actor "$AUTHORITY@$TOKEN" --actor "$DEFINITION@$TOKEN" \
+  -- faucet-mint --token-program-id "$TOKEN" --definition "$DEFINITION" --to "$HOLDING"
+```
+
+A successful claim credits 10,000 tokens (18 decimals) and starts the 24-hour cooldown.
+A rejected claim changes neither the allowance nor the balance.

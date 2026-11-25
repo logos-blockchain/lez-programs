@@ -1,81 +1,73 @@
-//! The Token-Mint-Authority Program implementation.
+//! A permissionless, rate-limited faucet for the fungible token program.
 //!
-//! A permissionless testnet faucet that delegates to the Token Program:
-//! `user -> token-mint-authority -> token`. See [`token_mint_authority_core`] for the account
-//! contract and the mint-authority setup requirement.
+//! The recipient's actor first charges its allowance against the system clock. A separate
+//! call to the destination's faucet actor mints the grant and verifies the credit locally.
+//! Both calls settle in the same transaction.
 
+use lee_core::program::{ReceiveInput, Response};
 pub use token_mint_authority_core as core;
+use token_mint_authority_core::{FaucetState, Internal, Message};
 
-/// Mint a fixed grant of the faucet token to the caller, rate-limited per day.
-pub mod faucet_mint;
-
-#[cfg(test)]
-mod test_support;
-
+mod faucet_mint;
 #[cfg(test)]
 mod tests;
 
-/// Test-only view of what an [`AccountStateDiff`] leaves behind.
-///
-/// Since LEZ v0.2.5 a diff carries a *change* rather than a whole post-state account:
-/// `post_data` is `None` when the data is untouched, and ownership is not in the diff at
-/// all — the runtime derives it (see `acquire_ownership_on_data_write`). These mirror that
-/// derivation so assertions can stay written in terms of the resulting account.
-/// `pub` only so an accessor no single program happens to use is not dead code; the whole
-/// trait is `#[cfg(test)]`, so it never exists in a real build.
-#[cfg(test)]
-pub trait StateDiffExt {
-    /// The data the account ends up with.
-    fn post_data(&self) -> &lee_core::account::Data;
-
-    /// The owner the account ends up with: writing data to a default-owned account makes
-    /// `executing_account_id` its owner.
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId;
-
-    /// Whether this diff changes the account's data at all.
-    fn writes_data(&self) -> bool;
-
-    /// The whole account the diff leaves behind, via the runtime's own `post_state`.
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account;
-}
-
-#[cfg(test)]
-impl StateDiffExt for lee_core::program::AccountStateDiff {
-    fn post_data(&self) -> &lee_core::account::Data {
-        self.post_data
-            .as_ref()
-            .unwrap_or(&self.pre_state.account.data)
+/// Dispatches faucet messages by their sender and the receiving actor's state.
+pub fn handle_message(input: &ReceiveInput) -> Response {
+    let state = FaucetState::decode(&input.pre_state);
+    if input.from_own_program() {
+        let message: Internal =
+            borsh::from_slice(&input.message).expect("internal faucet message must decode");
+        return match message {
+            Internal::Claim => faucet_mint::read_clock(),
+            Internal::Fund {
+                token_program_id,
+                definition,
+                to,
+            } => faucet_mint::fund(input, state, token_program_id, definition, to),
+            Internal::AssertSettled => {
+                // Fund schedules this check on its own actor. A private sender can
+                // present a different address even on that final self-call.
+                assert!(
+                    matches!(state, None | Some(FaucetState::Allowance { .. })),
+                    "faucet mint did not settle"
+                );
+                Response::keep_state()
+            }
+        };
     }
-
-    fn post_owner(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::AccountId {
-        let pre = &self.pre_state.account;
-        if pre.program_owner == lee_core::program::DEFAULT_PROGRAM_OWNER && self.writes_data() {
-            executing_account_id
-        } else {
-            pre.program_owner
+    if input.from == Some(clock_core::clock_actor()) {
+        return faucet_mint::claim(input, state);
+    }
+    match state {
+        Some(FaucetState::ReadingHolding {
+            token_program_id,
+            definition,
+            to,
+            last_mint_ms,
+        }) => faucet_mint::mint(input, token_program_id, definition, to, last_mint_ms),
+        Some(FaucetState::VerifyingCredit {
+            token_program_id,
+            definition,
+            expected_balance,
+            last_mint_ms,
+        }) => faucet_mint::verify(
+            input,
+            token_program_id,
+            definition,
+            expected_balance,
+            last_mint_ms,
+        ),
+        None | Some(FaucetState::Allowance { .. }) => {
+            let message: Message =
+                borsh::from_slice(&input.message).expect("faucet message must decode");
+            match message {
+                Message::FaucetMint {
+                    token_program_id,
+                    definition,
+                    to,
+                } => faucet_mint::request(input, token_program_id, definition, to),
+            }
         }
-    }
-
-    fn writes_data(&self) -> bool {
-        self.post_data
-            .as_ref()
-            .is_some_and(|data| *data != self.pre_state.account.data)
-    }
-
-    fn post_account(
-        &self,
-        executing_account_id: lee_core::account::AccountId,
-    ) -> lee_core::account::Account {
-        lee_core::program::post_state(self, executing_account_id)
-            .expect("balance diff must apply to the pre-state balance")
     }
 }
