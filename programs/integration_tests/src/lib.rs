@@ -1,9 +1,11 @@
 //! Shared harness for the integration tests: real guests, run through LEZ's public
-//! execution on a `V03State`.
+//! execution on a `V03State`, and through its privacy-preserving circuit ([`private`]).
 //!
 //! Handler tests (in each program crate) cover one message at a time; these cover what only
 //! the engine decides: declared actors, admission, authorization travelling down a sync
 //! chain, async messages, and a failing actor failing the whole transaction.
+
+pub mod private;
 
 use std::borrow::Cow;
 

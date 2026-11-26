@@ -14,8 +14,16 @@ name = "token"
 path = "tests/token.rs"
 
 [[test]]
+name = "token_private"
+path = "tests/token_private.rs"
+
+[[test]]
 name = "nft"
 path = "tests/nft.rs"
+
+[[test]]
+name = "nft_private"
+path = "tests/nft_private.rs"
 
 [[test]]
 name = "twap_oracle"
