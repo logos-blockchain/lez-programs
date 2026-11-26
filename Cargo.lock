@@ -3998,12 +3998,12 @@ dependencies = [
 [[package]]
 name = "spel-attrs"
 version = "0.7.0"
-source = "git+https://github.com/logos-co/spel.git?rev=aa4f97175670dc791c82e5fc6163608ce4856ffb#aa4f97175670dc791c82e5fc6163608ce4856ffb"
+source = "git+https://github.com/logos-co/spel.git?rev=0f9e285bfe35b1e32906ddafeaa4d26138cad1b3#0f9e285bfe35b1e32906ddafeaa4d26138cad1b3"
 
 [[package]]
 name = "spel-framework-core"
 version = "0.7.0"
-source = "git+https://github.com/logos-co/spel.git?rev=aa4f97175670dc791c82e5fc6163608ce4856ffb#aa4f97175670dc791c82e5fc6163608ce4856ffb"
+source = "git+https://github.com/logos-co/spel.git?rev=0f9e285bfe35b1e32906ddafeaa4d26138cad1b3#0f9e285bfe35b1e32906ddafeaa4d26138cad1b3"
 dependencies = [
  "base58",
  "borsh",
