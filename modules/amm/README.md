@@ -63,8 +63,7 @@ or a separate account that co-signs the fee; it is never inferred, because the
 signers can all be unfunded. A missing payer, or one that takes part without
 signing, fails with `invalid_fee_payer` (an empty hash for the swaps).
 
-See **Amount / id conventions** below, and the
-[full `logoscore` runbook](../../docs/module/amm.md) for a worked call per method.
+See **Amount / id conventions** below.
 
 ## How it fits together
 
@@ -284,12 +283,4 @@ plugin).
 (`std::vector<uint8_t>`). This module sends the plan's u32 words as their
 little-endian bytes and references the program by its id hex (not the raw ELF).
 It requires the wallet module built with the byte-string `instruction` param —
-the fork pinned as the `lez_core` input. See
-`docs/amm-swap-qtro-serialization-bug.md`.
-
-## Full API runbook
-
-The method list above is a curated subset. For a complete, worked `logoscore`
-walkthrough of **every** `amm_module` API — reads, swaps, add/remove liquidity,
-the keeper `syncReserves`, oracle setup, and admin — see
-[`docs/module/amm.md`](../../docs/module/amm.md).
+the fork pinned as the `lez_core` input.

@@ -1,23 +1,68 @@
-# TWAP Oracle — `RecordTick` and the zkVM Cycle Budget
+# TWAP Oracle — Record, Publish and the zkVM Cycle Budget
 
-> **Status: fixed.** `OBSERVATIONS_CAPACITY` was reduced from 6396 to **2048**, bringing `RecordTick`
-> to ~16.8M cycles (~half the limit). The rest of this document is the diagnosis that led there; the
-> numbers labelled "cap 6396" are the pre-fix measurements that motivated the change.
->
-> **LEZ v0.2.5 update.** All numbers below predate v0.2.5, which changed the guest interface (a
-> Borsh `ProgramInput` in, account state *diffs* out). Re-measured on v0.2.5-rc2, the owned-account
-> overhead is gone: `RecordTick` costs ~1.0M cycles at cap 2048 and ~2.4M at cap 6396, owned and
-> uninitialized accounts cost the same, and every capacity in the sweep completes under 2²⁵. The
-> diagnosis below explains the pre-v0.2.5 runtime only.
+## On LEZ v0.4 (actor model)
+
+`tests/twap_cycle_bench.rs` measures what a whole transaction is charged, since its cycles are
+shared by every handler in it. They are capped by the transaction's `gas_limit`, which may not
+exceed `MAX_GAS_EXEC` = 10M (`fee_core::market`); a higher fee doesn't raise that. The block's
+execution gas is capped at the same 10M (target 5M), and the wallet declares at most its configured
+`gas_limit`, 2M by default. (`DEFAULT_PUBLIC_CYCLE_BUDGET` = 2²⁵ applies only to uncharged
+paths.) A record runs the current-tick actor twice, the clock and the observations actor; a
+publish adds the price actor. The charge counts **user cycles** (risc0's `SegmentInfo::cycles`, no
+power-of-two padding).
+
+Charged cycles per transaction, by observations-buffer capacity (24h window; capacities above the
+compiled `OBSERVATIONS_CAPACITY = 2048` are synthetic, measured for their size):
+
+| capacity | state bytes | `RecordTick` | `PublishPrice` | share of 10M (record) |
+|---:|---:|---:|---:|---:|
+| 512 | 8 285 | 181 079 | 154 096 | 1.8% |
+| 1 024 | 16 477 | 312 088 | 226 916 | 3.1% |
+| **2 048** | **32 861** | **573 865** | **372 372** | **5.7%** |
+| 4 096 | 65 629 | 1 097 095 | 663 172 | 11.0% |
+| 6 396 | 102 429 | 1 650 882 | 1 011 255 | 16.5% |
+| 8 192 | 131 165 | 2 143 246 | 1 244 577 | 21.4% |
+| 16 384 | 262 237 | 4 235 235 | 2 407 207 | 42.4% |
+
+`CreatePriceAccounts` at 2048: 308 491. Everything fits the 10M cap; above 6396 a record needs more
+than the wallet's default 2M `gas_limit`. Cost is linear in size: about 256 cycles per entry for a
+record and 140 for a publish, almost all of it the observations actor's step (`SampleTick` alone is
+535 741 user cycles at 2048). The rest of a record (two current-tick steps and the clock) is about
+38k.
+
+What this means for capacity:
+
+- **2048 is cheap enough.** A record takes 5.7% of the cap, which is also 5.7% of a block's
+  execution gas, so the cap doesn't force 2048.
+- **Raising it costs keepers twice.** A 24h window samples every `window / capacity`: 42 s at 2048,
+  10.5 s at 8192. Four times the capacity means up to four times the records per window, each
+  about 3.7 times dearer, so roughly 15 times the keeper's cycles per window for finer resolution.
+- **One buffer for every window still doesn't fit.** By the measured slope, 30 days at 10 s blocks
+  (~259k entries, ~4 MB) would cost about 66M cycles per record, 6.6 times the cap.
+
+LEZ v0.4 has no account or actor-state size cap, so capacity is purely this cost choice.
+
+Run it with:
+
+```sh
+cargo test --release --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture
+```
+
+## History: the pre-v0.2.5 diagnosis
+
+> `OBSERVATIONS_CAPACITY` was reduced from 6396 to **2048** when `RecordTick` cost ~50.9M cycles at
+> 6396 under the pre-v0.2.5 runtime. On v0.2.5-rc2 the owned-account overhead was gone: `RecordTick`
+> cost ~1.0M cycles at 2048 (padded total; ~0.54M user cycles on v0.4 above) and ~2.4M at 6396. The
+> rest of this document is that diagnosis, and describes the old runtime only.
 
 At capacity 6396, `RecordTick` could not run on chain: a single call over a full-size observations
 buffer cost **~50.9M zkVM cycles**, over the **~33.5M (2²⁵)** public-execution limit, and the runtime
 aborted it. This document explains what a cycle is, why the limit exists, what the measurements
 actually show (the cause is **not** what it first looks like), and the fix.
 
-It is backed by a runnable benchmark — `programs/benchmark/tests/twap_cycle_bench.rs` — and
-by two end-to-end tests in `tests/amm.rs`
-(`amm_twap_observations_accumulate_*`, `amm_twap_record_tick_sampling_guard_*`).
+It was backed by the v0.2.5 version of `tests/twap_cycle_bench.rs` (in git history) and by two
+end-to-end tests in `tests/amm.rs` (`amm_twap_observations_accumulate_*`,
+`amm_twap_record_tick_sampling_guard_*`).
 
 ---
 
@@ -193,10 +238,10 @@ margin for runtime variation; 2048 keeps `RecordTick` at roughly half the limit.
 
 ### ✅ Linked observation pages — if full resolution is required
 
-Already sketched in `twap-oracle-observation-capacity.md`: keep a small fixed-size "head" account
-plus older page accounts. `RecordTick` then commits only the small head, so per-call cost is bounded
-regardless of total history. More moving parts (page PDAs, chain-walking readers); reserve it for
-when a single reduced-capacity account genuinely can't hold enough resolution.
+Keep a small fixed-size "head" account plus older page accounts. `RecordTick` then commits only the
+small head, so per-call cost is bounded regardless of total history. More moving parts (page PDAs,
+chain-walking readers); reserve it for when a single reduced-capacity account genuinely can't hold
+enough resolution.
 
 ### ❌ Byte-patching `RecordTick` to skip the Borsh round-trip — does NOT fix this
 

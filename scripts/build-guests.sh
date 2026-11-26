@@ -8,7 +8,7 @@ risc0_tag="${RISC0_DOCKER_CONTAINER_TAG:-r0.1.88.0}"
 cache_id="${RISC0_BUILD_CACHE_ID:-lez-programs-risc0-guests}"
 network_mode="${RISC0_DOCKER_BUILD_NETWORK:-}"
 staging_dir="$(mktemp -d)"
-all_programs="amm ata stablecoin token token_mint_authority twap_oracle"
+all_programs="amm ata nft stablecoin token token_mint_authority twap_oracle"
 programs="${*:-${all_programs}}"
 
 cleanup() {

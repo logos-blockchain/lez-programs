@@ -1,506 +1,376 @@
-//! Cycle-cost benchmark for the TWAP oracle's account writes.
+//! Cycle cost of the TWAP oracle's record and publish, on LEZ's actor model.
 //!
-//! This runs the real `twap_oracle` guest ELF directly through the RISC Zero executor (no proving)
-//! with the session limit lifted, so we can measure the zkVM cycle cost of instructions that exceed
-//! the on-chain `DEFAULT_PUBLIC_CYCLE_BUDGET = 32 MiCycles` budget — `RecordTick` in
-//! particular, which aborts under the normal runtime and therefore can't be measured through
-//! `lee`'s public-transaction path.
+//! A transaction's cycles are capped by its `gas_limit`, at most `MAX_GAS_EXEC`, and shared by
+//! every handler in it, so the ground truth is the cycles a whole transaction is charged:
+//! `RecordTick` runs the current-tick actor twice, the clock and the observations actor;
+//! `PublishPrice` adds the price actor. Those come from
+//! `ValidatedStateDiff::from_public_transaction_with_cycle_budget` over a state seeded with the
+//! oracle, LEZ's clock and a key source's three actors. The observations actor's own step
+//! (`SampleTick`, `ComputePrice`) is the one that scales with capacity; it is also run alone
+//! through the executor for the user / paging split.
 //!
-//! It writes the guest input with `lee::program::Program::write_inputs` — the exact encoding
-//! `Program::execute` uses (a `CallKind::Execute` frame, then the Borsh `ProgramInput` frame) — and
-//! reports the executor's user / paging / reserved / total cycle split per scenario. A run only
-//! counts as completed when the guest halts with exit code 0: since LEZ v0.2.5 a failing guest
-//! ends with a non-zero exit code rather than an executor error.
+//! Buffers larger than `OBSERVATIONS_CAPACITY` are synthetic: the guest still wraps at the
+//! compiled capacity, so they hold few entries and are measured only for their size. Creating a
+//! window builds the buffer at the compiled capacity, so it is measured there only.
 //!
-//! Ignored by default (it executes the guest several times and prints a report). Run with:
+//! Ignored by default. Run with:
 //!
 //! ```sh
-//! cargo test --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture
+//! cargo test --release --manifest-path programs/benchmark/Cargo.toml -- --ignored --nocapture
 //! ```
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeMap};
 
-use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use lee::program::{Program, DEFAULT_PUBLIC_CYCLE_BUDGET};
+use clock_core::{clock_account_id, clock_actor, ClockAccountData, CLOCK_PROGRAM_ACCOUNT_ID};
+use fee_core::market::MAX_GAS_EXEC;
+use lee::{
+    program::Program,
+    public_transaction::{Message as TxMessage, WitnessSet},
+    PrivateKey, PublicKey, PublicTransaction, V03State, ValidatedStateDiff,
+};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    from_frame,
-    program::{ProgramOutput, DEFAULT_PROGRAM_OWNER},
+    account::{Account, AccountId, Actor, ActorState},
+    program::ReceiveInput,
 };
-use risc0_zkvm::{default_executor, ExecutorEnv, ExecutorImpl, ExitCode};
+use risc0_zkvm::{ExecutorEnv, ExecutorImpl, ExitCode};
 use twap_oracle_core::{
-    compute_current_tick_account_pda, compute_price_observations_pda, CurrentTickAccount,
-    Instruction, ObservationEntry, PriceObservations, OBSERVATIONS_CAPACITY,
+    compute_oracle_price_account_pda, compute_price_observations_pda, CurrentTickState, Internal,
+    Message, ObservationEntry, OraclePrice, OracleState, PriceObservations,
+    PriceSource, OBSERVATIONS_CAPACITY,
 };
+use twap_oracle_methods::TWAP_ORACLE_ELF;
 
-/// The on-chain public-execution cycle ceiling.
-const PUBLIC_EXECUTION_CYCLE_LIMIT: u64 = DEFAULT_PUBLIC_CYCLE_BUDGET;
-
-/// A 24-hour window in milliseconds; `min_interval = WINDOW / OBSERVATIONS_CAPACITY ≈ 13.5 s`.
+const ORACLE: AccountId = AccountId::new([0xA0; 32]);
+const BASE: AccountId = AccountId::new([1; 32]);
+const QUOTE: AccountId = AccountId::new([2; 32]);
+const T0: u64 = 1_700_000_000_000;
+/// A 24-hour window; `min_interval = WINDOW_MS / OBSERVATIONS_CAPACITY`.
 const WINDOW_MS: u64 = 24 * 60 * 60 * 1_000;
+/// Lifted far above `MAX_GAS_EXEC`, to measure what doesn't fit.
+const UNLIMITED: u64 = 1 << 36;
 
-const PRICE_SOURCE_BYTES: [u8; 32] = [7u8; 32];
-/// Timestamp of the most recent observation already in the buffer.
-const LAST_OBSERVATION_TS: u64 = 1_000_000;
+const CAPACITIES: [usize; 7] = [512, 1024, 2048, 4096, 6396, 8192, 16_384];
 
-#[derive(Clone, Copy)]
-struct Cycles {
-    user: u64,
-    paging: u64,
-    reserved: u64,
-    total: u64,
+/// A key source: its current-tick actor lives on its account.
+fn source_key() -> PrivateKey {
+    PrivateKey::try_new([7; 32]).expect("a valid key")
 }
 
-/// The oracle's program address. Since LEZ v0.2.5 a program lives at its deployed header account,
-/// chosen at deploy time; the benchmark uses the ImageID bijection address, the deploy convention.
-fn program_id() -> AccountId {
-    AccountId::from(twap_oracle_methods::TWAP_ORACLE_ID)
+fn account_of(key: &PrivateKey) -> AccountId {
+    AccountId::from(&PublicKey::new_from_private_key(key))
 }
 
-fn program() -> Program {
-    Program::new_unchecked(
-        twap_oracle_methods::TWAP_ORACLE_ID,
-        Cow::Borrowed(twap_oracle_methods::TWAP_ORACLE_ELF),
+fn source() -> AccountId {
+    account_of(&source_key())
+}
+
+fn min_interval() -> u64 {
+    WINDOW_MS / u64::from(OBSERVATIONS_CAPACITY)
+}
+
+fn oracle(account_id: AccountId) -> Actor {
+    Actor::new(account_id, ORACLE)
+}
+
+fn observations_id() -> AccountId {
+    compute_price_observations_pda(ORACLE, source(), WINDOW_MS)
+}
+
+fn price_id() -> AccountId {
+    compute_oracle_price_account_pda(ORACLE, source(), WINDOW_MS)
+}
+
+fn window_actors() -> [Actor; 4] {
+    [
+        oracle(source()),
+        clock_actor(),
+        oracle(observations_id()),
+        oracle(price_id()),
+    ]
+}
+
+/// A `len`-entry buffer whose first `used` entries hold observations one interval apart.
+fn observations(len: usize, used: usize) -> OracleState {
+    let mut entries = vec![ObservationEntry::default(); len];
+    for (i, entry) in entries.iter_mut().take(used).enumerate() {
+        let i = i as u64;
+        *entry = ObservationEntry {
+            timestamp: T0 + i * min_interval(),
+            tick_cumulative: (100 * i * min_interval()) as i64,
+        };
+    }
+    OracleState::PriceObservations(PriceObservations {
+        price_source_id: source(),
+        current_tick: source(),
+        window_duration: WINDOW_MS,
+        write_index: used as u32,
+        total_entries: used as u64,
+        last_recorded_tick: 100,
+        entries,
+    })
+}
+
+fn price() -> OracleState {
+    OracleState::Price(OraclePrice {
+        base_asset: BASE,
+        quote_asset: QUOTE,
+        price: 1 << 64,
+        timestamp: T0,
+        source_id: source(),
+        confidence_interval: 0,
+    })
+}
+
+fn actor_state(state: &OracleState) -> Account {
+    Account::default().with_actor_state(ORACLE, ActorState::from(state.encode()))
+}
+
+/// The oracle, the clock at `now`, and the key source's current-tick actor; no window yet.
+fn with_current_tick(now: u64) -> V03State {
+    let clock = ClockAccountData {
+        block_id: 1,
+        timestamp: now,
+    };
+    let current_tick = OracleState::CurrentTick(CurrentTickState {
+        source: PriceSource::Key(source()),
+        tick: 150,
+        last_updated: T0,
+        pending: None,
+    });
+    V03State::new()
+        .with_named_programs([
+            (
+                ORACLE,
+                Program::new(Cow::Borrowed(TWAP_ORACLE_ELF)).expect("the oracle guest loads"),
+            ),
+            (clock_account_id(), programs::clock()),
+        ])
+        .with_public_accounts([
+            (
+                CLOCK_PROGRAM_ACCOUNT_ID,
+                Account::default().with_actor_state(clock_account_id(), clock.to_bytes().into()),
+            ),
+            (source(), actor_state(&current_tick)),
+        ])
+}
+
+/// [`with_current_tick`] plus the window's actors, with a `len`-entry buffer.
+fn chain(len: usize, used: usize, now: u64) -> V03State {
+    with_current_tick(now).with_public_accounts([
+        (observations_id(), actor_state(&observations(len, used))),
+        (price_id(), actor_state(&price())),
+    ])
+}
+
+/// A root message to the current-tick actor, signed by `signers` at nonce 0.
+fn transaction(
+    message: &Message,
+    declared: &[Actor],
+    signers: &[&PrivateKey],
+) -> PublicTransaction {
+    let nonces: BTreeMap<_, _> = signers
+        .iter()
+        .map(|key| (account_of(key), Default::default()))
+        .collect();
+    let message = TxMessage::try_new(oracle(source()), declared.iter().copied(), nonces, message)
+        .expect("the transaction encodes");
+    let witness_set = WitnessSet::for_message(&message, signers);
+    PublicTransaction::new(message, witness_set)
+}
+
+fn record() -> PublicTransaction {
+    transaction(
+        &Message::RecordTick {
+            window_duration: WINDOW_MS,
+        },
+        &[oracle(source()), clock_actor(), oracle(observations_id())],
+        &[],
     )
 }
 
-fn price_source_id() -> AccountId {
-    AccountId::new(PRICE_SOURCE_BYTES)
-}
-
-fn clock_account(timestamp: u64) -> AccountWithMetadata {
-    let data = ClockAccountData {
-        block_id: 0,
-        timestamp,
-    }
-    .to_bytes();
-    AccountWithMetadata {
-        account: Account {
-            data: Data::try_from(data).expect("clock data fits"),
-            ..Account::default()
+fn publish() -> PublicTransaction {
+    transaction(
+        &Message::PublishPrice {
+            window_duration: WINDOW_MS,
         },
-        is_authorized: false,
-        account_id: CLOCK_01_PROGRAM_ACCOUNT_ID,
-    }
+        &window_actors(),
+        &[],
+    )
 }
 
-/// Builds a fully-populated `PriceObservations` with `capacity` entries, as `RecordTick` would find
-/// it on-chain (the real account always holds `OBSERVATIONS_CAPACITY` entries; smaller values are
-/// synthetic, used only to trace the cost-vs-size curve).
-fn observations_account(capacity: usize) -> AccountWithMetadata {
-    let mut entries = vec![ObservationEntry::default(); capacity];
-    entries[0] = ObservationEntry {
-        timestamp: LAST_OBSERVATION_TS,
-        tick_cumulative: 0,
-    };
-    let observations = PriceObservations {
-        price_source_id: price_source_id(),
-        write_index: 1,
-        total_entries: 1,
-        last_recorded_tick: 100,
-        entries,
-    };
-    AccountWithMetadata {
-        account: Account {
-            // Owned by the oracle: this is an *initialized* account on chain. Before LEZ v0.2.5
-            // ownership made the runtime commit the full account to the proof, the dominant cost;
-            // the unowned variant below measures whether that still holds (see README.md).
-            program_owner: program_id(),
-            data: Data::from(&observations),
-            ..Account::default()
+fn create_window() -> PublicTransaction {
+    transaction(
+        &Message::CreatePriceAccounts {
+            window_duration: WINDOW_MS,
+            base_asset: BASE,
+            quote_asset: QUOTE,
         },
-        is_authorized: false,
-        account_id: compute_price_observations_pda(program_id(), price_source_id(), WINDOW_MS),
-    }
+        &window_actors(),
+        &[&source_key()],
+    )
 }
 
-fn current_tick_account() -> AccountWithMetadata {
-    let current = CurrentTickAccount {
-        tick: 250,
-        last_updated: LAST_OBSERVATION_TS,
+/// The cycles a whole transaction is charged, with the budget lifted.
+fn charged(state: &V03State, tx: &PublicTransaction) -> u64 {
+    ValidatedStateDiff::from_public_transaction_with_cycle_budget(tx, state, 1, 0, UNLIMITED)
+        .map(|(_, charge)| charge.cycles)
+        .expect("the transaction executes")
+}
+
+/// Whether the transaction completes within the most gas a transaction may declare.
+fn fits(state: &V03State, tx: &PublicTransaction) -> bool {
+    ValidatedStateDiff::from_public_transaction_with_cycle_budget(tx, state, 1, 0, MAX_GAS_EXEC)
+        .is_ok()
+}
+
+struct Split {
+    user: u64,
+    paging: u64,
+    total: u64,
+}
+
+/// The observations actor's step alone, through the executor.
+fn observations_step(len: usize, used: usize, message: &Internal) -> Split {
+    let input = ReceiveInput {
+        receiver: oracle(observations_id()),
+        from: Some(oracle(source())),
+        is_authorized: false,
+        pre_state: ActorState::from(observations(len, used).encode()),
+        message: borsh::to_vec(message).expect("the message encodes"),
     };
-    AccountWithMetadata {
-        account: Account {
-            program_owner: program_id(),
-            data: Data::from(&current),
-            ..Account::default()
-        },
-        is_authorized: false,
-        account_id: compute_current_tick_account_pda(program_id(), price_source_id()),
-    }
-}
-
-/// Same as [`observations_account`] but left *uninitialized* (`program_owner = 0`), to isolate how
-/// much of the cost is the runtime committing the owned account vs. the Borsh round-trip itself.
-fn observations_account_unowned(capacity: usize) -> AccountWithMetadata {
-    let mut meta = observations_account(capacity);
-    meta.account.program_owner = DEFAULT_PROGRAM_OWNER;
-    meta
-}
-
-fn build_env<'a>(
-    pre_states: &[AccountWithMetadata],
-    instruction: &Instruction,
-    session_limit: Option<u64>,
-) -> ExecutorEnv<'a> {
-    let instruction_data =
-        Program::serialize_instruction(instruction).expect("instruction serializes");
-
     let mut builder = ExecutorEnv::builder();
-    program()
-        .write_inputs(program_id(), None, pre_states, &instruction_data, &mut builder)
-        .expect("write guest inputs");
-    builder.session_limit(session_limit);
-    builder.build().expect("env builds")
-}
-
-/// Runs the guest with the session limit lifted and returns the executor's cycle split.
-fn run(pre_states: &[AccountWithMetadata], instruction: &Instruction) -> Cycles {
-    let env = build_env(pre_states, instruction, None);
-    let session = ExecutorImpl::from_elf(env, twap_oracle_methods::TWAP_ORACLE_ELF)
-        .expect("loads ELF")
+    Program::write_receive_input(&input, &mut builder).expect("the input writes");
+    builder.session_limit(Some(UNLIMITED));
+    let session = ExecutorImpl::from_elf(builder.build().expect("env builds"), TWAP_ORACLE_ELF)
+        .expect("the ELF loads")
         .run()
-        .expect("guest executes");
-    assert_eq!(
-        session.exit_code,
-        ExitCode::Halted(0),
-        "guest exits without panicking"
-    );
-
-    Cycles {
+        .expect("the guest executes");
+    assert_eq!(session.exit_code, ExitCode::Halted(0), "the step succeeds");
+    Split {
         user: session.user_cycles,
         paging: session.paging_cycles,
-        reserved: session.reserved_cycles,
         total: session.total_cycles,
     }
 }
 
-/// Runs the guest with the session limit lifted and decodes what it returned, to check that a
-/// scenario exercises the path it claims to measure.
-fn output(pre_states: &[AccountWithMetadata], instruction: &Instruction) -> ProgramOutput {
-    let env = build_env(pre_states, instruction, None);
-    let session = ExecutorImpl::from_elf(env, twap_oracle_methods::TWAP_ORACLE_ELF)
-        .expect("loads ELF")
-        .run()
-        .expect("guest executes");
-    let journal = session.journal.expect("guest commits a journal").bytes;
-    borsh::from_slice(from_frame(&journal).expect("journal is one frame"))
-        .expect("journal is a ProgramOutput")
+fn oracle_state(state: &V03State, id: AccountId) -> OracleState {
+    OracleState::decode(state.get_account_by_id(id).data.actor_state(ORACLE))
+        .expect("the actor exists")
 }
 
-/// Runs the guest under a hard session limit — exactly as `lee::program::Program::execute` does on
-/// chain — and reports whether it completed or was aborted by the limit. This is the ground-truth
-/// reproduction of the on-chain behaviour.
-fn completes_under_limit(
-    pre_states: &[AccountWithMetadata],
-    instruction: &Instruction,
-    limit: u64,
-) -> bool {
-    let env = build_env(pre_states, instruction, Some(limit));
-    ExecutorImpl::from_elf(env, twap_oracle_methods::TWAP_ORACLE_ELF)
-        .expect("loads ELF")
-        .run()
-        .is_ok_and(|session| session.exit_code == ExitCode::Halted(0))
-}
-
-/// Same as [`completes_under_limit`] but via `default_executor().execute()` — the EXACT entry point
-/// `lee::program::Program::execute` uses — to check whether the executor path (not just the input
-/// encoding) accounts for the session limit differently than [`ExecutorImpl::run`].
-fn completes_under_limit_via_default_executor(
-    pre_states: &[AccountWithMetadata],
-    instruction: &Instruction,
-    limit: u64,
-) -> bool {
-    let env = build_env(pre_states, instruction, Some(limit));
-    default_executor()
-        .execute(env, twap_oracle_methods::TWAP_ORACLE_ELF)
-        .is_ok_and(|info| info.exit_code == ExitCode::Halted(0))
-}
-
-/// `CreatePriceObservations` inputs: constructs and serializes the full buffer once (no
-/// deserialize).
-fn create_inputs() -> (Vec<AccountWithMetadata>, Instruction) {
-    let observations = AccountWithMetadata {
-        account: Account::default(), // must be uninitialized
-        is_authorized: false,
-        account_id: compute_price_observations_pda(program_id(), price_source_id(), WINDOW_MS),
-    };
-    let price_source = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true, // caller must control the price source
-        account_id: price_source_id(),
-    };
-    (
-        vec![
-            observations,
-            price_source,
-            clock_account(LAST_OBSERVATION_TS),
-        ],
-        Instruction::CreatePriceObservations {
-            initial_tick: 0,
-            window_duration: WINDOW_MS,
-        },
-    )
-}
-
-/// `RecordTick` inputs over a `capacity`-entry buffer. `elapsed_ms` selects the path: below
-/// `min_interval` the sampling guard returns after deserializing only (no reserialize); above it
-/// the full deserialize + mutate + reserialize write path runs.
-fn record_inputs(capacity: usize, elapsed_ms: u64) -> (Vec<AccountWithMetadata>, Instruction) {
-    (
-        vec![
-            observations_account(capacity),
-            current_tick_account(),
-            clock_account(LAST_OBSERVATION_TS + elapsed_ms),
-        ],
-        Instruction::RecordTick {
-            price_source_id: price_source_id(),
-            window_duration: WINDOW_MS,
-        },
-    )
-}
-
-fn pct(part: u64, whole: u64) -> f64 {
-    if whole == 0 {
-        0.0
-    } else {
-        part as f64 / whole as f64 * 100.0
-    }
-}
-
-fn report(label: &str, c: Cycles) {
-    let over = if c.total > PUBLIC_EXECUTION_CYCLE_LIMIT {
-        "OVER"
-    } else {
+fn mark(fits: bool) -> &'static str {
+    if fits {
         "ok"
-    };
-    println!(
-        "{label:<34} total={:>10}  user={:>10} ({:>4.1}%)  paging={:>10} ({:>4.1}%)  reserved={:>9}  [{over}]",
-        c.total,
-        c.user,
-        pct(c.user, c.total),
-        c.paging,
-        pct(c.paging, c.total),
-        c.reserved,
-    );
+    } else {
+        "OVER"
+    }
 }
 
 #[test]
 #[ignore = "cycle benchmark; run explicitly with --ignored --nocapture"]
-fn twap_record_tick_cycle_budget_report() {
-    let cap = OBSERVATIONS_CAPACITY as usize;
-    let min_interval = WINDOW_MS / u64::from(OBSERVATIONS_CAPACITY);
-    let limit = PUBLIC_EXECUTION_CYCLE_LIMIT;
-
-    // ── Ground truth: reproduce the on-chain pass/fail under the real hard session limit. ──
-    // `cap` is the live OBSERVATIONS_CAPACITY; after the capacity reduction both instructions fit.
-    println!("\nUnder the on-chain hard limit (session_limit = {limit} = 2^25):\n");
-    let (create_pre, create_instr) = create_inputs();
-    let create_ok = completes_under_limit(&create_pre, &create_instr, limit);
-    println!(
-        "  CreatePriceObservations (cap {cap}): {}",
-        verdict(create_ok)
-    );
-
-    let (write_pre, write_instr) = record_inputs(cap, min_interval * 4);
-    let write_ok = completes_under_limit(&write_pre, &write_instr, limit);
-    println!("  RecordTick            (cap {cap}): {}", verdict(write_ok));
-
-    // The exact lee entry point, to expose any executor-path accounting difference.
-    let create_ok_de =
-        completes_under_limit_via_default_executor(&create_pre, &create_instr, limit);
-    let write_ok_de = completes_under_limit_via_default_executor(&write_pre, &write_instr, limit);
-    println!(
-        "  via default_executor(): create={}  record={}",
-        verdict(create_ok_de),
-        verdict(write_ok_de)
-    );
-
-    // The write path really runs: RecordTick appends a second observation.
-    let recorded = output(&write_pre, &write_instr);
-    let observations = PriceObservations::try_from(
-        recorded.state_diffs[0]
-            .post_data
-            .as_ref()
-            .expect("RecordTick writes the observations account"),
-    )
-    .expect("observations decode");
-    assert_eq!(observations.total_entries, 2);
-
-    // ── Cycle breakdown (session limit lifted). ──
-    println!("\nMeasured cycle split (session limit lifted):\n");
-    let create = run(&create_pre, &create_instr);
-    report(&format!("CreatePriceObservations (cap {cap})"), create);
-
-    let write = run(&write_pre, &write_instr);
-    report(&format!("RecordTick, owned account  (cap {cap})"), write);
-
-    // Same instruction, same buffer bytes, but the input account is left uninitialized: isolates
-    // the cost of committing the owned account from the Borsh round-trip.
-    let (unowned_pre, unowned_instr) = (
-        vec![
-            observations_account_unowned(cap),
-            current_tick_account(),
-            clock_account(LAST_OBSERVATION_TS + min_interval * 4),
-        ],
-        Instruction::RecordTick {
-            price_source_id: price_source_id(),
-            window_duration: WINDOW_MS,
-        },
-    );
-    let unowned = run(&unowned_pre, &unowned_instr);
-    report(&format!("RecordTick, UNOWNED account (cap {cap})"), unowned);
-    println!(
-        "  -> committing the owned account costs ~{} cycles ({:.1}x).",
-        write.total.saturating_sub(unowned.total),
-        write.total as f64 / unowned.total as f64,
-    );
-
-    // Cost-vs-capacity curve, from the reduced capacity through the original 6396 (which exceeded
-    // the budget before LEZ v0.2.5), to watch for OBSERVATIONS_CAPACITY growing back into it.
-    println!("\nRecordTick (owned) cost vs buffer capacity:\n");
-    for capacity in [512usize, 1024, 2048, 4096, 6396] {
-        let (pre, instr) = record_inputs(capacity, WINDOW_MS / capacity as u64 * 4);
-        let c = run(&pre, &instr);
-        let ok = completes_under_limit(&pre, &instr, limit);
-        report(&format!("RecordTick (cap {capacity}) [{}]", verdict(ok)), c);
-    }
-    println!();
-
-    // After the capacity reduction, both instructions fit the on-chain budget.
-    assert!(
-        create_ok,
-        "expected CreatePriceObservations to complete under the on-chain limit"
-    );
-    assert!(
-        write_ok,
-        "expected RecordTick (cap {cap}) to complete under the on-chain limit; \
-         OBSERVATIONS_CAPACITY may be too large"
-    );
-    let _ = (create_ok_de, write_ok_de); // printed above for cross-checking the executor path
-}
-
-fn verdict(ok: bool) -> &'static str {
-    if ok {
-        "COMPLETES"
-    } else {
-        "ABORTED"
-    }
-}
-
-/// An owned observations account whose `capacity` entries are ALL non-zero (a "full" ring buffer),
-/// to test whether the commit cost depends on the data values / fill level or only on size.
-fn observations_account_filled(capacity: usize) -> AccountWithMetadata {
-    let entries = (0..capacity)
-        .map(|i| ObservationEntry {
-            timestamp: 1_000 + i as u64,
-            tick_cumulative: -(i as i64) - 1,
-        })
-        .collect();
-    let observations = PriceObservations {
-        price_source_id: price_source_id(),
-        write_index: 1,
-        total_entries: capacity as u64,
-        last_recorded_tick: -123,
-        entries,
-    };
-    AccountWithMetadata {
-        account: Account {
-            program_owner: program_id(),
-            data: Data::from(&observations),
-            ..Account::default()
-        },
-        is_authorized: false,
-        account_id: compute_price_observations_pda(program_id(), price_source_id(), WINDOW_MS),
-    }
-}
-
-/// Serialized size of a `capacity`-entry observations account (52-byte header + 16 B/entry).
-fn obs_bytes(capacity: usize) -> usize {
-    52 + capacity * 16
-}
-
-/// Answers the follow-up questions:
-///   a) empty vs filled ring buffer — does fill level matter, or only allocated size?
-///   b) is the owned-account overhead proportional to size (a per-byte cost) or a flat per-account
-///      tax? i.e. how much of the 2^25 budget does touching an owned account actually consume?
-///   c) what is the largest account a program can *read-modify-write* within the budget?
-#[test]
-#[ignore = "diagnostic; run with --ignored --nocapture"]
-fn twap_owned_account_commit_cost() {
-    let min_interval = WINDOW_MS / u64::from(OBSERVATIONS_CAPACITY);
-    let elapsed = min_interval * 4;
+fn twap_record_and_publish_cycle_report() {
+    // The record lands four intervals after entry 0; the publish's tail is two intervals long.
+    let record_now = T0 + 4 * min_interval();
+    let publish_now = T0 + 3 * min_interval();
+    let budget = MAX_GAS_EXEC;
     let cap = OBSERVATIONS_CAPACITY as usize;
 
-    // (a) Same size, opposite fill: an effectively-empty buffer (write_index = 1, one used entry)
-    //     vs an all-non-zero buffer. Both are fully allocated once created.
-    println!(
-        "\n(a) fill level, at cap {cap} (both {} bytes):",
-        obs_bytes(cap)
-    );
-    let empty = run(
-        &[
-            observations_account(cap), // entries all default except [0]
-            current_tick_account(),
-            clock_account(LAST_OBSERVATION_TS + elapsed),
-        ],
-        &Instruction::RecordTick {
-            price_source_id: price_source_id(),
-            window_duration: WINDOW_MS,
-        },
-    );
-    let filled = run(
-        &[
-            observations_account_filled(cap), // every entry non-zero
-            current_tick_account(),
-            clock_account(LAST_OBSERVATION_TS + elapsed),
-        ],
-        &Instruction::RecordTick {
-            price_source_id: price_source_id(),
-            window_duration: WINDOW_MS,
-        },
-    );
-    println!("    empty buffer  total = {}", empty.total);
-    println!("    filled buffer total = {}", filled.total);
+    // Each measured transaction takes the path it claims.
+    let mut state = with_current_tick(T0);
+    state
+        .transition_from_public_transaction(&create_window(), 1, 0)
+        .expect("the window opens");
+    assert!(matches!(
+        oracle_state(&state, observations_id()),
+        OracleState::PriceObservations(o) if o.entries.len() == cap
+    ));
+    let mut state = chain(cap, 1, record_now);
+    state
+        .transition_from_public_transaction(&record(), 1, 0)
+        .expect("the record succeeds");
+    assert!(matches!(
+        oracle_state(&state, observations_id()),
+        OracleState::PriceObservations(o) if o.total_entries == 2
+    ));
+    let mut state = chain(cap, 2, publish_now);
+    state
+        .transition_from_public_transaction(&publish(), 1, 0)
+        .expect("the publish succeeds");
+    assert!(matches!(
+        oracle_state(&state, price_id()),
+        OracleState::Price(p) if p.timestamp == publish_now
+    ));
 
-    // (b)+(c) owned vs unowned across sizes → the per-byte commit cost.
-    println!("\n(b) owned vs unowned RecordTick by account size:\n");
+    let create_state = with_current_tick(T0);
     println!(
-        "{:>5} {:>8} | {:>11} {:>11} {:>11} {:>10}",
-        "cap", "bytes", "owned", "unowned", "delta", "cyc/byte"
+        "\nCreatePriceAccounts (cap {cap}): {} cycles [{}]",
+        charged(&create_state, &create_window()),
+        mark(fits(&create_state, &create_window())),
     );
-    for capacity in [32usize, 256, 1024, 2048, 4096, 6396] {
-        let owned = run(
-            &[
-                observations_account(capacity),
-                current_tick_account(),
-                clock_account(LAST_OBSERVATION_TS + elapsed),
-            ],
-            &Instruction::RecordTick {
-                price_source_id: price_source_id(),
-                window_duration: WINDOW_MS,
-            },
-        );
-        let unowned = run(
-            &[
-                observations_account_unowned(capacity),
-                current_tick_account(),
-                clock_account(LAST_OBSERVATION_TS + elapsed),
-            ],
-            &Instruction::RecordTick {
-                price_source_id: price_source_id(),
-                window_duration: WINDOW_MS,
-            },
-        );
-        let bytes = obs_bytes(capacity);
-        let delta = owned.total.saturating_sub(unowned.total);
+
+    println!(
+        "\nWhole transactions (MAX_GAS_EXEC = {budget}, shared by every handler):\n\n\
+         {:>6} {:>8} | {:>12} {:>5} | {:>12} {:>5}",
+        "cap", "bytes", "RecordTick", "", "PublishPrice", ""
+    );
+    for len in CAPACITIES {
+        let bytes = observations(len, 1).encode().len();
+        let record_state = chain(len, 1, record_now);
+        let publish_state = chain(len, 2, publish_now);
         println!(
-            "{capacity:>5} {bytes:>8} | {:>11} {:>11} {:>11} {:>10.0}",
-            owned.total,
-            unowned.total,
-            delta,
-            delta as f64 / bytes as f64,
+            "{len:>6} {bytes:>8} | {:>12} {:>5} | {:>12} {:>5}",
+            charged(&record_state, &record()),
+            mark(fits(&record_state, &record())),
+            charged(&publish_state, &publish()),
+            mark(fits(&publish_state, &publish())),
+        );
+    }
+
+    println!(
+        "\nThe observations actor's step alone (executor split):\n\n\
+         {:>6} | {:>10} {:>10} {:>10} | {:>12} {:>10} {:>10}",
+        "cap", "SampleTick", "user", "paging", "ComputePrice", "user", "paging"
+    );
+    for len in CAPACITIES {
+        let sample = observations_step(
+            len,
+            1,
+            &Internal::SampleTick {
+                tick: 160,
+                now: record_now,
+            },
+        );
+        let compute = observations_step(
+            len,
+            2,
+            &Internal::ComputePrice {
+                tick: 160,
+                last_updated: T0,
+                now: publish_now,
+            },
+        );
+        println!(
+            "{len:>6} | {:>10} {:>10} {:>10} | {:>12} {:>10} {:>10}",
+            sample.total,
+            sample.user,
+            sample.paging,
+            compute.total,
+            compute.user,
+            compute.paging
         );
     }
     println!();
+
+    assert!(
+        fits(&create_state, &create_window()),
+        "CreatePriceAccounts must fit the budget"
+    );
+    assert!(
+        fits(&chain(cap, 1, record_now), &record()),
+        "RecordTick at OBSERVATIONS_CAPACITY must fit the budget"
+    );
+    assert!(
+        fits(&chain(cap, 2, publish_now), &publish()),
+        "PublishPrice at OBSERVATIONS_CAPACITY must fit the budget"
+    );
 }

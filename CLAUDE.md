@@ -77,19 +77,23 @@ Using the `idl-gen` crate (no external toolchain required — this is what CI us
 make idl
 ```
 
-Or individually per program:
+It generates the programs ported to the actor model, listed in the Makefile's
+`IDL_PROGRAMS`, from their core crates; `make idl PROGRAM=<program>` generates one.
+Each core crate marks its message enum, state type and event trait with
+`#[spel_attrs::message]`, `#[spel_attrs::state]` and `#[spel_attrs::event]`, so the
+generator needs no flags. Or individually:
 
 ```bash
-cargo run -p idl-gen -- programs/<program>/methods/guest/src/bin/<program>.rs > artifacts/<program>-idl.json
+cargo run -p idl-gen -- programs/<program>/core > artifacts/<program>-idl.json
 ```
 
-Alternatively, using the `spel` CLI (requires the SPEL toolchain):
+Alternatively, using the `spel` CLI (same output):
 
 ```bash
-spel generate-idl programs/<program>/methods/guest/src/bin/<program>.rs > artifacts/<program>-idl.json
+spel generate-idl programs/<program>/core > artifacts/<program>-idl.json
 ```
 
-Generated IDL files live in `artifacts/`. CI checks that every program under `*/methods/guest/src/bin/` has a corresponding `artifacts/<program>-idl.json` that matches the source.
+Generated IDL files live in `artifacts/`. CI runs `make idl PROGRAM=<program>` in each program's job and fails if `artifacts/` changes. Unported programs keep their v1 IDLs until their ports. `tools/idl-gen` pins spel's actor-model generator from its `refactor/lez-v0.4.x` branch.
 
 ## Deployment
 
@@ -97,7 +101,7 @@ Generated IDL files live in `artifacts/`. CI checks that every program under `*/
 
 **Note:** `spel` and `wallet` may use different versions of the wallet package. If `spel --idl <IDL> --program <PROGRAM_ID> --fee-payer <FEE_PAYER> -- <INSTRUCTION> ...` fails, ensure `seq_poll_timeout` is set in `$LEE_WALLET_HOME_DIR/wallet_config.json`.
 
-Since LEZ v0.2.5, `--program` is the program's header account id (spel rejects a binary path), and every transaction is charged: pass `--fee-payer` with a funded wallet account, or the first signer pays. spel prints `Transaction confirmed` even when the program rejected the instruction, so verify the result with `spel --idl <IDL> inspect <ACCOUNT_ID> --type <TYPE>`. `docs/testnet-runbook.md` has complete examples.
+Since LEZ v0.2.5, `--program` is the program's header account id (spel rejects a binary path), and every transaction is charged: pass `--fee-payer` with a funded wallet account, or the first signer pays. Since LEZ v0.4.0-rc3 the wallet simulates each send and refuses one that would revert (it would still pay its fee); `spel send` then prints `Refused in simulation, so not sent: <reason>` and exits `2`, the same code as an included no-op. Check the exit code, and verify state with `spel inspect`. `docs/testnet-runbook.md` has complete examples.
 
 For testnet and mainnet deployments, build guest binaries with the release profile in each guest manifest:
 
@@ -147,13 +151,14 @@ programs/
     src/                # Program logic: open_position, repay_debt, withdraw_collateral
     methods/            # Host-side zkVM method embedding
     methods/guest/      # Guest binary (separate workspace)
-  twap_oracle/
-    core/src/lib.rs     # Data types & Instruction enum
-    src/                # Program logic: noop (price account initialization)
+  twap_oracle/          # Ported to the actor model
+    core/src/           # OracleState, Message/Internal, ReadPrice/PriceReply, addresses, events, price math
+    src/                # Router and one module per operation; the current-tick actor reads the clock
     methods/            # Host-side zkVM method embedding
-    methods/guest/      # Guest binary (separate workspace)
+    methods/guest/      # Guest binary on actor_entrypoint!(raw ..) (separate workspace)
   integration_tests/
-    tests/              # End-to-end tests through the zkVM (token, amm, ata)
+    tests/              # Through the real guests on a V03State (token, nft, twap_oracle)
+    methods/guest/      # Test-only guests: a price source standing in for the AMM
 apps/
   amm/                  # QML-based UI for the AMM program (Nix flake)
 ```

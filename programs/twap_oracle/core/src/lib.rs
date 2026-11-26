@@ -1,179 +1,25 @@
+//! Core types for the TWAP oracle: actor state, messages, the standard price read, addresses
+//! and events.
+//!
+//! Three actors serve a price source: its current-tick actor, and per window an observations
+//! actor and a price actor.
+//!
+//! State and messages outlive code (state stays on accounts, async messages in mailboxes),
+//! and Borsh encodes an enum variant as a leading tag byte. Every enum here is therefore
+//! append-only: a changed layout is a new variant, never an edit of an existing one.
+
 use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{
-    account::{AccountId, Data},
+    account::{AccountId, Actor},
     program::PdaSeed,
 };
+use risc0_zkvm::sha::{Impl, Sha256 as _};
 use serde::{Deserialize, Serialize};
-use spel_framework_macros::account_type;
 
-/// TWAP Oracle Program Instruction.
-///
-/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
-/// this type derives.
-///
-/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
-/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
-/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
-/// straight from the IDL. Carrying them here would only mean a type that accepts either
-/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
-/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
-/// the runtime rejects. Without a serde impl that is a compile error instead.
-///
-/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
-/// instruction enum alone.
-///
-/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
-/// inserting one shifts the encoding of every variant after it.
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-pub enum Instruction {
-    /// Creates and initialises a price observations account for a price source and time window.
-    ///
-    /// Required accounts (in order):
-    /// 1. Price observations account — uninitialized PDA derived from
-    ///    `compute_price_observations_pda(self_program_id, price_source.account_id,
-    ///    window_duration)`.
-    /// 2. Price source account — the account whose ID acts as the feed identifier (e.g. an AMM
-    ///    pool account); must be passed with `is_authorized = true` to prove the caller controls
-    ///    it.
-    /// 3. Clock account — read-only; supplies the initial observation timestamp.
-    CreatePriceObservations {
-        /// Initial price tick: `floor(log_{1.0001}(reserve_b / reserve_a))`.
-        initial_tick: i32,
-        /// Duration of the TWAP window this feed serves, in milliseconds.
-        ///
-        /// Together with `OBSERVATIONS_CAPACITY` this determines the minimum sampling interval
-        /// enforced by `RecordTick`: `min_interval = window_duration / OBSERVATIONS_CAPACITY`.
-        /// It is also part of the PDA seed, so each window gets a distinct account.
-        window_duration: u64,
-    },
-    /// Creates and initialises a canonical [`OraclePriceAccount`] for a price source and time
-    /// window.
-    ///
-    /// The account is initialised with the non-zero `initial_price` and the timestamp read from
-    /// the canonical 1-block clock. A zero price or zero timestamp is the "no valid price"
-    /// sentinel consumers reject, so an account is never created in that state.
-    ///
-    /// Required accounts (in order):
-    /// 1. Oracle price account — uninitialized PDA derived from
-    ///    `compute_oracle_price_account_pda(self_program_id, price_source.account_id,
-    ///    window_duration)`.
-    /// 2. Price source account — must be passed with `is_authorized = true` to prove the caller
-    ///    controls it. Its ID ties this price account to the same source as the corresponding
-    ///    [`PriceObservations`] account for the same window.
-    /// 3. Clock account — the canonical 1-block LEZ clock; supplies the initial timestamp.
-    CreateOraclePriceAccount {
-        /// Canonical identifier of the base asset being priced.
-        base_asset: AccountId,
-        /// Canonical identifier of the quote asset that denominates `price`.
-        quote_asset: AccountId,
-        /// Initial price as a `Q64.64` fixed-point value (real price = `initial_price / 2^64`).
-        ///
-        /// Must be non-zero; the caller is responsible for supplying a correctly-scaled
-        /// fixed-point value rather than a plain integer.
-        initial_price: u128,
-        /// Duration of the TWAP window this price account serves, in milliseconds.
-        ///
-        /// Part of the PDA seed, so each `(price_source, window)` pair maps to a distinct
-        /// oracle price account.
-        window_duration: u64,
-    },
-    /// Creates and initialises a [`CurrentTickAccount`] for a price source.
-    ///
-    /// Called once per price source (not per window). The account holds the latest tick written
-    /// by the price source and serves as the input to `RecordTick`. The price source reports a
-    /// spot **price**; the oracle converts it to a tick via [`price_to_tick`], so the source
-    /// never needs to know about ticks.
-    ///
-    /// Required accounts (in order):
-    /// 1. Current tick account — uninitialized PDA derived from
-    ///    `compute_current_tick_account_pda(self_program_id, price_source.account_id)`.
-    /// 2. Price source account — must be passed with `is_authorized = true`.
-    /// 3. Clock account — read-only; supplies the initial timestamp.
-    CreateCurrentTickAccount {
-        /// Opening spot price as a `Q64.64` ratio (`quote_asset` per `base_asset`), e.g. an
-        /// AMM's `reserve_b / reserve_a`. Converted to a tick on-chain.
-        initial_price: u128,
-    },
-    /// Updates the tick stored in an existing [`CurrentTickAccount`].
-    ///
-    /// Called by the price source (e.g. AMM) after each price-changing operation. Anyone may
-    /// subsequently call `RecordTick` to advance the [`PriceObservations`] accumulator using
-    /// the new tick. The price source reports a spot **price**; the oracle converts it to a tick
-    /// via [`price_to_tick`].
-    ///
-    /// Required accounts (in order):
-    /// 1. Current tick account — initialized PDA derived from
-    ///    `compute_current_tick_account_pda(self_program_id, price_source.account_id)`.
-    /// 2. Price source account — must be passed with `is_authorized = true`.
-    /// 3. Clock account — read-only; supplies the updated timestamp.
-    UpdateCurrentTick {
-        /// New spot price as a `Q64.64` ratio (`quote_asset` per `base_asset`). Converted to a
-        /// tick on-chain.
-        price: u128,
-    },
-    /// Computes the TWAP over `window_duration` from the [`PriceObservations`] ring buffer and
-    /// writes the result to the [`OraclePriceAccount`].
-    ///
-    /// Permissionless — anyone may call this. Returns all accounts unchanged (no-op) if the
-    /// ring buffer holds fewer than two observations. Once at least two observations exist the
-    /// TWAP is computed over the available history, which may be shorter than `window_duration`
-    /// while the buffer is young.
-    ///
-    /// The resulting TWAP tick is converted to a `Q64.64` price ratio via [`tick_to_oracle_price`]
-    /// and stored in [`OraclePriceAccount::price`]. The stored value is a plain price ratio, not a
-    /// tick encoding, so consumers read it directly (`price / 2^PRICE_FRACTIONAL_BITS`) and the
-    /// account stays source-agnostic — a non-tick source (e.g. RedStone, Pyth) writes the same
-    /// field.
-    ///
-    /// Required accounts (in order):
-    /// 1. Price observations account — initialized PDA derived from
-    ///    `compute_price_observations_pda(self_program_id, price_source_id, window_duration)`.
-    /// 2. Oracle price account — initialized PDA derived from
-    ///    `compute_oracle_price_account_pda(self_program_id, price_source_id, window_duration)`.
-    /// 3. Current tick account — initialized PDA derived from
-    ///    `compute_current_tick_account_pda(self_program_id, price_source_id)`. Supplies the live
-    ///    tick used to extend the average from the newest stored observation up to `now`.
-    /// 4. Clock account — read-only; supplies the publication timestamp.
-    PublishPrice {
-        /// ID of the price source; used to verify all three PDAs.
-        price_source_id: AccountId,
-        /// Duration of the TWAP window in milliseconds. Used only to verify the price
-        /// observations and oracle price account PDAs (the current tick account PDA does not
-        /// depend on it). No boundary search is performed: the oldest valid observation is the
-        /// ring buffer's natural start (entry 0 while partially filled, else the slot at
-        /// `write_index`), because each observations account is calibrated to one window via its
-        /// sampling guard.
-        window_duration: u64,
-    },
-    /// Records the current tick from a [`CurrentTickAccount`] into a [`PriceObservations`]
-    /// ring buffer.
-    ///
-    /// Permissionless — anyone may call this. Both PDAs are verified against `price_source_id`,
-    /// so the tick can only have been written by whoever controls that price source.
-    ///
-    /// A sampling guard silently skips the write if less than
-    /// `window_duration / OBSERVATIONS_CAPACITY` milliseconds have elapsed since the last
-    /// observation. Callers may call this on every block without concern — the guard handles
-    /// downsampling on-chain.
-    ///
-    /// Required accounts (in order):
-    /// 1. Price observations account — initialized PDA derived from
-    ///    `compute_price_observations_pda(self_program_id, price_source_id, window_duration)`.
-    /// 2. Current tick account — initialized PDA derived from
-    ///    `compute_current_tick_account_pda(self_program_id, price_source_id)`.
-    /// 3. Clock account — read-only; supplies the current timestamp.
-    RecordTick {
-        /// ID of the price source; used to verify both PDAs.
-        price_source_id: AccountId,
-        /// Duration of the TWAP window in milliseconds; used to verify the
-        /// [`PriceObservations`] PDA and to compute the sampling guard interval.
-        window_duration: u64,
-    },
-}
+pub mod event;
+mod price;
 
-// ──────────────────────────────────────────────────────────────────────────────
-// Price feed
-// ──────────────────────────────────────────────────────────────────────────────
+pub use price::{price_to_tick, tick_to_oracle_price, PRICE_FRACTIONAL_BITS};
 
 /// Maximum tick delta injected into the accumulator per observation.
 ///
@@ -183,426 +29,418 @@ pub enum Instruction {
 /// many blocks while arbitrage erodes their position.
 pub const MAX_TICK_DELTA: i32 = 9_116;
 
-/// Number of entries in each price feed.
+/// Number of entries in each observations ring buffer.
 ///
-/// Bounded by the zkVM cycle budget, not storage: `RecordTick` commits this owned account on both
-/// read and write, so cost scales with size and a full 100 KiB buffer exceeds the public-execution
-/// limit. See `programs/benchmark/README.md` and `programs/benchmark/tests/twap_cycle_bench.rs`.
+/// Bounded by cost, not storage: every `SampleTick` and `ComputePrice` loads the observations
+/// actor, so cost scales with its size. See the cycle benchmark (`programs/benchmark`).
 ///
-/// Capacity primarily affects resolution: `min_interval = window_duration / OBSERVATIONS_CAPACITY`
-/// (integer division), so full-buffer coverage is approximately `window_duration` (up to
-/// `< OBSERVATIONS_CAPACITY` ms shorter) — only resolution changes meaningfully.
+/// Sets the resolution: `min_interval = window_duration / OBSERVATIONS_CAPACITY`.
 pub const OBSERVATIONS_CAPACITY: u32 = 2048;
 
-/// Maximum number of sampling intervals `PublishPrice` will extrapolate past the newest stored
+/// Maximum number of sampling intervals `PublishPrice` extrapolates past the newest stored
 /// observation before refusing to publish.
 ///
-/// `PublishPrice` projects the accumulator from the newest stored observation up to `now` and
-/// stamps the result `timestamp = now`. That timestamp is the only freshness signal consumers
-/// have, so without a bound an unattended feed publishes an average that is almost entirely
-/// extrapolation while still looking fresh — and `RecordTick` enforces only a *minimum* interval,
-/// nothing in the other direction.
-///
-/// Expressed in intervals rather than milliseconds so the bound scales with `window_duration`:
-/// extrapolation can never exceed `MAX_TAIL_INTERVALS / OBSERVATIONS_CAPACITY` of the window
-/// whatever window the feed serves. This is not a liveness lever — `RecordTick` is permissionless,
-/// so whoever wants to publish can record first in the same block.
+/// The published timestamp is `now`, the only freshness signal consumers have, so without a
+/// bound an unattended feed would publish mostly extrapolation that still looks fresh. In
+/// intervals rather than milliseconds, so the bound scales with the window.
 pub const MAX_TAIL_INTERVALS: u64 = 4;
 
-/// A single price entry written to a [`PriceObservations`].
+// ──────────────────────────────────────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The oracle's state on one account.
+///
+/// An empty actor state means "nothing here yet" and is not an `OracleState`.
+#[spel_attrs::state]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub enum OracleState {
+    CurrentTick(CurrentTickState),
+    PriceObservations(PriceObservations),
+    /// The price actor holds the standard price and nothing else.
+    Price(OraclePrice),
+}
+
+impl OracleState {
+    /// Decodes an actor state; `None` for an empty one.
+    ///
+    /// # Panics
+    /// If the bytes are not an `OracleState`. Only oracle code writes oracle actor state.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(borsh::from_slice(bytes).expect("oracle actor state must decode"))
+    }
+
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        borsh::to_vec(self).expect("borsh serialization is infallible")
+    }
+}
+
+/// Who may create and update a current-tick actor.
 #[derive(
-    Debug, Default, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
+pub enum PriceSource {
+    /// A program's actor, e.g. `(pool, amm)`, accepted as the sender. The current-tick actor
+    /// is that program's PDA, `current_tick_seed(account_id)`.
+    ///
+    /// The actor's two ids, not an `Actor`: the IDL generator knows `AccountId` only.
+    Program {
+        account_id: AccountId,
+        program_id: AccountId,
+    },
+    /// A key-owned account, accepted on a root message it signed. The current-tick actor lives
+    /// on this account.
+    Key(AccountId),
+}
+
+impl PriceSource {
+    #[must_use]
+    pub const fn program(actor: Actor) -> Self {
+        Self::Program {
+            account_id: actor.account_id,
+            program_id: actor.program_account_id,
+        }
+    }
+
+    /// The source's account: the pool or the key.
+    #[must_use]
+    pub const fn account_id(&self) -> AccountId {
+        match self {
+            Self::Program { account_id, .. } | Self::Key(account_id) => *account_id,
+        }
+    }
+
+    /// The program source's actor, the sender its current-tick actor accepts.
+    #[must_use]
+    pub const fn program_actor(&self) -> Option<Actor> {
+        match self {
+            Self::Program {
+                account_id,
+                program_id,
+            } => Some(Actor::new(*account_id, *program_id)),
+            Self::Key(_) => None,
+        }
+    }
+
+    /// The account of this source's current-tick actor.
+    #[must_use]
+    pub fn current_tick_account_id(&self) -> AccountId {
+        match self {
+            Self::Program {
+                account_id,
+                program_id,
+            } => AccountId::for_public_pda(
+                program_id,
+                &compute_current_tick_account_pda_seed(*account_id),
+            ),
+            Self::Key(account_id) => *account_id,
+        }
+    }
+}
+
+/// A price source's live tick, shared by all its windows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct CurrentTickState {
+    pub source: PriceSource,
+    /// The tick of the source's latest price, `price_to_tick(price)`.
+    pub tick: i32,
+    /// Clock time of the latest `UpdateCurrentTick`; 0 until the first.
+    pub last_updated: u64,
+    /// The operation waiting for the clock's reply; `None` between transactions.
+    pub pending: Option<Pending>,
+}
+
+/// An operation the current-tick actor parked while it reads the clock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub enum Pending {
+    UpdateCurrentTick {
+        price: u128,
+    },
+    CreatePriceAccounts {
+        window_duration: u64,
+        base_asset: AccountId,
+        quote_asset: AccountId,
+    },
+    RecordTick {
+        window_duration: u64,
+    },
+    PublishPrice {
+        window_duration: u64,
+    },
+}
+
+/// A single entry in a [`PriceObservations`] ring buffer.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
 )]
 pub struct ObservationEntry {
-    /// Block timestamp (milliseconds) when this entry was recorded.
+    /// Clock time (milliseconds) when this entry was recorded.
     pub timestamp: u64,
     /// Running sum of `tick × elapsed_ms` up to this entry.
     ///
-    /// Grows without bound over time, which is why this is `i64` rather than `i32`.
-    /// The TWAP over any window `[t1, t2]` (timestamps in milliseconds) is computed as
-    /// `(tick_cumulative[t2] - tick_cumulative[t1]) / (t2 - t1)`.
+    /// The TWAP over `[t1, t2]` is `(tick_cumulative[t2] - tick_cumulative[t1]) / (t2 - t1)`.
     pub tick_cumulative: i64,
 }
 
-/// Circular price feed of tick observations for a price source and time window.
-///
-/// Owned by the TWAP oracle as a PDA derived from
-/// `compute_price_observations_pda(oracle_program_id, price_source_id, window_duration)`.
-/// The window duration is not stored here — it is implicit in the PDA address. Any caller
-/// that locates this account already knows the window duration used to derive it.
-/// Only the account that controls `price_source_id` (proven via `is_authorized = true` at call
-/// time) may append new entries via `RecordTick`.
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+/// The observations ring buffer of one price source and window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub struct PriceObservations {
-    /// ID of the price source account this feed is associated with (e.g. an AMM pool).
-    /// The price feed PDA is derived from this ID and the window duration, so authorization is
-    /// implicit: whoever controls `price_source_id` is authorized to record prices.
+    /// The source's account: the pool or the key.
     pub price_source_id: AccountId,
+    /// The current-tick actor's account: the only sender of `SampleTick` and `ComputePrice`.
+    pub current_tick: AccountId,
+    /// The TWAP window in milliseconds; sets the sampling interval.
+    pub window_duration: u64,
     /// Index of the *next* slot to write (wraps at `OBSERVATIONS_CAPACITY`).
     pub write_index: u32,
-    /// Total entries ever appended (never resets; used to detect empty/partial-fill state).
+    /// Total entries ever appended (never resets; tells a partial buffer from a full one).
     pub total_entries: u64,
-    /// The tick most recently *recorded* into the accumulator — the clamped value, not the
-    /// raw tick the price source reported.
+    /// The tick most recently *recorded*: the clamped value, not the source's raw tick.
     ///
-    /// Used by `RecordTick` to compute the tick delta for the next observation:
-    /// `delta = current_tick - last_recorded_tick`. Storing the clamped value is what makes
-    /// [`MAX_TICK_DELTA`] a bound on the accumulator rather than a one-observation delay: the
-    /// recorded position walks toward the true price at `MAX_TICK_DELTA` per observation, so a
-    /// manipulated price only moves the average for as long as it is held.
+    /// Storing the clamped value makes [`MAX_TICK_DELTA`] a bound on the accumulator: the
+    /// recorded tick walks toward the true price at `MAX_TICK_DELTA` per observation.
     pub last_recorded_tick: i32,
-    /// Circular price entries; always exactly `OBSERVATIONS_CAPACITY` elements.
+    /// Always exactly `OBSERVATIONS_CAPACITY` entries.
     pub entries: Vec<ObservationEntry>,
 }
 
-impl TryFrom<&Data> for PriceObservations {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        Self::try_from_slice(data.as_ref())
-    }
-}
-
-impl From<&PriceObservations> for Data {
-    fn from(feed: &PriceObservations) -> Self {
-        let serialized_len =
-            borsh::object_length(feed).expect("PriceObservations length must be known");
-        let mut data = Vec::with_capacity(serialized_len);
-        BorshSerialize::serialize(feed, &mut data).expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("PriceObservations encoded data should fit into Data")
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// PDA helpers
-// ──────────────────────────────────────────────────────────────────────────────
-
-const PRICE_OBSERVATIONS_PDA_SEED: &[u8] = b"PRICE_OBSERVATIONS";
-
-/// Derives the [`AccountId`] for a price source's [`PriceObservations`] PDA.
+/// LEZ's standard price shape: a price actor's state, and what consumers decode from a
+/// [`PriceReply`].
 ///
-/// The `window_duration` is included in the seed so that each `(price_source, window)` pair
-/// maps to a distinct account.
-#[must_use]
-pub fn compute_price_observations_pda(
-    oracle_program_id: AccountId,
-    price_source_id: AccountId,
-    window_duration: u64,
-) -> AccountId {
-    AccountId::for_public_pda(
-        &oracle_program_id,
-        &compute_price_observations_pda_seed(price_source_id, window_duration),
-    )
-}
-
-/// Derives the [`PdaSeed`] for a price source's [`PriceObservations`].
-///
-/// Hash input: `price_source_id (32 bytes) || window_duration_le (8 bytes) ||
-/// PRICE_OBSERVATIONS_PDA_SEED`.
-#[must_use]
-pub fn compute_price_observations_pda_seed(
-    price_source_id: AccountId,
-    window_duration: u64,
-) -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256};
-
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&price_source_id.to_bytes());
-    bytes.extend_from_slice(&window_duration.to_le_bytes());
-    bytes.extend_from_slice(PRICE_OBSERVATIONS_PDA_SEED);
-
-    PdaSeed::new(
-        Impl::hash_bytes(&bytes)
-            .as_bytes()
-            .try_into()
-            .expect("Hash output must be exactly 32 bytes long"),
-    )
-}
-
-const ORACLE_PRICE_ACCOUNT_PDA_SEED: &[u8] = b"ORACLE_PRICE_ACCOUNT";
-
-/// Derives the [`AccountId`] for a price source's [`OraclePriceAccount`] PDA.
-///
-/// The `window_duration` is included in the seed so that each `(price_source, window)` pair
-/// maps to a distinct account, mirroring the [`PriceObservations`] PDA derivation.
-#[must_use]
-pub fn compute_oracle_price_account_pda(
-    oracle_program_id: AccountId,
-    price_source_id: AccountId,
-    window_duration: u64,
-) -> AccountId {
-    AccountId::for_public_pda(
-        &oracle_program_id,
-        &compute_oracle_price_account_pda_seed(price_source_id, window_duration),
-    )
-}
-
-/// Derives the [`PdaSeed`] for a price source's [`OraclePriceAccount`].
-///
-/// Hash input: `price_source_id (32 bytes) || window_duration_le (8 bytes) ||
-/// ORACLE_PRICE_ACCOUNT_PDA_SEED`.
-#[must_use]
-pub fn compute_oracle_price_account_pda_seed(
-    price_source_id: AccountId,
-    window_duration: u64,
-) -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256};
-
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&price_source_id.to_bytes());
-    bytes.extend_from_slice(&window_duration.to_le_bytes());
-    bytes.extend_from_slice(ORACLE_PRICE_ACCOUNT_PDA_SEED);
-
-    PdaSeed::new(
-        Impl::hash_bytes(&bytes)
-            .as_bytes()
-            .try_into()
-            .expect("Hash output must be exactly 32 bytes long"),
-    )
-}
-
-/// Canonical oracle price account consumed by LEZ programs.
-///
-/// Oracle producers own how this account is written; consumers only read and
-/// validate it. The account shape is intentionally generic so that any oracle
-/// type (TWAP, external adaptor, aggregator) can use the same interface.
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct OraclePriceAccount {
+/// Generic so that any producer (TWAP, external adaptor, aggregator) can serve it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+pub struct OraclePrice {
     /// Canonical identifier for the priced asset.
     pub base_asset: AccountId,
     /// Canonical identifier for the quote asset that denominates `price`.
     pub quote_asset: AccountId,
-    /// Amount of `quote_asset` one unit of `base_asset` is worth.
-    ///
-    /// `u128` keeps the consumer-side interface non-negative; zero is rejected on read.
+    /// Amount of `quote_asset` one unit of `base_asset` is worth, as `Q64.64`
+    /// (`price / 2^PRICE_FRACTIONAL_BITS`). Zero is rejected on read.
     pub price: u128,
     /// Price observation timestamp. Consumers choose the time unit by matching this with
     /// `max_age`.
     pub timestamp: u64,
-    /// Identifier of the source account that populated this account, such as a TWAP program or
-    /// external adaptor.
+    /// Identifier of the source that populated this price; for the TWAP, the price source's
+    /// account.
     pub source_id: AccountId,
     /// Source-provided confidence interval, or zero when the source does not provide one.
     pub confidence_interval: u128,
 }
 
-impl TryFrom<&Data> for OraclePriceAccount {
-    type Error = std::io::Error;
+// ──────────────────────────────────────────────────────────────────────────────
+// Messages
+// ──────────────────────────────────────────────────────────────────────────────
 
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        Self::try_from_slice(data.as_ref())
-    }
+/// Messages anyone may send: a transaction author or another program. Each is refused from
+/// anyone but the sender it names.
+#[spel_attrs::message]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Message {
+    /// Create the current-tick actor of a price source, at tick `price_to_tick(initial_price)`.
+    ///
+    /// Sent to the empty actor by the source: a program's actor (with the current-tick seed,
+    /// which admits the account), or a key at root, signing for its own account.
+    CreateCurrentTickAccount {
+        /// Opening spot price as `Q64.64` (`quote_asset` per `base_asset`).
+        initial_price: u128,
+    },
+
+    /// From the source: set the tick to `price_to_tick(price)`, stamped with the clock.
+    UpdateCurrentTick {
+        /// New spot price as `Q64.64`.
+        price: u128,
+    },
+
+    /// From the source: create the observations and price actors of a window, both seeded
+    /// from the current tick.
+    CreatePriceAccounts {
+        /// The TWAP window in milliseconds; at least `OBSERVATIONS_CAPACITY`.
+        window_duration: u64,
+        base_asset: AccountId,
+        quote_asset: AccountId,
+    },
+
+    /// At root, to the current-tick actor: append the current tick to the window's ring
+    /// buffer, if a sampling interval has passed since the last entry.
+    RecordTick { window_duration: u64 },
+
+    /// At root, to the current-tick actor: publish the window's TWAP to its price actor.
+    PublishPrice { window_duration: u64 },
 }
 
-impl From<&OraclePriceAccount> for Data {
-    fn from(price_account: &OraclePriceAccount) -> Self {
-        let serialized_len =
-            borsh::object_length(price_account).expect("Oracle price account length must be known");
-        let mut data = Vec::with_capacity(serialized_len);
-        BorshSerialize::serialize(price_account, &mut data)
-            .expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("Oracle price account encoded data should fit into Data")
-    }
+/// Messages only oracle actors send each other. The guest decodes these only when the sender
+/// is the oracle program itself, so each is trusted because only oracle code can have
+/// produced it. `now` is the clock time the current-tick actor read.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Internal {
+    /// To an empty observations actor, from its current-tick actor: entry 0 at `now`, and
+    /// `last_recorded_tick = tick`.
+    InitObservations {
+        window_duration: u64,
+        price_source_id: AccountId,
+        tick: i32,
+        now: u64,
+    },
+    /// To an empty price actor, from its current-tick actor: the first price.
+    InitPrice {
+        window_duration: u64,
+        price_source_id: AccountId,
+        base_asset: AccountId,
+        quote_asset: AccountId,
+        price: u128,
+        now: u64,
+    },
+    /// To the observations actor, from its current-tick actor: record `tick` at `now`.
+    SampleTick { tick: i32, now: u64 },
+    /// To the observations actor, from its current-tick actor: compute the TWAP up to `now`
+    /// and send it to the price actor.
+    ComputePrice {
+        tick: i32,
+        last_updated: u64,
+        now: u64,
+    },
+    /// To the price actor, from its observations actor: the new price. `current_tick` and
+    /// `window_duration` derive both actors' addresses, which the price actor checks.
+    SetPrice {
+        current_tick: AccountId,
+        window_duration: u64,
+        price: u128,
+        now: u64,
+    },
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Price → tick conversion
+// The standard price read
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Converts a `Q64.64` fixed-point spot price into the nearest TWAP tick.
+/// Asks a price actor for its price; it replies with a [`PriceReply`].
 ///
-/// Price sources report a spot price (e.g. an AMM's `reserve_b / reserve_a` as a `Q64.64`
-/// ratio); the oracle owns the conversion to its internal tick representation so producers never
-/// need to know about ticks. The price is mapped through the Uniswap `sqrtPriceX96`
-/// representation:
-///
-/// ```text
-/// price        = ratio * 2^64                 (Q64.64 input)
-/// sqrtPriceX96 = sqrt(ratio) * 2^96 = isqrt(price << 128)
-/// tick         = get_tick_at_sqrt_ratio(sqrtPriceX96)
-/// ```
-///
-/// `isqrt` is a pure-integer square root (no floating point — deterministic in the zkVM). The
-/// `sqrtPriceX96` is clamped to at least `MIN_SQRT_RATIO` so a zero or dust price maps to
-/// `MIN_TICK` rather than erroring; the upper bound cannot be reached from a `u128` price (its
-/// max ratio `~2^64` corresponds to a tick well inside `MAX_TICK`).
-#[must_use]
-pub fn price_to_tick(price: u128) -> i32 {
-    use alloy_primitives::U256;
-    use uniswap_v3_math::tick_math::{get_tick_at_sqrt_ratio, MIN_SQRT_RATIO};
+/// Fixed bytes, [`ReadPrice::BYTES`], independent of any producer's own messages, so a
+/// consumer can read any producer that answers it. No oracle `Message` encodes to 8 bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadPrice;
 
-    // sqrtPriceX96 = sqrt(price / 2^64) * 2^96 = sqrt(price) * 2^64 = isqrt(price << 128).
-    // price < 2^128, so price << 128 < 2^256 and the shift never overflows U256.
-    let shifted = U256::from(price)
-        .checked_shl(128)
-        .expect("price < 2^128, so price << 128 fits in U256");
-    let sqrt_price_x96 = integer_sqrt(shifted).max(MIN_SQRT_RATIO);
+impl ReadPrice {
+    /// `sha256("lez_oracle::ReadPrice")[..8]`.
+    pub const BYTES: [u8; 8] = [79, 122, 236, 94, 108, 240, 101, 249];
 
-    get_tick_at_sqrt_ratio(sqrt_price_x96)
-        .expect("sqrt_price_x96 is clamped into [MIN_SQRT_RATIO, MAX_SQRT_RATIO)")
+    /// Whether a message is `ReadPrice`.
+    #[must_use]
+    pub fn matches(message: &[u8]) -> bool {
+        message == Self::BYTES
+    }
 }
 
-/// Floor of the integer square root of a 256-bit value, computed bit-by-bit with no floating
-/// point (`ruint`'s own `root` is gated behind its `std` feature and uses an `f64` seed, neither
-/// of which is available in the guest). Deterministic — suitable for the zkVM.
-fn integer_sqrt(n: alloy_primitives::U256) -> alloy_primitives::U256 {
-    use alloy_primitives::U256;
-
-    if n.is_zero() {
-        return U256::ZERO;
+impl BorshSerialize for ReadPrice {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&Self::BYTES)
     }
+}
 
-    // Largest power of four not exceeding `n`: `1 << (msb rounded down to an even bit index)`.
-    let msb = 255usize
-        .checked_sub(n.leading_zeros())
-        .expect("n is non-zero, so leading_zeros <= 255");
-    let start = msb & !1usize;
-    let mut d = U256::ONE.checked_shl(start).expect("start < 256");
-    let mut c = U256::ZERO;
-    let mut x = n;
-
-    // `c` and `d` are shifted with `wrapping_shr`, which logically drops the low bits (the
-    // algorithm intends to). `checked_shr` would return `None` whenever a set bit falls off
-    // (e.g. `d = 1 >> 2`), which is not what we want here.
-    while !d.is_zero() {
-        let cd = c
-            .checked_add(d)
-            .expect("c + d stays below the root, no overflow");
-        if x >= cd {
-            x = x.checked_sub(cd).expect("guarded by x >= cd");
-            c = c
-                .wrapping_shr(1)
-                .checked_add(d)
-                .expect("c/2 + d stays below the root, no overflow");
+impl BorshDeserialize for ReadPrice {
+    fn deserialize_reader<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut bytes = [0_u8; 8];
+        reader.read_exact(&mut bytes)?;
+        if bytes == Self::BYTES {
+            Ok(Self)
         } else {
-            c = c.wrapping_shr(1);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "not a ReadPrice",
+            ))
         }
-        d = d.wrapping_shr(2);
-    }
-
-    c
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// TWAP price encoding
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Number of fractional bits in the [`OraclePriceAccount::price`] fixed-point value.
-///
-/// The price is stored as a `Q64.64` ratio: `OraclePriceAccount::price / 2^PRICE_FRACTIONAL_BITS`
-/// is the amount of `quote_asset` one unit of `base_asset` is worth. A consumer multiplies a
-/// token amount by the price with `(amount * price) >> PRICE_FRACTIONAL_BITS`.
-pub const PRICE_FRACTIONAL_BITS: u32 = 64;
-
-/// Converts a TWAP tick into the `Q64.64` fixed-point price stored in
-/// [`OraclePriceAccount::price`].
-///
-/// The price is `1.0001^tick`, computed via the Uniswap v3 `sqrtPriceX96` representation
-/// (pure-integer, no floating point) and then squared back to a plain ratio:
-///
-/// ```text
-/// sqrtPriceX96 = sqrt(1.0001^tick) * 2^96
-/// price        = sqrtPriceX96^2 / 2^128 = 1.0001^tick * 2^64   (Q64.64)
-/// ```
-///
-/// `sqrtPriceX96^2` is computed with `full_math::mul_div` using a 512-bit intermediate, so it
-/// never overflows for any valid tick. The tick is clamped to `[MIN_TICK, MAX_TICK]` and the
-/// result saturates at `u128::MAX` for the (practically unreachable) ticks above ~443 636 whose
-/// ratio would exceed `2^64`.
-///
-/// See `docs/twap-oracle-tick-to-price-conversion.md` for the full derivation.
-#[must_use]
-pub fn tick_to_oracle_price(tick: i32) -> u128 {
-    use alloy_primitives::U256;
-    use uniswap_v3_math::tick_math::{MAX_TICK, MIN_TICK};
-
-    // 2^128, used to bring sqrtPriceX96^2 (a Q128.128 square) down to Q64.64.
-    // Built from limbs (little-endian u64 words) to avoid arithmetic operators on U256.
-    const TWO_POW_128: U256 = U256::from_limbs([0, 0, 1, 0]);
-
-    let clamped_tick = tick.clamp(MIN_TICK, MAX_TICK);
-    let sqrt_price_x96 = uniswap_v3_math::tick_math::get_sqrt_ratio_at_tick(clamped_tick)
-        .expect("clamped tick is within [MIN_TICK, MAX_TICK]");
-    let price_q64_64 =
-        uniswap_v3_math::full_math::mul_div(sqrt_price_x96, sqrt_price_x96, TWO_POW_128)
-            .expect("1.0001^tick * 2^64 fits in U256 for any valid tick");
-
-    u128::try_from(price_q64_64).unwrap_or(u128::MAX)
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Current tick account
-// ──────────────────────────────────────────────────────────────────────────────
-
-/// Live price tick for a price source, written by the price source on every price-changing
-/// operation.
-///
-/// Owned by the TWAP oracle as a PDA derived from
-/// `compute_current_tick_account_pda(oracle_program_id, price_source_id)`.
-/// One account exists per price source; it is shared across all time windows for that source.
-/// Anyone may call `RecordTick` to advance a [`PriceObservations`] accumulator using the tick
-/// stored here.
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct CurrentTickAccount {
-    /// Most recent raw tick written by the price source:
-    /// `floor(log_{1.0001}(reserve_b / reserve_a))`.
-    pub tick: i32,
-    /// Block timestamp (milliseconds) when `tick` was last written.
-    pub last_updated: u64,
-}
-
-impl TryFrom<&Data> for CurrentTickAccount {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        Self::try_from_slice(data.as_ref())
     }
 }
 
-impl From<&CurrentTickAccount> for Data {
-    fn from(account: &CurrentTickAccount) -> Self {
-        let serialized_len =
-            borsh::object_length(account).expect("CurrentTickAccount length must be known");
-        let mut data = Vec::with_capacity(serialized_len);
-        BorshSerialize::serialize(account, &mut data)
-            .expect("Serialization to Vec should not fail");
-        Self::try_from(data).expect("CurrentTickAccount encoded data should fit into Data")
-    }
+/// A price actor's sync reply to [`ReadPrice`]. Accept it only from the price actor you
+/// pinned, account and program.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PriceReply {
+    pub price: OraclePrice,
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Addresses
+// ──────────────────────────────────────────────────────────────────────────────
 
 const CURRENT_TICK_ACCOUNT_PDA_SEED: &[u8] = b"CURRENT_TICK_ACCOUNT";
+const PRICE_OBSERVATIONS_PDA_SEED: &[u8] = b"PRICE_OBSERVATIONS";
+const ORACLE_PRICE_ACCOUNT_PDA_SEED: &[u8] = b"ORACLE_PRICE_ACCOUNT";
 
-/// Derives the [`AccountId`] for a price source's [`CurrentTickAccount`] PDA.
-#[must_use]
-pub fn compute_current_tick_account_pda(
-    oracle_program_id: AccountId,
-    price_source_id: AccountId,
-) -> AccountId {
-    AccountId::for_public_pda(
-        &oracle_program_id,
-        &compute_current_tick_account_pda_seed(price_source_id),
-    )
-}
-
-/// Derives the [`PdaSeed`] for a price source's [`CurrentTickAccount`].
+/// The seed a program source derives its current-tick actor's account from, as its own PDA.
 ///
 /// Hash input: `price_source_id (32 bytes) || CURRENT_TICK_ACCOUNT_PDA_SEED`.
 #[must_use]
 pub fn compute_current_tick_account_pda_seed(price_source_id: AccountId) -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256};
+    hash_seed(&[&price_source_id.to_bytes(), CURRENT_TICK_ACCOUNT_PDA_SEED])
+}
 
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&price_source_id.to_bytes());
-    bytes.extend_from_slice(CURRENT_TICK_ACCOUNT_PDA_SEED);
+/// The observations actor's account, an oracle PDA of the current-tick actor and the window.
+#[must_use]
+pub fn compute_price_observations_pda(
+    oracle_program_id: AccountId,
+    current_tick_id: AccountId,
+    window_duration: u64,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &oracle_program_id,
+        &compute_price_observations_pda_seed(current_tick_id, window_duration),
+    )
+}
 
+/// Hash input: `current_tick_id (32 bytes) || window_duration_le (8 bytes) ||
+/// PRICE_OBSERVATIONS_PDA_SEED`.
+#[must_use]
+pub fn compute_price_observations_pda_seed(
+    current_tick_id: AccountId,
+    window_duration: u64,
+) -> PdaSeed {
+    hash_seed(&[
+        &current_tick_id.to_bytes(),
+        &window_duration.to_le_bytes(),
+        PRICE_OBSERVATIONS_PDA_SEED,
+    ])
+}
+
+/// The price actor's account, an oracle PDA of the current-tick actor and the window.
+#[must_use]
+pub fn compute_oracle_price_account_pda(
+    oracle_program_id: AccountId,
+    current_tick_id: AccountId,
+    window_duration: u64,
+) -> AccountId {
+    AccountId::for_public_pda(
+        &oracle_program_id,
+        &compute_oracle_price_account_pda_seed(current_tick_id, window_duration),
+    )
+}
+
+/// Hash input: `current_tick_id (32 bytes) || window_duration_le (8 bytes) ||
+/// ORACLE_PRICE_ACCOUNT_PDA_SEED`.
+#[must_use]
+pub fn compute_oracle_price_account_pda_seed(
+    current_tick_id: AccountId,
+    window_duration: u64,
+) -> PdaSeed {
+    hash_seed(&[
+        &current_tick_id.to_bytes(),
+        &window_duration.to_le_bytes(),
+        ORACLE_PRICE_ACCOUNT_PDA_SEED,
+    ])
+}
+
+fn hash_seed(parts: &[&[u8]]) -> PdaSeed {
+    let bytes = parts.concat();
     PdaSeed::new(
-        Impl::hash_bytes(&bytes)
+        *Impl::hash_bytes(&bytes)
             .as_bytes()
-            .try_into()
-            .expect("Hash output must be exactly 32 bytes long"),
+            .first_chunk::<32>()
+            .expect("a sha256 digest has 32 bytes"),
     )
 }
 
@@ -610,195 +448,103 @@ pub fn compute_current_tick_account_pda_seed(price_source_id: AccountId) -> PdaS
 mod tests {
     use super::*;
 
-    /// `1.0` in Q64.64 is `2^64`; its square root is `2^96 = sqrtPriceX96` at tick 0.
-    const ONE_Q64_64: u128 = 1u128 << 64;
-
-    // ── price_to_tick ───────────────────────────────────────────────────────────
-
-    #[test]
-    fn unit_price_maps_to_tick_zero() {
-        assert_eq!(price_to_tick(ONE_Q64_64), 0);
-    }
+    const POOL: AccountId = AccountId::new([1; 32]);
+    const AMM: AccountId = AccountId::new([2; 32]);
+    const KEY: AccountId = AccountId::new([3; 32]);
+    const ORACLE: AccountId = AccountId::new([4; 32]);
 
     #[test]
-    fn zero_price_maps_to_min_tick() {
-        // A zero/dust price clamps to MIN_SQRT_RATIO → MIN_TICK, never panics.
-        assert_eq!(price_to_tick(0), uniswap_v3_math::tick_math::MIN_TICK);
-    }
-
-    #[test]
-    fn prices_above_one_are_positive_below_one_negative() {
-        assert!(
-            price_to_tick(ONE_Q64_64 << 1) > 0,
-            "2.0 should be a positive tick"
-        );
-        assert!(
-            price_to_tick(ONE_Q64_64 >> 1) < 0,
-            "0.5 should be a negative tick"
+    fn read_price_bytes_are_the_documented_hash() {
+        let digest = Impl::hash_bytes(b"lez_oracle::ReadPrice");
+        assert_eq!(
+            digest.as_bytes().first_chunk::<8>(),
+            Some(&ReadPrice::BYTES)
         );
     }
 
     #[test]
-    fn price_to_tick_is_monotonic_in_price() {
-        // Strictly increasing Q64.64 prices spanning well below and above 1.0 must produce
-        // non-decreasing ticks. Built without the forward conversion, so this is self-contained.
-        let prices = [
-            1u128,
-            ONE_Q64_64 >> 40,
-            ONE_Q64_64 >> 20,
-            ONE_Q64_64 >> 10,
-            ONE_Q64_64 >> 1,
-            ONE_Q64_64,
-            ONE_Q64_64 << 1,
-            ONE_Q64_64 << 10,
-            ONE_Q64_64 << 20,
-            ONE_Q64_64 << 40,
-            u128::MAX,
+    fn read_price_round_trips_and_rejects_other_bytes() {
+        let bytes = borsh::to_vec(&ReadPrice).unwrap();
+        assert!(ReadPrice::matches(&bytes));
+        assert_eq!(borsh::from_slice::<ReadPrice>(&bytes).unwrap(), ReadPrice);
+        assert!(borsh::from_slice::<ReadPrice>(&[0; 8]).is_err());
+    }
+
+    #[test]
+    fn no_message_is_mistaken_for_read_price() {
+        let messages = [
+            Message::CreateCurrentTickAccount { initial_price: 0 },
+            Message::UpdateCurrentTick { price: 0 },
+            Message::CreatePriceAccounts {
+                window_duration: 0,
+                base_asset: POOL,
+                quote_asset: POOL,
+            },
+            Message::RecordTick { window_duration: 0 },
+            Message::PublishPrice { window_duration: 0 },
         ];
-        let mut prev = price_to_tick(prices[0]);
-        for &price in &prices[1..] {
-            let cur = price_to_tick(price);
-            assert!(cur >= prev, "tick must not decrease as price increases");
-            prev = cur;
+        for message in messages {
+            let bytes = borsh::to_vec(&message).unwrap();
+            assert_ne!(bytes.len(), ReadPrice::BYTES.len(), "{message:?}");
         }
     }
 
     #[test]
-    fn max_price_maps_near_saturation_tick_without_panicking() {
-        // The largest representable Q64.64 price maps to a large positive tick near the +443,636
-        // saturation edge. Exercises checked_shl(128) and the isqrt at their maximum input — the
-        // high-end counterpart to `zero_price_maps_to_min_tick`.
-        let tick = price_to_tick(u128::MAX);
-        assert!(
-            tick > 440_000,
-            "max price should map near the saturation tick, got {tick}"
-        );
-        assert!(tick <= uniswap_v3_math::tick_math::MAX_TICK);
-    }
-
-    // ── integer_sqrt ────────────────────────────────────────────────────────────
-
-    #[test]
-    fn integer_sqrt_matches_known_squares() {
-        use alloy_primitives::U256;
-        for v in [
-            0u128,
-            1,
-            4,
-            9,
-            2,
-            3,
-            15,
-            16,
-            17,
-            1_000_000,
-            u128::from(u64::MAX),
-        ] {
-            let n = U256::from(v);
-            let root = integer_sqrt(n);
-            // root^2 <= v < (root+1)^2
-            let root_sq = root.checked_mul(root).expect("root^2 fits");
-            let next = root.checked_add(U256::from(1u8)).expect("root+1 fits");
-            let next_sq = next.checked_mul(next).expect("(root+1)^2 fits");
-            assert!(root_sq <= n && n < next_sq, "isqrt({v}) = {root} is wrong");
-        }
+    fn a_program_source_derives_its_current_tick_actor_from_its_own_program() {
+        let source = PriceSource::program(Actor::new(POOL, AMM));
+        let expected =
+            AccountId::for_public_pda(&AMM, &compute_current_tick_account_pda_seed(POOL));
+        assert_eq!(source.current_tick_account_id(), expected);
+        assert_eq!(source.account_id(), POOL);
+        assert_eq!(source.program_actor(), Some(Actor::new(POOL, AMM)));
     }
 
     #[test]
-    fn integer_sqrt_on_large_values() {
-        use alloy_primitives::U256;
-        // Exact roots of large perfect squares (s <= 2^127 so s^2 fits in U256). This is the
-        // magnitude range price_to_tick actually exercises, well beyond u64::MAX.
-        for shift in [64usize, 100, 127] {
-            let s = U256::ONE.checked_shl(shift).expect("shift < 256");
-            let n = s.checked_mul(s).expect("s^2 fits for s <= 2^127");
-            assert_eq!(integer_sqrt(n), s, "isqrt((2^{shift})^2) should be exact");
-            // One below a perfect square floors to s - 1.
-            let n_minus = n.checked_sub(U256::ONE).expect("n > 0");
-            let s_minus = s.checked_sub(U256::ONE).expect("s > 0");
-            assert_eq!(
-                integer_sqrt(n_minus),
-                s_minus,
-                "isqrt((2^{shift})^2 - 1) should floor to 2^{shift} - 1"
-            );
-        }
-
-        // The largest input price_to_tick can feed: u128::MAX << 128 (~2^256). Must not panic and
-        // satisfy root^2 <= n. The upper bound (root+1)^2 is omitted — it would overflow U256.
-        let max_input = U256::from(u128::MAX)
-            .checked_shl(128)
-            .expect("u128::MAX << 128 fits in U256");
-        let root = integer_sqrt(max_input);
-        let root_sq = root.checked_mul(root).expect("root^2 < 2^256 fits");
-        assert!(root_sq <= max_input, "root^2 must not exceed n");
-        assert!(
-            root >= U256::ONE.checked_shl(127).expect("shift < 256"),
-            "root of a ~2^256 value should be ~2^128"
-        );
-    }
-
-    // ── tick_to_oracle_price ──────────────────────────────────────────────────────
-
-    #[test]
-    fn tick_zero_is_unit_price() {
-        // 1.0001^0 = 1.0 → exactly 2^64 in Q64.64.
-        assert_eq!(tick_to_oracle_price(0), ONE_Q64_64);
-    }
-
-    #[test]
-    fn positive_tick_is_above_unit() {
-        assert!(tick_to_oracle_price(1) > ONE_Q64_64);
-        assert!(tick_to_oracle_price(10_000) > ONE_Q64_64);
-    }
-
-    #[test]
-    fn negative_tick_is_below_unit() {
-        assert!(tick_to_oracle_price(-1) < ONE_Q64_64);
-        assert!(tick_to_oracle_price(-10_000) < ONE_Q64_64);
-    }
-
-    #[test]
-    fn price_is_monotonic_in_tick() {
-        let mut prev = tick_to_oracle_price(-50_000);
-        for tick in (-49_000..=50_000).step_by(1_000) {
-            let cur = tick_to_oracle_price(tick);
-            assert!(cur > prev, "price must increase with tick at {tick}");
-            prev = cur;
-        }
-    }
-
-    #[test]
-    fn tick_10000_matches_known_ratio() {
-        // 1.0001^10000 ≈ 2.71814. Check the ratio in milli-units (× 1000) lands in [2717, 2719]
-        // using integer math only — `price * 1000 / 2^64` ≈ 2718.
-        let price = tick_to_oracle_price(10_000);
-        let ratio_milli = price
-            .checked_mul(1_000)
-            .and_then(|scaled| scaled.checked_div(ONE_Q64_64))
-            .expect("price * 1000 fits in u128");
-        assert!(
-            (2_717..=2_719).contains(&ratio_milli),
-            "got {ratio_milli} / 1000"
-        );
-    }
-
-    #[test]
-    fn extreme_positive_tick_saturates() {
-        // 1.0001^MAX_TICK far exceeds 2^64, so the Q64.64 value saturates at u128::MAX.
-        let price = tick_to_oracle_price(uniswap_v3_math::tick_math::MAX_TICK);
-        assert_eq!(price, u128::MAX);
-    }
-
-    #[test]
-    fn ticks_beyond_bounds_are_clamped() {
-        // Ticks outside [MIN_TICK, MAX_TICK] must not panic; they clamp to the bound.
+    fn a_program_source_encodes_like_its_actor() {
+        let actor = Actor::new(POOL, AMM);
+        let source = borsh::to_vec(&PriceSource::program(actor)).unwrap();
+        assert_eq!(source.first(), Some(&0));
         assert_eq!(
-            tick_to_oracle_price(i32::MAX),
-            tick_to_oracle_price(uniswap_v3_math::tick_math::MAX_TICK)
+            source.get(1..),
+            Some(borsh::to_vec(&actor).unwrap().as_slice())
         );
-        assert_eq!(
-            tick_to_oracle_price(i32::MIN),
-            tick_to_oracle_price(uniswap_v3_math::tick_math::MIN_TICK)
+    }
+
+    #[test]
+    fn a_key_source_hosts_its_current_tick_actor() {
+        let source = PriceSource::Key(KEY);
+        assert_eq!(source.current_tick_account_id(), KEY);
+        assert_eq!(source.account_id(), KEY);
+        assert_eq!(source.program_actor(), None);
+    }
+
+    #[test]
+    fn window_actors_are_distinct_per_window_and_kind() {
+        let current_tick = PriceSource::program(Actor::new(POOL, AMM)).current_tick_account_id();
+        let observations = compute_price_observations_pda(ORACLE, current_tick, 3_600_000);
+        let price = compute_oracle_price_account_pda(ORACLE, current_tick, 3_600_000);
+        assert_ne!(observations, price);
+        assert_ne!(
+            observations,
+            compute_price_observations_pda(ORACLE, current_tick, 86_400_000)
         );
+        assert_ne!(
+            observations,
+            compute_price_observations_pda(ORACLE, KEY, 3_600_000)
+        );
+    }
+
+    #[test]
+    fn state_round_trips_and_empty_is_none() {
+        let state = OracleState::CurrentTick(CurrentTickState {
+            source: PriceSource::Key(KEY),
+            tick: -5,
+            last_updated: 0,
+            pending: Some(Pending::RecordTick {
+                window_duration: 3_600_000,
+            }),
+        });
+        assert_eq!(OracleState::decode(&state.encode()), Some(state));
+        assert_eq!(OracleState::decode(&[]), None);
     }
 }

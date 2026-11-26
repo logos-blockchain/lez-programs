@@ -69,6 +69,7 @@ def app(name, *paths):
 
 COMPONENTS = [
     program("token"),
+    program("nft", "token"),
     program("twap_oracle"),
     program("amm", "token", "twap_oracle"),
     program("ata", "token"),
@@ -130,7 +131,9 @@ def check_coverage():
     """Fails if a program or module directory has no component, so it can't go untested."""
     registered = {(c["kind"], c["name"]) for c in COMPONENTS}
     found = {("program", p.parent.parent.parent.name) for p in REPO.glob("programs/*/methods/guest/Cargo.toml")}
-    found |= {("module", p.parent.parent.name) for p in REPO.glob("modules/*/ffi/Cargo.toml")}
+    # The integration component covers its test guests.
+    found.discard(("program", "integration_tests"))
+    found |={("module", p.parent.parent.name) for p in REPO.glob("modules/*/ffi/Cargo.toml")}
     missing = sorted(f"{kind}:{name}" for kind, name in found - registered)
     if missing:
         sys.exit(f"No CI component for {missing}; add it to COMPONENTS in scripts/ci-plan.py")
