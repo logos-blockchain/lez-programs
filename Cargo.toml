@@ -9,6 +9,9 @@ members = [
     "programs/twap_oracle/core",
     "programs/twap_oracle",
     "programs/twap_oracle/methods",
+    "programs/amm/core",
+    "programs/amm",
+    "programs/amm/methods",
     "programs/integration_tests",
     "programs/integration_tests/methods",
     "tools/risc0-packager",
@@ -19,9 +22,6 @@ members = [
     # "modules/oracle/ffi",
     # "modules/stablecoin/ffi",
     # "modules/token/ffi",
-    # "programs/amm/core",
-    # "programs/amm",
-    # "programs/amm/methods",
     # "programs/ata/core",
     # "programs/ata",
     # "programs/ata/methods",
@@ -48,6 +48,9 @@ exclude = [
 resolver = "2"
 
 [workspace.dependencies]
+# SPEL client tooling for the LEZ actor model.
+spel-attrs = { git = "https://github.com/logos-co/spel.git", rev = "0d42ddb914ddaf2766e0b94661d97d3a2886792b" }
+spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "0d42ddb914ddaf2766e0b94661d97d3a2886792b" }
 # LEZ actor model (v0.4.0).
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["host"] }
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["test-utils"] }
