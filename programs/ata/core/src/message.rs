@@ -8,7 +8,7 @@ use lee_core::account::AccountId;
 /// Private recipients must execute the asset credit through runtime promotion in the
 /// same transaction. A deferred credit fails verification and rolls everything back.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-#[spel_attrs::message]
+#[cfg_attr(feature = "idl", spel_attrs::message)]
 pub enum Message {
     /// Permissionlessly initialize the derived holding. Declare its token actor and
     /// the definition's token actor. Repeated creation preserves an existing balance.

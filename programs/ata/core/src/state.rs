@@ -7,7 +7,7 @@ use crate::TransferRequest;
 /// private execution. Successful transactions restore empty state; the self-only
 /// idle assertion enforces completion even when a selected asset program never replies.
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-#[spel_attrs::state]
+#[cfg_attr(feature = "idl", spel_attrs::state)]
 pub enum AtaState {
     ReadingSource(TransferRequest),
     ReadingRecipient {

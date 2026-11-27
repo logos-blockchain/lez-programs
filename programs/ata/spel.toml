@@ -1,0 +1,4 @@
+[programs.ata]
+core = "core"
+idl = "../../artifacts/ata-idl.json"
+binary = "../../target/guest/ata.bin"
