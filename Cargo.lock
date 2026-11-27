@@ -2345,6 +2345,7 @@ dependencies = [
  "nft_core",
  "programs",
  "serde_json",
+ "spel-framework-core",
  "token-methods",
  "token_core",
  "twap-oracle-methods",

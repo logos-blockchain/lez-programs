@@ -279,6 +279,17 @@ receives all actor mentions, including token recipients needed for immediate
 public settlement. Creation routes to the config actor, pool operations to the
 pool actor, and administrative operations to the signed authority's AMM actor.
 
+To reproduce an exact-input swap's `message` bytes with SPEL, run this from
+the repository root. Use the plan's holding addresses in base58, amounts in
+base units, and deadline in milliseconds. The command prints the Borsh bytes
+in hex and works offline.
+
+```bash
+(cd programs/amm && spel encode swap-exact-input \
+  --user-input-holding "$INPUT_HOLDING" --user-output-holding "$OUTPUT_HOLDING" \
+  --swap-amount-in "$AMOUNT_IN" --min-amount-out "$MIN_OUT" --deadline "$DEADLINE_MS")
+```
+
 Account reads use `{ nonce, actor_states: [{ program, data }] }`. The wallet returns
 the nonce as a decimal string and actor program IDs and data as hex strings.
 An `AccountRead` also carries `programId` to select the AMM actor for pool

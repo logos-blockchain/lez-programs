@@ -53,4 +53,5 @@ amm-methods = { path = "../amm/methods" }
 [dev-dependencies]
 amm_ffi = { path = "../../modules/amm/ffi" }
 serde_json = { workspace = true }
+spel-framework-core = { workspace = true }
 hex = "0.4"

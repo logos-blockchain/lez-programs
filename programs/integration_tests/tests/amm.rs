@@ -1024,6 +1024,7 @@ fn creation_checks_token_id_arguments_and_the_initial_lp_signature() {
 fn module_plans_execute_with_only_their_declared_actors_and_signers() {
     use amm_ffi::api;
     use serde_json::{json, Value};
+    use spel_framework_core::{decode::decode_message, idl::SpelIdl};
     use twap_oracle_core::{
         compute_oracle_price_account_pda, compute_price_observations_pda, OracleState, PriceSource,
     };
@@ -1104,11 +1105,25 @@ fn module_plans_execute_with_only_their_declared_actors_and_signers() {
     request["userOutputHoldingId"] = json!(hex_id(chain.user_b));
     request["amountIn"] = json!("10000");
     request["minOut"] = json!("1");
-    execute(
-        &mut chain,
+    let swap =
         api::swap_exact_in_plan(serde_json::from_value(request.clone()).expect("swap request"))
-            .expect("swap plan"),
+            .expect("swap plan");
+    let idl = SpelIdl::from_json(include_str!("../../../artifacts/amm-idl.json")).expect("AMM IDL");
+    let bytes: Vec<u8> =
+        serde_json::from_value(swap["message"].clone()).expect("AMM message bytes");
+    let (name, fields) = decode_message(&bytes, &idl).expect("SPEL decodes the wallet's swap");
+    assert_eq!(name, "SwapExactInput");
+    assert_eq!(
+        fields,
+        json!({
+            "user_input_holding": chain.user_a.to_string(),
+            "user_output_holding": chain.user_b.to_string(),
+            "swap_amount_in": request["amountIn"],
+            "min_amount_out": request["minOut"],
+            "deadline": request["deadlineMs"],
+        })
     );
+    execute(&mut chain, swap);
     request["amountOut"] = json!("100");
     request["maxIn"] = json!("10000");
     execute(
