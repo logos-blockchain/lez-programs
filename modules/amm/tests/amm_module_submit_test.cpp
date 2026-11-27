@@ -37,10 +37,10 @@ std::vector<Operation> operations() {
     const auto transfer = plan({CONFIG, SIGNER}, {false, true}, transfer_bytes);
     const auto fees = plan({CONFIG, fee_account, HOLDING_A, SIGNER}, {false, false, false, true},
                            encoded(10, {{42, 16}}));
-    const auto observations = plan({CONFIG, POOL, tick, vault_b, clock},
-                                   {false, false, false, false, false}, encoded(2, {{2048, 8}}));
+    const auto observations = oraclePlan(plan({POOL, CONFIG, tick, vault_b, clock},
+                                   {false, false, false, false, false}, encoded(2, {{2048, 8}})), tick, vault_b);
     const auto price =
-        plan({CONFIG, POOL, vault_b, clock}, {false, false, false, false}, encoded(3, {{2048, 8}}));
+        oraclePlan(plan({POOL, CONFIG, vault_b, clock}, {false, false, false, false}, encoded(3, {{2048, 8}})), tick, vault_b);
     const std::vector<std::string> swap_accounts = {CONFIG,    POOL, vault_a, vault_b,    HOLDING_A,
                                                     HOLDING_B, tick, clock,   fee_account};
     const std::vector<bool> swap_signers = {false, false, false, false, true,
@@ -66,7 +66,9 @@ std::vector<Operation> operations() {
                            {false, false, false, false, false, false}, encoded(9, {}));
     const auto with_config = [](json fields) {
         fields["ammProgramId"] = PROGRAM;
-        fields["config"] = {{"id", CONFIG}, {"status", "ok"}, {"account", snapshot(configData())}};
+        auto account = snapshot(configData());
+        account["data"] = configData();
+        fields["config"] = {{"programId", PROGRAM}, {"id", CONFIG}, {"status", "ok"}, {"account", account}};
         return fields;
     };
     return {

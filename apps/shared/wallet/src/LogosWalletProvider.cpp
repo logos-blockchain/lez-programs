@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -20,6 +21,11 @@
 
 namespace {
 constexpr int WALLET_FFI_SUCCESS = 0;
+#ifdef LOGOS_WALLET_ACTOR_API
+// The app uses the sequencer configured in wallet_config.json.
+constexpr bool USE_RPC_SEQUENCER = true;
+constexpr int WALLET_FFI_WRONG_PASSWORD = 25;
+#endif
 constexpr int CAPABILITY_WARMUP_RETRY_MS = 50;
 constexpr int CAPABILITY_WARMUP_MAX_ATTEMPTS = 100;
 // Wallet creation calibrates the configured sequencers before returning. The
@@ -27,6 +33,17 @@ constexpr int CAPABILITY_WARMUP_MAX_ATTEMPTS = 100;
 // fresh wallet on a live network.
 constexpr int WALLET_CREATE_TIMEOUT_MS = 120000;
 constexpr quint64 SNAPSHOT_SYNC_CHUNK_BLOCKS = 512;
+
+WalletFailure walletOpenFailure(int result)
+{
+    if (result == WALLET_FFI_SUCCESS)
+        return WalletFailure::None;
+#ifdef LOGOS_WALLET_ACTOR_API
+    if (result == WALLET_FFI_WRONG_PASSWORD)
+        return WalletFailure::WrongPassword;
+#endif
+    return WalletFailure::OpenFailed;
+}
 
 bool isHex(const QString& value, qsizetype size, bool lowercaseOnly = true)
 {
@@ -132,9 +149,30 @@ WalletAccountRead parsePublicAccount(const QString& accountId,
         return read;
 
     const QJsonObject account = document.object();
+    const QString nonce = account.value(QStringLiteral("nonce")).toString();
+    const QJsonValue actors = account.value(QStringLiteral("actor_states"));
+    if (actors.isArray()) {
+        // The actor wallet serializes nonces as decimal u128 strings.
+        if (nonce.isEmpty() || balanceLess(QStringLiteral("340282366920938463463374607431768211455"), nonce))
+            return read;
+        for (const QChar digit : nonce) {
+            if (digit < QLatin1Char('0') || digit > QLatin1Char('9'))
+                return read;
+        }
+        for (const auto& value : actors.toArray()) {
+            if (!value.isObject())
+                return read;
+            const auto actor = value.toObject();
+            const QString program = actor.value(QStringLiteral("program")).toString();
+            const QString data = actor.value(QStringLiteral("data")).toString();
+            if (!isHex(program, 64) || data.size() % 2 != 0 || !isHex(data, data.size()))
+                return read;
+        }
+        read.status = QStringLiteral("ok");
+        return read;
+    }
     const QString owner = account.value(QStringLiteral("program_owner")).toString();
     const QString balance = account.value(QStringLiteral("balance")).toString();
-    const QString nonce = account.value(QStringLiteral("nonce")).toString();
     const QString data = account.value(QStringLiteral("data")).toString();
     if (!isHex(owner, 64)
         || !isHex(balance, 32)
@@ -202,10 +240,15 @@ WalletSession LogosWalletProvider::connect(const WalletPaths& paths)
     } else {
         if (!QFileInfo::exists(paths.storage))
             return failedSession(WalletFailure::WalletMissing);
-        if (m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics)
-            != WALLET_FFI_SUCCESS) {
-            return failedSession(WalletFailure::OpenFailed);
-        }
+#ifdef LOGOS_WALLET_ACTOR_API
+        const auto result = m_impl->logos->lez_core.open(
+            paths.config, paths.storage, paths.password, USE_RPC_SEQUENCER);
+#else
+        const auto result = m_impl->logos->lez_core.open(paths.config, paths.storage, paths.statistics);
+#endif
+        const WalletFailure failure = walletOpenFailure(result);
+        if (failure != WalletFailure::None)
+            return failedSession(failure);
     }
 
     m_connected = true;
@@ -306,12 +349,15 @@ void LogosWalletProvider::openAfterCapabilityAsync(
             return;
         }
         m_impl->logos->lez_core.openAsync(
+#ifdef LOGOS_WALLET_ACTOR_API
+            paths.config, paths.storage, paths.password, USE_RPC_SEQUENCER,
+#else
             paths.config, paths.storage, paths.statistics,
+#endif
             [this, alive, generation, finishOpen](int result) {
                 if (!alive || generation != m_generation)
                     return;
-                (*finishOpen)(false, result == WALLET_FFI_SUCCESS
-                    ? WalletFailure::None : WalletFailure::OpenFailed);
+                (*finishOpen)(false, walletOpenFailure(result));
             });
     };
 
@@ -359,7 +405,11 @@ WalletCreation LogosWalletProvider::createWallet(const WalletPaths& paths,
     QObject::connect(m_impl->callbackContext.get(), &QObject::destroyed,
                      &waitForCreation, &QEventLoop::quit);
     m_impl->logos->lez_core.create_newAsync(
+#ifdef LOGOS_WALLET_ACTOR_API
+        paths.config, paths.storage, password, USE_RPC_SEQUENCER,
+#else
         paths.config, paths.storage, paths.statistics, password,
+#endif
         [state, waiting = QPointer<QEventLoop>(&waitForCreation)](QString mnemonic) {
             state->mnemonic = std::move(mnemonic);
             state->finished = true;
@@ -510,14 +560,36 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
         submission.failure = WalletFailure::InvalidRequest;
         return submission;
     }
+    bool payerMentioned = false;
+    bool payerSigns = false;
     for (qsizetype i = 0; i < transaction.accountIds.size(); ++i) {
-        if (transaction.accountIds.at(i) == transaction.feePayerId
-            && !transaction.signingRequirements.at(i)) {
+        if (transaction.accountIds.at(i) == transaction.feePayerId) {
+            payerMentioned = true;
+            payerSigns = payerSigns || transaction.signingRequirements.at(i);
+        }
+    }
+    if (payerMentioned && !payerSigns) {
+        submission.failure = WalletFailure::InvalidRequest;
+        return submission;
+    }
+
+#ifdef LOGOS_WALLET_ACTOR_API
+    if (transaction.actorProgramIds.size() != transaction.accountIds.size()
+        || transaction.rootMention >= static_cast<quint64>(transaction.accountIds.size())
+        || transaction.message.isEmpty()) {
+        submission.failure = WalletFailure::InvalidRequest;
+        return submission;
+    }
+    for (const QString& actorProgram : transaction.actorProgramIds) {
+        if (!isHex(actorProgram, 64)) {
             submission.failure = WalletFailure::InvalidRequest;
             return submission;
         }
     }
-
+    const QString response = m_impl->logos->lez_core.send_generic_public_transaction(
+        transaction.accountIds, transaction.rootMention, transaction.signingRequirements,
+        transaction.message, transaction.feePayerId, transaction.actorProgramIds);
+#else
     // `send_generic_public_transaction`'s `instruction` param is a byte string
     // (bstr). Passing a QVariantList<u32> makes the module's QtRO glue mangle it,
     // so the guest reads a garbage Instruction variant. Send the little-endian
@@ -539,6 +611,7 @@ WalletSubmission LogosWalletProvider::submitPublicTransaction(
             instructionBytes,
             transaction.programId,
             transaction.feePayerId);
+#endif
 
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(response.toUtf8(), &parseError);
@@ -616,7 +689,7 @@ WalletSnapshot LogosWalletProvider::loadSnapshot()
         if (account.isPublic) {
             const WalletAccountRead read = readPublicAccount(address);
             result.publicAccountReads.append(read);
-            account.balance = read.ok()
+            account.balance = read.ok() && !read.balanceHex.isEmpty()
                 ? littleEndianU128ToDecimal(read.balanceHex)
                 : m_impl->logos->lez_core.get_balance(address, true);
         } else {
@@ -756,7 +829,7 @@ void LogosWalletProvider::loadSnapshotAsync(quint64 generation,
                                             const WalletAccountRead read =
                                                 parsePublicAccount(accountId, payload);
                                             state->publicReads[index] = read;
-                                            if (read.ok()) {
+                                            if (read.ok() && !read.balanceHex.isEmpty()) {
                                                 state->snapshot.accounts[index].balance =
                                                     littleEndianU128ToDecimal(read.balanceHex);
                                                 (*finishOne)();

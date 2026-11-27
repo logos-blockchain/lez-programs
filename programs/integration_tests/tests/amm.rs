@@ -502,6 +502,20 @@ fn direct_lp_burns_reduce_the_supply_used_to_mint_new_liquidity() {
             .checked_sub(burned)
             .expect("burned supply")
     );
+    let quote = amm_ffi::api::add_liquidity_quote(
+        serde_json::from_value(serde_json::json!({
+            "tokenAId": hex::encode(pool.definition_token_a_id.value()),
+            "tokenBId": hex::encode(pool.definition_token_b_id.value()),
+            "maxAmountA": pool.reserve_a.to_string(),
+            "maxAmountB": pool.reserve_b.to_string(),
+            "slippageBps": 0,
+            "poolData": hex::encode(AmmState::Pool(pool.clone()).encode()),
+            "lpSupply": actual_supply.to_string(),
+        }))
+        .expect("quote request"),
+    )
+    .expect("add quote");
+    assert_eq!(quote["minimumLp"], actual_supply.to_string());
     let before_lp = chain.balance(chain.user_lp);
     // Doubling reserves should mint exactly the current outstanding supply,
     // preserving the donation from the direct burn for existing LP holders.
@@ -548,6 +562,20 @@ fn direct_lp_burns_donate_to_remaining_liquidity_holders() {
     let supply = chain.lp_supply();
     let expected_a = amm_core::mul_div_floor(pool.reserve_a, liquidity, supply);
     let expected_b = amm_core::mul_div_floor(pool.reserve_b, liquidity, supply);
+    let quote = amm_ffi::api::remove_liquidity_quote(
+        serde_json::from_value(serde_json::json!({
+            "tokenAId": hex::encode(pool.definition_token_a_id.value()),
+            "tokenBId": hex::encode(pool.definition_token_b_id.value()),
+            "lpAmount": liquidity.to_string(),
+            "slippageBps": 0,
+            "poolData": hex::encode(AmmState::Pool(pool.clone()).encode()),
+            "lpSupply": supply.to_string(),
+        }))
+        .expect("quote request"),
+    )
+    .expect("remove quote");
+    assert_eq!(quote["minimumAmountA"], expected_a.to_string());
+    assert_eq!(quote["minimumAmountB"], expected_b.to_string());
     let (before_a, before_b) = (chain.balance(chain.user_a), chain.balance(chain.user_b));
     chain
         .call(
@@ -990,4 +1018,190 @@ fn creation_checks_token_id_arguments_and_the_initial_lp_signature() {
         "token A definition mismatch",
     );
     assert_eq!(chain.snapshot(), before);
+}
+
+#[test]
+fn module_plans_execute_with_only_their_declared_actors_and_signers() {
+    use amm_ffi::api;
+    use serde_json::{json, Value};
+    use spel_framework_core::{decode::decode_message, idl::SpelIdl};
+    use twap_oracle_core::{
+        compute_oracle_price_account_pda, compute_price_observations_pda, OracleState, PriceSource,
+    };
+    let mut chain = Chain::empty(2_000);
+    let hex_id = |id: AccountId| hex::encode(id.value());
+    let config = chain.state.get_account_by_id(chain.config);
+    let config_read = json!({
+        "id": hex_id(chain.config), "programId": hex_id(chain.amm), "status": "ok",
+        "account": {
+            "nonce": config.nonce.0.to_string(),
+            "actor_states": [{"program": hex_id(chain.amm), "data": hex::encode(config.data.actor_state(chain.amm))}]
+        }
+    });
+    let mut request = json!({
+        "ammProgramId": hex_id(chain.amm), "config": config_read,
+        "tokenAId": hex_id(chain.a), "tokenBId": hex_id(chain.b),
+        "userHoldingAId": hex_id(chain.user_a), "userHoldingBId": hex_id(chain.user_b),
+        "userHoldingLpId": hex_id(chain.user_lp),
+        "amountA": DEPOSIT_A.to_string(), "amountB": DEPOSIT_B.to_string(),
+        "deadlineMs": u64::MAX.to_string(),
+    });
+    let submit_plan = |chain: &mut Chain, plan: Value| {
+        let ids: Vec<String> = serde_json::from_value(plan["accountIds"].clone()).expect("ids");
+        let programs: Vec<String> =
+            serde_json::from_value(plan["actorProgramIds"].clone()).expect("programs");
+        let flags: Vec<bool> =
+            serde_json::from_value(plan["signingRequirements"].clone()).expect("signers");
+        let parse =
+            |id: &str| AccountId::new(hex::decode(id).expect("hex").try_into().expect("32 bytes"));
+        let actors: Vec<_> = ids
+            .iter()
+            .zip(&programs)
+            .map(|(id, p)| Actor::new(parse(id), parse(p)))
+            .collect();
+        // The wallet rejects an account mentioned with different authorizations.
+        let mut authorization = std::collections::HashMap::new();
+        for (id, flag) in ids.iter().zip(&flags) {
+            assert_eq!(authorization.entry(parse(id)).or_insert(*flag), flag);
+        }
+        let keys: Vec<_> = (1..=6).map(key).collect();
+        let signers: Vec<_> = keys
+            .iter()
+            .filter(|k| authorization.get(&account(k)) == Some(&true))
+            .collect();
+        let bytes: Vec<u8> =
+            serde_json::from_value(plan["message"].clone()).expect("message bytes");
+        let message: Message = borsh::from_slice(&bytes).expect("actor message");
+        let root = usize::try_from(plan["rootMention"].as_u64().expect("root")).expect("index");
+        submit(
+            &mut chain.state,
+            *actors.get(root).expect("root actor"),
+            &actors,
+            &signers,
+            &message,
+        )
+    };
+    let execute = |chain: &mut Chain, plan| {
+        submit_plan(chain, plan).expect("module plan settles");
+    };
+    execute(
+        &mut chain,
+        api::create_pool_plan(serde_json::from_value(request.clone()).expect("create request"))
+            .expect("create plan"),
+    );
+    let pool = chain.pool();
+    request["poolData"] = json!(hex::encode(AmmState::Pool(pool).encode()));
+    request["maxAmountA"] = json!("10000");
+    request["maxAmountB"] = json!("20000");
+    request["minLp"] = json!("1");
+    execute(
+        &mut chain,
+        api::add_liquidity_plan(serde_json::from_value(request.clone()).expect("add request"))
+            .expect("add plan"),
+    );
+    request["tokenInId"] = json!(hex_id(chain.a));
+    request["tokenOutId"] = json!(hex_id(chain.b));
+    request["userInputHoldingId"] = json!(hex_id(chain.user_a));
+    request["userOutputHoldingId"] = json!(hex_id(chain.user_b));
+    request["amountIn"] = json!("10000");
+    request["minOut"] = json!("1");
+    let swap =
+        api::swap_exact_in_plan(serde_json::from_value(request.clone()).expect("swap request"))
+            .expect("swap plan");
+    let idl = SpelIdl::from_json(include_str!("../../../artifacts/amm-idl.json")).expect("AMM IDL");
+    let bytes: Vec<u8> =
+        serde_json::from_value(swap["message"].clone()).expect("AMM message bytes");
+    let (name, fields) = decode_message(&bytes, &idl).expect("SPEL decodes the wallet's swap");
+    assert_eq!(name, "SwapExactInput");
+    assert_eq!(
+        fields,
+        json!({
+            "user_input_holding": chain.user_a.to_string(),
+            "user_output_holding": chain.user_b.to_string(),
+            "swap_amount_in": request["amountIn"],
+            "min_amount_out": request["minOut"],
+            "deadline": request["deadlineMs"],
+        })
+    );
+    execute(&mut chain, swap);
+    request["amountOut"] = json!("100");
+    request["maxIn"] = json!("10000");
+    execute(
+        &mut chain,
+        api::swap_exact_out_plan(serde_json::from_value(request.clone()).expect("swap request"))
+            .expect("swap plan"),
+    );
+    request["lpAmount"] = json!("1000");
+    request["minAmountA"] = json!("1");
+    request["minAmountB"] = json!("1");
+    execute(
+        &mut chain,
+        api::remove_liquidity_plan(
+            serde_json::from_value(request.clone()).expect("remove request"),
+        )
+        .expect("remove plan"),
+    );
+    execute(
+        &mut chain,
+        api::sync_reserves_plan(serde_json::from_value(request.clone()).expect("sync request"))
+            .expect("sync plan"),
+    );
+    // Each AMM setup entrypoint creates both Oracle actors for a fresh window.
+    let tick = PriceSource::program(Actor::new(chain.pool, chain.amm)).current_tick_account_id();
+    for window in [3_600_000, 7_200_000] {
+        request["windowDurationMs"] = json!(window);
+        let plan = if window == 3_600_000 {
+            api::create_price_observations_plan(serde_json::from_value(request.clone()).unwrap())
+        } else {
+            api::create_oracle_price_account_plan(serde_json::from_value(request.clone()).unwrap())
+        }
+        .expect("oracle plan");
+        execute(&mut chain, plan.clone());
+        let observations = compute_price_observations_pda(chain.oracle, tick, window);
+        let price = compute_oracle_price_account_pda(chain.oracle, tick, window);
+        let accounts = |chain: &Chain| {
+            [chain.pool, tick, observations, price].map(|id| chain.state.get_account_by_id(id))
+        };
+        let before = accounts(&chain);
+        assert!(
+            matches!(OracleState::decode(before[2].data.actor_state(chain.oracle)), Some(OracleState::PriceObservations(state)) if state.window_duration == window)
+        );
+        assert!(
+            matches!(OracleState::decode(before[3].data.actor_state(chain.oracle)), Some(OracleState::Price(state)) if state.source_id == chain.pool && state.price > 0)
+        );
+        assert_refused(
+            &submit_plan(&mut chain, plan),
+            "observations actor already exists",
+        );
+        assert_eq!(accounts(&chain), before);
+    }
+    // The authority signs as the AMM actor and receives the fee at its token actor.
+    let authority = account(&key(1));
+    chain
+        .token_submit(
+            authority,
+            &[authority, chain.a],
+            &[&key(1)],
+            &TokenMessage::InitializeHolding {
+                definition: chain.a,
+            },
+        )
+        .expect("authority holding initialized");
+    request["tokenDefinitionId"] = json!(hex_id(chain.a));
+    request["destinationId"] = json!(hex_id(authority));
+    request["amount"] = json!("1");
+    execute(
+        &mut chain,
+        api::withdraw_protocol_fees_plan(
+            serde_json::from_value(request.clone()).expect("fee request"),
+        )
+        .expect("fee plan"),
+    );
+    assert_eq!(chain.balance(authority), 1);
+    request["newAuthorityId"] = json!(hex_id(account(&key(6))));
+    execute(
+        &mut chain,
+        api::transfer_ownership_plan(serde_json::from_value(request).expect("admin request"))
+            .expect("admin plan"),
+    );
 }

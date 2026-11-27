@@ -1,5 +1,5 @@
 use lee_core::account::AccountId;
-use token_core::TokenHolding;
+use token_core::{TokenHolding, TokenState};
 
 use crate::account::{decode_account, AccountRead};
 
@@ -25,16 +25,13 @@ pub(super) fn decode_fungible_holding(
     token_program: AccountId,
 ) -> Result<SelectedHolding, String> {
     let (id, account) = decode_account(read)?;
-    if account.program_owner != token_program {
-        return Err(String::from("holding owner mismatch"));
-    }
-    let TokenHolding::Fungible {
+    let TokenState::Holding(TokenHolding {
         definition_id,
         balance,
-    } = TokenHolding::try_from(&account.data)
-        .map_err(|_| String::from("invalid fungible holding"))?
+    }) = borsh::from_slice(account.data.actor_state(token_program).as_ref())
+        .map_err(|_| "invalid fungible holding")?
     else {
-        return Err(String::from("invalid fungible holding"));
+        return Err("invalid fungible holding".into());
     };
     Ok(SelectedHolding {
         id,

@@ -1,17 +1,16 @@
 use alloy_primitives::U256;
 use amm_core::{
     compute_config_pda, compute_liquidity_token_pda, compute_lp_lock_holding_pda, compute_pool_pda,
-    compute_protocol_fee_pda, compute_vault_pda, isqrt_product, AmmConfig, Instruction,
-    PoolDefinition, MINIMUM_LIQUIDITY,
+    compute_protocol_fee_pda, compute_vault_pda, isqrt_product, AmmConfig, Message, PoolDefinition,
+    MINIMUM_LIQUIDITY,
 };
-use clock_core::CLOCK_01_PROGRAM_ACCOUNT_ID;
-use lee_core::account::{Account, AccountId, Data, Nonce};
+use lee_core::account::{Account, AccountId, Actor, ActorState};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{json, Value};
 use token_core::{TokenDefinition, TokenHolding};
 use twap_oracle_core::{
-    compute_current_tick_account_pda, compute_oracle_price_account_pda,
-    compute_price_observations_pda,
+    compute_oracle_price_account_pda, compute_price_observations_pda, PriceSource,
+    OBSERVATIONS_CAPACITY,
 };
 
 use super::{
@@ -36,13 +35,8 @@ const AMM_PROGRAM: AccountId = AccountId::new([11; 32]);
 const TOKEN_PROGRAM: AccountId = AccountId::new([22; 32]);
 const TWAP_PROGRAM: AccountId = AccountId::new([33; 32]);
 
-fn account(owner: AccountId, data: Data) -> Account {
-    Account {
-        program_owner: owner,
-        balance: 0,
-        data,
-        nonce: Nonce(0),
-    }
+fn account(owner: AccountId, data: ActorState) -> Account {
+    Account::default().with_actor_state(owner, data)
 }
 
 fn default_read(id: AccountId) -> AccountRead {
@@ -59,35 +53,43 @@ fn config_id() -> AccountId {
 fn config_account() -> Account {
     account(
         AMM_PROGRAM,
-        Data::from(&AmmConfig {
-            token_program_id: TOKEN_PROGRAM,
-            twap_oracle_program_id: TWAP_PROGRAM,
-            authority: AccountId::new([7; 32]),
-            swap_fee_bps: 30,
-            protocol_fee_bps: 2_000,
-        }),
+        ActorState::from(
+            borsh::to_vec(&amm_core::AmmState::Config(AmmConfig {
+                token_program_id: TOKEN_PROGRAM,
+                twap_oracle_program_id: TWAP_PROGRAM,
+                authority: AccountId::new([7; 32]),
+                swap_fee_bps: 30,
+                protocol_fee_bps: 2_000,
+            }))
+            .unwrap(),
+        ),
     )
 }
 
 fn token_definition(name: &str, supply: u128) -> Account {
     account(
         TOKEN_PROGRAM,
-        Data::from(&TokenDefinition::Fungible {
-            name: String::from(name),
-            total_supply: supply,
-            metadata_id: None,
-            authority: None,
-        }),
+        ActorState::from(
+            borsh::to_vec(&token_core::TokenState::Definition(TokenDefinition {
+                name: String::from(name),
+                total_supply: supply,
+                authority: None,
+            }))
+            .unwrap(),
+        ),
     )
 }
 
 fn token_holding(definition_id: AccountId, balance: u128) -> Account {
     account(
         TOKEN_PROGRAM,
-        Data::from(&TokenHolding::Fungible {
-            definition_id,
-            balance,
-        }),
+        ActorState::from(
+            borsh::to_vec(&token_core::TokenState::Holding(TokenHolding {
+                definition_id,
+                balance,
+            }))
+            .unwrap(),
+        ),
     )
 }
 
@@ -105,8 +107,8 @@ fn ids() -> PairIds {
         vault_b: compute_vault_pda(AMM_PROGRAM, pool, token_b),
         lp_definition: compute_liquidity_token_pda(AMM_PROGRAM, pool),
         lp_lock_holding: compute_lp_lock_holding_pda(AMM_PROGRAM, pool),
-        current_tick: compute_current_tick_account_pda(TWAP_PROGRAM, pool),
-        clock: CLOCK_01_PROGRAM_ACCOUNT_ID,
+        token_program: TOKEN_PROGRAM,
+        current_tick: PriceSource::program(Actor::new(pool, AMM_PROGRAM)).current_tick_account_id(),
         twap_oracle_program: TWAP_PROGRAM,
     }
 }
@@ -169,10 +171,11 @@ fn pair_manifest_uses_canonical_ids_and_current_program_types() {
     assert_eq!(result["status"], "ok");
     assert_eq!(result["tokenAId"], account_id_hex(token_a));
     assert_eq!(result["tokenBId"], account_id_hex(token_b));
-    assert_eq!(
-        result["poolId"],
-        account_id_hex(compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b))
-    );
+    let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
+    assert_eq!(result["poolId"], account_id_hex(pool));
+    let current_tick =
+        PriceSource::program(Actor::new(pool, AMM_PROGRAM)).current_tick_account_id();
+    assert_eq!(result["oracleAccountId"], account_id_hex(current_tick));
 }
 
 #[test]
@@ -270,21 +273,22 @@ fn transfer_ownership_plan_targets_config_and_current_admin() {
     assert_eq!(
         plan["accountIds"],
         json!([
-            account_id_hex(config_id),
-            account_id_hex(AccountId::new([7; 32]))
+            account_id_hex(AccountId::new([7; 32])),
+            account_id_hex(config_id)
         ])
     );
-    assert_eq!(plan["signingRequirements"], json!([false, true]));
+    assert_eq!(plan["signingRequirements"], json!([true, false]));
 
     // The instruction decodes back to UpdateConfig { new_authority }.
-    let bytes: Vec<u8> = plan["instruction"]
+    let bytes: Vec<u8> = plan["message"]
         .as_array()
         .unwrap()
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::UpdateConfig {
+    let Message::UpdateConfig {
         new_authority: decoded,
+        ..
     } = borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected UpdateConfig");
@@ -297,43 +301,84 @@ fn withdraw_protocol_fees_plan_targets_protocol_pda_destination_and_admin() {
     let config_id = config_id();
     let token_def = AccountId::new([3; 32]);
     let destination = AccountId::new([8; 32]);
-    let plan = withdraw_protocol_fees_plan(WithdrawProtocolFeesPlanRequest {
+    let request = WithdrawProtocolFeesPlanRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
         token_definition_id: account_id_hex(token_def),
         destination_id: account_id_hex(destination),
         amount: "500".into(),
-    })
-    .unwrap();
+    };
+    let plan = withdraw_protocol_fees_plan(request.clone()).unwrap();
 
-    // Accounts: [config, protocol-fee PDA (for token_def), destination, admin authority (signs)].
-    // The admin is [7; 32] (the config_account fixture's authority); the protocol-fee holding is
-    // the instance-wide PDA for token_def; `amount` is instruction data, not an account.
+    let authority = AccountId::new([7; 32]);
     assert_eq!(
         plan["accountIds"],
         json!([
+            account_id_hex(authority),
             account_id_hex(config_id),
             account_id_hex(compute_protocol_fee_pda(AMM_PROGRAM, config_id, token_def)),
             account_id_hex(destination),
-            account_id_hex(AccountId::new([7; 32])),
         ])
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([false, false, false, true])
+        json!([true, false, false, false])
     );
 
     // The instruction decodes back to WithdrawProtocolFees { amount }.
-    let bytes: Vec<u8> = plan["instruction"]
+    let bytes: Vec<u8> = plan["message"]
         .as_array()
         .unwrap()
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::WithdrawProtocolFees { amount } = borsh::from_slice(&bytes).unwrap() else {
+    let Message::WithdrawProtocolFees { amount, .. } = borsh::from_slice(&bytes).unwrap() else {
         panic!("expected WithdrawProtocolFees");
     };
     assert_eq!(amount, 500);
+
+    let self_plan = withdraw_protocol_fees_plan(WithdrawProtocolFeesPlanRequest {
+        destination_id: account_id_hex(authority),
+        ..request
+    })
+    .unwrap();
+    assert_eq!(self_plan["accountIds"][0], account_id_hex(authority));
+    assert_eq!(self_plan["actorProgramIds"][0], account_id_hex(AMM_PROGRAM));
+    assert_eq!(self_plan["accountIds"][3], account_id_hex(authority));
+    assert_eq!(
+        self_plan["actorProgramIds"][3],
+        account_id_hex(TOKEN_PROGRAM)
+    );
+    assert_eq!(
+        self_plan["signingRequirements"],
+        json!([true, false, false, true])
+    );
+}
+
+fn assert_window_actors(plan: &Value, pool: AccountId, window: u64) {
+    let current_tick =
+        PriceSource::program(Actor::new(pool, AMM_PROGRAM)).current_tick_account_id();
+    let ids = plan["accountIds"].as_array().unwrap();
+    let programs = plan["actorProgramIds"].as_array().unwrap();
+    for actor in [
+        Actor::new(current_tick, TWAP_PROGRAM),
+        Actor::new(
+            compute_price_observations_pda(TWAP_PROGRAM, current_tick, window),
+            TWAP_PROGRAM,
+        ),
+        Actor::new(
+            compute_oracle_price_account_pda(TWAP_PROGRAM, current_tick, window),
+            TWAP_PROGRAM,
+        ),
+        clock_core::clock_actor(),
+    ] {
+        let id = account_id_hex(actor.account_id);
+        let program = account_id_hex(actor.program_account_id);
+        assert!(ids
+            .iter()
+            .zip(programs)
+            .any(|(a, p)| *a == id && *p == program));
+    }
 }
 
 #[test]
@@ -342,41 +387,42 @@ fn create_price_observations_plan_targets_the_window_feed_accounts() {
     let token_b = AccountId::new([1; 32]);
     let config_id = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
-    let window = 3_600_000_u64;
+    let window = u64::from(OBSERVATIONS_CAPACITY);
 
-    let plan = create_price_observations_plan(CreatePriceObservationsPlanRequest {
+    let request = CreatePriceObservationsPlanRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
         token_a_id: account_id_hex(token_a),
         token_b_id: account_id_hex(token_b),
         window_duration_ms: window,
-    })
-    .unwrap();
-
-    // config, pool (price source), current_tick (initial tick), price_observations (init), clock.
+    };
     assert_eq!(
-        plan["accountIds"],
-        json!([
-            account_id_hex(config_id),
-            account_id_hex(pool),
-            account_id_hex(compute_current_tick_account_pda(TWAP_PROGRAM, pool)),
-            account_id_hex(compute_price_observations_pda(TWAP_PROGRAM, pool, window)),
-            account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        ])
+        create_price_observations_plan(CreatePriceObservationsPlanRequest {
+            window_duration_ms: window - 1,
+            ..request.clone()
+        })
+        .unwrap_err(),
+        "invalid_window"
     );
-    assert_eq!(
-        plan["signingRequirements"],
-        json!([false, false, false, false, false])
-    );
+    let plan = create_price_observations_plan(request).unwrap();
 
-    let bytes: Vec<u8> = plan["instruction"]
+    assert_eq!(plan["rootMention"], 0);
+    assert_eq!(plan["accountIds"][0], account_id_hex(pool));
+    assert_eq!(plan["actorProgramIds"][0], account_id_hex(AMM_PROGRAM));
+    assert_window_actors(&plan, pool, window);
+    assert!(plan["signingRequirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s == false));
+
+    let bytes: Vec<u8> = plan["message"]
         .as_array()
         .unwrap()
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::CreatePriceObservations { window_duration } =
-        borsh::from_slice(&bytes).unwrap()
+    let Message::CreatePriceObservations { window_duration } = borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected CreatePriceObservations");
     };
@@ -389,40 +435,42 @@ fn create_oracle_price_account_plan_targets_the_window_price_account() {
     let token_b = AccountId::new([1; 32]);
     let config_id = config_id();
     let pool = compute_pool_pda(AMM_PROGRAM, config_id, token_a, token_b);
-    let window = 900_000_u64;
+    let window = u64::from(OBSERVATIONS_CAPACITY);
 
-    let plan = create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
+    let request = CreateOraclePriceAccountPlanRequest {
         amm_program_id: amm_program_id(),
         config: account_read(config_id, &config_account()),
         token_a_id: account_id_hex(token_a),
         token_b_id: account_id_hex(token_b),
         window_duration_ms: window,
-    })
-    .unwrap();
-
-    // config, pool (price source), oracle_price_account (init), clock.
+    };
     assert_eq!(
-        plan["accountIds"],
-        json!([
-            account_id_hex(config_id),
-            account_id_hex(pool),
-            account_id_hex(compute_oracle_price_account_pda(TWAP_PROGRAM, pool, window)),
-            account_id_hex(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        ])
+        create_oracle_price_account_plan(CreateOraclePriceAccountPlanRequest {
+            window_duration_ms: window - 1,
+            ..request.clone()
+        })
+        .unwrap_err(),
+        "invalid_window"
     );
-    assert_eq!(
-        plan["signingRequirements"],
-        json!([false, false, false, false])
-    );
+    let plan = create_oracle_price_account_plan(request).unwrap();
 
-    let bytes: Vec<u8> = plan["instruction"]
+    assert_eq!(plan["rootMention"], 0);
+    assert_eq!(plan["accountIds"][0], account_id_hex(pool));
+    assert_eq!(plan["actorProgramIds"][0], account_id_hex(AMM_PROGRAM));
+    assert_window_actors(&plan, pool, window);
+    assert!(plan["signingRequirements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|s| s == false));
+
+    let bytes: Vec<u8> = plan["message"]
         .as_array()
         .unwrap()
         .iter()
         .map(|byte| u8::try_from(byte.as_u64().unwrap()).unwrap())
         .collect();
-    let Instruction::CreateOraclePriceAccount { window_duration } =
-        borsh::from_slice(&bytes).unwrap()
+    let Message::CreateOraclePriceAccount { window_duration } = borsh::from_slice(&bytes).unwrap()
     else {
         panic!("expected CreateOraclePriceAccount");
     };
@@ -515,6 +563,7 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
 
     let pool_id = compute_pool_pda(AMM_PROGRAM, config_id(), token_small, token_large);
     let pool = PoolDefinition {
+        config_id: AccountId::new([0; 32]),
         definition_token_a_id: token_small, // stored non-canonically (small first)
         definition_token_b_id: token_large,
         vault_a_id: compute_vault_pda(AMM_PROGRAM, pool_id, token_small),
@@ -532,28 +581,23 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         token_out_id: account_id_hex(token_large),
         config: account_read(config_id(), &config_account()),
         user_input_holding_id: account_id_hex(holding),
-        user_output_holding_id: account_id_hex(holding),
+        user_output_holding_id: account_id_hex(AccountId::new([0x99; 32])),
         amount_in: String::from("100"),
         min_out: String::from("0"),
         deadline_ms: String::from("0"),
-        pool_data: hex::encode(borsh::to_vec(&pool).unwrap()),
+        pool_data: hex::encode(borsh::to_vec(&amm_core::AmmState::Pool(pool.clone())).unwrap()),
     })
     .unwrap();
 
-    // Slots 2 and 3 are vault_a / vault_b — in the pool's stored order, not the
-    // canonical order. (A domain error would leave accountIds absent, so these
-    // also assert the plan succeeded.)
-    assert_eq!(plan["accountIds"][2], account_id_hex(pool.vault_a_id));
-    assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_b_id));
-    // Guard: the stored vault_a genuinely differs from the canonical derivation
-    // (the pre-fix bug would have emitted this one in slot 2).
+    // The vault mentions follow the pool's stored token order.
+    assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_a_id));
+    assert_eq!(plan["accountIds"][4], account_id_hex(pool.vault_b_id));
     assert_ne!(
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
-    // Slot 8 is the 9th account the guest now requires: the INPUT token's instance-wide
-    // protocol-fee holding PDA. Only the input holding (slot 4) signs; the protocol PDA does not.
-    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 9);
+    // Both protocol-fee holdings are mentioned. The input holding authorizes the debit.
+    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 12);
     assert_eq!(
         plan["accountIds"][8],
         account_id_hex(compute_protocol_fee_pda(
@@ -564,7 +608,7 @@ fn swap_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([false, false, false, false, true, false, false, false, false])
+        json!([false, false, false, false, false, true, false, false, false, false, false, false])
     );
 }
 
@@ -584,7 +628,7 @@ fn swap_exact_in_plan_missing_pool_fails_closed_with_err() {
         token_out_id: account_id_hex(token_b),
         config: account_read(config_id(), &config_account()),
         user_input_holding_id: account_id_hex(holding),
-        user_output_holding_id: account_id_hex(holding),
+        user_output_holding_id: account_id_hex(AccountId::new([0x99; 32])),
         amount_in: String::from("100"),
         min_out: String::from("0"),
         deadline_ms: String::from("0"),
@@ -604,6 +648,7 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
 
     let pool_id = compute_pool_pda(AMM_PROGRAM, config_id(), token_small, token_large);
     let pool = PoolDefinition {
+        config_id: AccountId::new([0; 32]),
         definition_token_a_id: token_small, // stored non-canonically (small first)
         definition_token_b_id: token_large,
         vault_a_id: compute_vault_pda(AMM_PROGRAM, pool_id, token_small),
@@ -621,22 +666,22 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
         token_out_id: account_id_hex(token_large),
         config: account_read(config_id(), &config_account()),
         user_input_holding_id: account_id_hex(holding),
-        user_output_holding_id: account_id_hex(holding),
+        user_output_holding_id: account_id_hex(AccountId::new([0x99; 32])),
         amount_out: String::from("100"),
         max_in: String::from("1000"),
         deadline_ms: String::from("0"),
-        pool_data: hex::encode(borsh::to_vec(&pool).unwrap()),
+        pool_data: hex::encode(borsh::to_vec(&amm_core::AmmState::Pool(pool.clone())).unwrap()),
     })
     .unwrap();
 
-    assert_eq!(plan["accountIds"][2], account_id_hex(pool.vault_a_id));
-    assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_b_id));
+    assert_eq!(plan["accountIds"][3], account_id_hex(pool.vault_a_id));
+    assert_eq!(plan["accountIds"][4], account_id_hex(pool.vault_b_id));
     assert_ne!(
         pool.vault_a_id,
         compute_vault_pda(AMM_PROGRAM, pool_id, token_large)
     );
-    // Slot 8 is the input token's protocol-fee holding PDA (the 9th account); only slot 4 signs.
-    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 9);
+    // The exact-output plan declares the same protocol-fee holdings as the exact-input plan.
+    assert_eq!(plan["accountIds"].as_array().unwrap().len(), 12);
     assert_eq!(
         plan["accountIds"][8],
         account_id_hex(compute_protocol_fee_pda(
@@ -647,6 +692,54 @@ fn swap_exact_out_plan_uses_the_pool_stored_vaults_not_canonical_order() {
     );
     assert_eq!(
         plan["signingRequirements"],
-        json!([false, false, false, false, true, false, false, false, false])
+        json!([false, false, false, false, false, true, false, false, false, false, false, false])
+    );
+}
+
+pub(super) fn empty_pool() -> PoolDefinition {
+    PoolDefinition {
+        config_id: AccountId::new([0; 32]),
+        definition_token_a_id: AccountId::new([0; 32]),
+        definition_token_b_id: AccountId::new([0; 32]),
+        vault_a_id: AccountId::new([0; 32]),
+        vault_b_id: AccountId::new([0; 32]),
+        liquidity_pool_id: AccountId::new([0; 32]),
+        liquidity_pool_supply: 0,
+        reserve_a: 0,
+        reserve_b: 0,
+    }
+}
+
+#[test]
+fn holdings_select_the_configured_actor_and_reject_malformed_state() {
+    let id = AccountId::new([0x91; 32]);
+    let definition = AccountId::new([0x92; 32]);
+    let mut holding = token_holding(definition, 42);
+    holding
+        .data
+        .set_actor_state(AMM_PROGRAM, ActorState::from(vec![255]));
+    let read = account_read(id, &holding);
+    let selected = super::holding::decode_fungible_holding(&read, TOKEN_PROGRAM).unwrap();
+    assert_eq!(selected.definition_id, definition);
+    assert_eq!(selected.balance, 42);
+    assert!(super::holding::decode_fungible_holding(&read, AMM_PROGRAM).is_err());
+    holding
+        .data
+        .set_actor_state(TOKEN_PROGRAM, ActorState::from(vec![255]));
+    assert!(
+        super::holding::decode_fungible_holding(&account_read(id, &holding), TOKEN_PROGRAM)
+            .is_err()
+    );
+}
+
+#[test]
+fn tagged_pool_snapshots_reject_legacy_and_transient_state() {
+    let pool = empty_pool();
+    assert!(crate::account::decode_pool(&borsh::to_vec(&pool).unwrap()).is_err());
+    let busy = amm_core::AmmState::Settling(Box::new(amm_core::AmmState::Pool(pool.clone())));
+    assert!(crate::account::decode_pool(&busy.encode()).is_err());
+    assert_eq!(
+        crate::account::decode_pool(&amm_core::AmmState::Pool(pool.clone()).encode()).unwrap(),
+        pool
     );
 }

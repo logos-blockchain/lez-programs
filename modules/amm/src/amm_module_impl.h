@@ -42,12 +42,11 @@ public:
     /// Derives the pool PDA for the (def_a_hex, def_b_hex) pair and reads/decodes the
     /// pool account. On success: `{ status:"ok", error:"", poolId, defAHex, defBHex,
     /// vaultAId, vaultBId, lpDefinitionId, reserveA, reserveB, liquiditySupply, feeBps }`
-    /// — the A/B fields oriented to the caller's requested order (A is def_a_hex's).
+    /// The A/B fields follow the caller's order. The LP token definition supplies liquiditySupply.
     /// Otherwise `{ status:"error", error:<code> }`: `no_program_bin` (AMM_PROGRAM_ID
     /// unset/unreadable/bad), `amm_not_initialized` (config undecodable), `bad_config`
-    /// (bad ids / internal decode failure), `pool_read_failed` (wallet read failed),
-    /// `pool_address_occupied` (a non-empty account the AMM does not own holds the pool
-    /// address), `same_token_pair`, or `no_pool` for the
+    /// (bad ids / internal decode failure), `lp_supply_unavailable` (LP definition unreadable),
+    /// `same_token_pair`, or `no_pool` for the
     /// ordinary "no pool / no liquidity yet" state (still carries `poolId`).
     LogosMap resolvePoolAccount(const std::string& def_a_hex, const std::string& def_b_hex);
 
@@ -86,16 +85,10 @@ public:
     /// `invalid_amount`, `wallet_submission_failed`, `backend_error`, or a plan code.
     LogosMap withdrawProtocolFees(const LogosMap& request);
 
-    /// Submits `CreatePriceObservations` / `CreateOraclePriceAccount` — seeds a pool's TWAP feed /
-    /// creates its oracle price account for `request.windowDurationMs` (a distinct account per
-    /// window). `request` carries `{ tokenAId, tokenBId, windowDurationMs }`. Both are direct
-    /// submits (chained into the oracle, seeded from validated pool state — nothing signs). On
-    /// success `{ status:"ok", error:"", transactionId:<hex> }`; on failure
-    /// `{ status:"error", error:<code> }` — `config_missing`, `invalid_token_id`,
-    /// `invalid_window`, `same_token_pair`, `config_unavailable`, `no_pool`, `pool_read_failed`,
-    /// `pool_address_occupied`, `account_read_failed` (the target account read failed),
-    /// `wallet_submission_failed`, `backend_error` (`already_exists` if the target account is
-    /// already created).
+    /// Call either method once per window. The pool sends CreatePriceAccounts to its
+    /// current-tick actor, which creates both the observations and price accounts.
+    /// Both requests take `{ tokenAId, tokenBId, windowDurationMs, feePayerId }`.
+    /// The fee payer signs the transaction. Success returns the transaction ID.
     LogosMap createPriceObservations(const LogosMap& request);
     LogosMap createOraclePriceAccount(const LogosMap& request);
 
@@ -193,7 +186,7 @@ public:
     /// `{ status:"error", error:<code> }` — `config_missing`, `backend_error`,
     /// `invalid_account_id`, `bad_amount` (malformed amount/deadline),
     /// `wallet_submission_failed`, `already_exists` (the pool already exists), `pool_read_failed`,
-    /// `pool_address_occupied`, or a plan code
+    /// or a plan code
     /// (e.g. `config_unavailable`). Unlike the
     /// swaps, a submit failure carries a code so the create-pool UI can tell the user why.
     LogosMap createPool(const LogosMap& request);
@@ -319,25 +312,24 @@ private:
     nlohmann::json readConfig();
 
     // Reads a public account through the wallet module and returns the
-    // { id, status, account:{ program_owner, balance, nonce, data } } shape the
-    // amm_ffi ops expect (see the app-side accountReadJson). `account` is
-    // omitted when the read has no data (uninitialized/nonexistent).
-    nlohmann::json readPublicAccount(const std::string& account_id);
+    // full actor states plus the selected program's data for quote requests.
+    nlohmann::json readPublicAccount(const std::string& account_id,
+                                     const std::string& actor_program = {});
 
     // Accept pool contents only from the active AMM program.
-    nlohmann::json readPoolAccount(const std::string& account_id,
-                                   const std::string& amm_program_id);
+    nlohmann::json readPoolAccount(const std::string& account_id);
 
-    // `pool_read_failed` or `pool_address_occupied` for a readPoolAccount result that
-    // must stop the caller; empty for an AMM-owned or uninitialized pool.
+    // A failed read must stop the caller; an empty AMM actor can be initialized.
     static std::string poolAccountError(const nlohmann::json& pool);
+    // Resolve pool metadata and the current supply of its LP token definition.
+    nlohmann::json resolvePool(const nlohmann::json& config, const nlohmann::json& pool,
+                               const std::string& lp_id);
 
     // The user's own public account reads, fresh each call (empty when the wallet
     // is closed). Each read is a live sequencer round-trip.
     nlohmann::json walletAccountReads(bool wallet_open);
 
-    // Shared body for createPriceObservations / createOraclePriceAccount: reads the config,
-    // builds the window-seeded oracle plan (observations vs price account), and submits it.
+    // Build and submit either Oracle setup message using the pool's configured deployments.
     LogosMap oracleSetupSubmit(const LogosMap& request, bool observations);
 
     // The AMM program id the app selected (via setAmmProgramId). Empty ⇒

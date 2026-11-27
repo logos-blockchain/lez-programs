@@ -158,6 +158,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/install-nix
 
+      # The actor wallet pins a flake that still fetches this circuit from the retired S3 URL.
+      - name: Cache the AMM wallet's RISC Zero recursion circuit
+        if: matrix.name == 'amm'
+        run: |
+          hash=744b999f0a35b3c86753311c7efb2a0054be21727095cf105af6ee7d3f4d8849
+          nix store prefetch-file --expected-hash "${hash}" "https://artifacts.risczero.net/zkr/${hash}.zip"
+
       - name: Module tests
         run: nix build --no-link -L .#${{ matrix.name }}-module-tests
 

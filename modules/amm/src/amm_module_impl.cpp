@@ -86,14 +86,6 @@ std::string jStr(const json& obj, const char* key) {
     return (it != obj.end() && it->is_string()) ? it->get<std::string>() : std::string();
 }
 
-// The guest's #[account(init)] requires every field of Account::default().
-bool isDefaultAccount(const json& account) {
-    return jStr(account, "program_owner") == std::string(64, '0')
-        && jStr(account, "balance") == std::string(32, '0')
-        && jStr(account, "nonce") == std::string(32, '0')
-        && jStr(account, "data").empty();
-}
-
 // Coerce a swap amount arg — arriving as EITHER a JSON number (bare `1000` on
 // the CLI) or a decimal string ("1000", a big u128 the UI passes, or a
 // quote-wrapped big value on the CLI) — to its canonical decimal-string form.
@@ -145,8 +137,7 @@ bool jsonAmountToDecimal(const json& j, std::string& out) {
     return false;
 }
 
-// json string/bool arrays -> std vectors, and a u32-word array -> the
-// little-endian bytes the wallet module's byte-string `instruction` expects.
+// Convert plan arrays to the wallet module's typed arguments.
 std::vector<std::string> jsonStrVec(const json& arr) {
     std::vector<std::string> out;
     if (!arr.is_array()) return out;
@@ -165,7 +156,7 @@ std::vector<bool> jsonBoolVec(const json& arr) {
     return out;
 }
 
-// A plan's `instruction` is the borsh encoding of the program's Instruction, one
+// A plan's `message` is the borsh encoding of the program's Message, one
 // JSON number per byte. Returns {} on a non-array or any element outside 0..=255.
 std::vector<uint8_t> jsonInstructionBytes(const json& arr) {
     std::vector<uint8_t> out;
@@ -316,10 +307,9 @@ std::string AmmModuleImpl::feePayerFor(const std::string& fee_payer_id,
     return amm_module::detail::resolveFeePayer(normalizeAccountId(fee_payer_id), accounts, signers);
 }
 
-nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
-    // Matches the app-side accountReadJson: WalletAccountRead defaults status to
-    // "read_failed" and only flips to "ok" when every field is well-formed hex;
-    // the `account` key is present only for an ok read.
+nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id,
+                                               const std::string& actor_program) {
+    // lez_core returns a decimal nonce and hex-encoded actor states.
     json result = {{"id", account_id}, {"status", "read_failed"}};
 
     const std::string account_json =
@@ -327,44 +317,38 @@ nlohmann::json AmmModuleImpl::readPublicAccount(const std::string& account_id) {
     const auto obj = json::parse(account_json, nullptr, /*allow_exceptions=*/false);
     if (!obj.is_object()) return result;
 
-    const std::string owner = jStr(obj, "program_owner");
-    const std::string balance = jStr(obj, "balance");
     const std::string nonce = jStr(obj, "nonce");
-    const std::string data = jStr(obj, "data");
-    if (!isHexLen(owner, 64) || !isHexLen(balance, 32) || !isHexLen(nonce, 32)
-        || !isHexEven(data)) {
-        return result;
+    const auto actors = obj.find("actor_states");
+    if (nonce.empty() || nonce.find_first_not_of("0123456789") != std::string::npos
+        || actors == obj.end() || !actors->is_array()) return result;
+    const std::string program = actor_program.empty() ? ammProgramId() : actor_program;
+    std::string data;
+    for (const auto& actor : *actors) {
+        if (!actor.is_object() || !isHexLen(jStr(actor, "program"), 64)
+            || !actor.contains("data") || !actor.at("data").is_string()
+            || !isHexEven(jStr(actor, "data"))) return result;
+        if (jStr(actor, "program") == program) data = jStr(actor, "data");
     }
-
+    result["programId"] = program;
     result["status"] = "ok";
-    result["account"] = {
-        {"program_owner", owner},
-        {"balance", balance},
-        {"nonce", nonce},
-        {"data", data},
-    };
+    result["account"] = obj;
+    // Convenience projection used by pool quote requests; full actor map goes to Rust.
+    result["account"]["data"] = data;
     return result;
 }
 
-nlohmann::json AmmModuleImpl::readPoolAccount(const std::string& account_id,
-                                               const std::string& amm_program_id) {
+nlohmann::json AmmModuleImpl::readPoolAccount(const std::string& account_id) {
     json pool = readPublicAccount(account_id);
     if (jStr(pool, "status") != "ok") return pool;
 
-    std::string owner = jStr(pool.at("account"), "program_owner");
-    std::transform(owner.begin(), owner.end(), owner.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (owner != amm_program_id) {
-        pool["status"] = isDefaultAccount(pool.at("account")) ? "uninitialized" : "foreign_owner";
-        pool.erase("account");
-    }
+    // The AMM actor may be initialized alongside unrelated actors on this account.
+    if (jStr(pool.at("account"), "data").empty()) pool["status"] = "uninitialized";
     return pool;
 }
 
 std::string AmmModuleImpl::poolAccountError(const nlohmann::json& pool) {
     const std::string status = jStr(pool, "status");
     if (status == "read_failed") return "pool_read_failed";
-    if (status == "foreign_owner") return "pool_address_occupied";
     return {};
 }
 
@@ -407,6 +391,19 @@ nlohmann::json AmmModuleImpl::readConfig() {
     const std::string config_id = ammConfigId();
     if (config_id.empty()) return json();  // null: no config id configured
     return readPublicAccount(config_id);
+}
+
+nlohmann::json AmmModuleImpl::resolvePool(const json& config, const json& pool,
+                                          const std::string& lp_id) {
+    json definition;
+    if (!jStr(pool.value("account", json::object()), "data").empty())
+        definition = readPublicAccount(lp_id);
+    const FfiResult resolved = call(amm_resolve_pool, json{
+        {"config", config}, {"pool", pool}, {"lpDefinition", definition},
+    });
+    if (!resolved.ok)
+        return json{{"status", "error"}, {"error", "bad_config"}};
+    return resolved.value;
 }
 
 LogosMap AmmModuleImpl::setConfigId(const LogosMap& request) {
@@ -473,21 +470,16 @@ LogosMap AmmModuleImpl::resolvePoolAccount(const std::string& def_a_hex,
         return failed(code.empty() ? "bad_config" : code);
     }
 
-    const json pool = readPoolAccount(jStr(pairResult.value, "poolId"), amm_program_id);
-    // Neither a failed read nor a foreign occupant establishes that the pool PDA is vacant.
+    const json pool = readPoolAccount(jStr(pairResult.value, "poolId"));
+    // A failed read cannot establish whether the pool actor exists.
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return failed(pool_error);
-    // The fee shown for the pool is the instance-wide AmmConfig::swap_fee_bps, so resolve_pool
-    // needs the config account to read it (it is no longer a pool field).
-    const FfiResult resolveResult = call(amm_resolve_pool, json{{"pool", pool}, {"config", config}});
-    if (!resolveResult.ok)
-        return failed("bad_config");  // amm_resolve_pool op failed
     // resolve_pool returns status:"error"/no_pool for a missing pool (pass through) or
     // status:"ok" with the decoded state. It labels reserves/vaults in the pool's STORED
     // order (reserveA is defAHex's); orient them to the CALLER's requested order so reserveA /
     // vaultAId are token_a's — the stored order needn't match (it can be non-canonical, e.g.
     // the testnet setup's pool). Callers then read A/B as their own token-a/token-b directly.
-    json resolved = resolveResult.value;
+    json resolved = resolvePool(config, pool, jStr(pairResult.value, "lpDefinitionId"));
     if (jStr(resolved, "status") == "ok" && jStr(resolved, "defAHex") != token_a) {
         resolved["reserveA"].swap(resolved["reserveB"]);
         resolved["defAHex"].swap(resolved["defBHex"]);
@@ -544,7 +536,7 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("transferOwnership: SUBMIT programId=" << program_id
@@ -554,7 +546,8 @@ LogosMap AmmModuleImpl::transferOwnership(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("transferOwnership: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -602,7 +595,7 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("withdrawProtocolFees: SUBMIT programId=" << program_id
@@ -612,7 +605,8 @@ LogosMap AmmModuleImpl::withdrawProtocolFees(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("withdrawProtocolFees: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -639,7 +633,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // The plan derives the feed PDAs from the config's twap_oracle_program_id + the pool.
+    // The config identifies the Oracle actor for this pool.
     const json config = readConfig();
     if (config.is_null())
         return error("config_missing");
@@ -649,8 +643,7 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (token_a.empty() || token_b.empty())
         return error("invalid_token_id");
 
-    // windowDurationMs may arrive as a JSON number (UI) or a decimal string (CLI); the FFI wants
-    // a u64. A zero / unparsable window is rejected — each window is a distinct feed PDA.
+    // Accept unsigned integer values and decimal strings for CLI callers.
     const json window_json = request.value("windowDurationMs", json());
     uint64_t window = 0;
     if (window_json.is_number_unsigned()) {
@@ -658,10 +651,11 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     } else if (window_json.is_number_integer() && window_json.get<int64_t>() > 0) {
         window = window_json.get<uint64_t>();
     } else if (window_json.is_string()) {
-        const std::string value = window_json.get<std::string>();
-        const auto result = std::from_chars(value.data(), value.data() + value.size(), window);
-        if (result.ec != std::errc() || result.ptr != value.data() + value.size())
-            window = 0;
+        const auto& digits = window_json.get_ref<const std::string&>();
+        const char* end = digits.data() + digits.size();
+        const auto parsed = std::from_chars(digits.data(), end, window);
+        if (parsed.ec != std::errc{} || parsed.ptr != end)
+            return error("invalid_window");
     }
     if (window == 0)
         return error("invalid_window");
@@ -682,26 +676,22 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
     const std::vector<uint8_t> instruction =
-        jsonInstructionBytes(plan.value("instruction", json::array()));
+        jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
-    // Both oracle instructions require an existing AMM-owned pool.
-    if (accounts.size() > 1) {
-        const json pool = readPoolAccount(accounts[1], amm_program_id);
-        if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
-            return error(pool_error);
-        if (jStr(pool, "status") != "ok")
-            return error("no_pool");
-    }
+    const auto root = plan.at("rootMention").get<std::size_t>();
+    const json pool = readPoolAccount(accounts.at(root));
+    if (const auto error_code = poolAccountError(pool); !error_code.empty())
+        return error(error_code);
+    if (jStr(pool, "status") != "ok")
+        return error("no_pool");
 
-    // A missing public account is returned as Account::default(), not a failed read.
-    // The guest rejects every non-default account, including funded empty accounts.
-    const size_t target_index = observations ? 3 : 2;
-    if (accounts.size() > target_index) {
-        const json existing = readPublicAccount(accounts[target_index]);
-        if (jStr(existing, "status") != "ok")
+    const auto& window_actors = plan.at("windowActors");
+    for (const auto& id : jsonStrVec(window_actors.at("accountIds"))) {
+        const json target = readPublicAccount(id, jStr(window_actors, "programId"));
+        if (jStr(target, "status") != "ok")
             return error("account_read_failed");
-        if (!isDefaultAccount(existing.at("account")))
+        if (!jStr(target.at("account"), "data").empty())
             return error("already_exists");
     }
 
@@ -711,7 +701,8 @@ LogosMap AmmModuleImpl::oracleSetupSubmit(const LogosMap& request, bool observat
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("oracleSetup: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -770,7 +761,7 @@ LogosMap AmmModuleImpl::swapExactInQuote(const std::string& token_in_hex,
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -836,7 +827,7 @@ LogosMap AmmModuleImpl::swapExactOutQuote(const std::string& token_in_hex,
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -913,7 +904,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         AMM_TRACE("swapExactInput: FAIL amm_pool_id");
         return {};
     }
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (!poolAccountError(pool).empty()) {
         AMM_TRACE("swapExactInput: FAIL pool read " << jStr(pool, "status"));
         return {};
@@ -942,7 +933,7 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("swapExactInput: SUBMIT programId=" << program_id
@@ -954,7 +945,8 @@ std::string AmmModuleImpl::swapExactInput(const std::string& def_a_hex,
         return {};
     }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("swapExactInput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1014,7 +1006,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         AMM_TRACE("swapExactOutput: FAIL amm_pool_id");
         return {};
     }
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (!poolAccountError(pool).empty()) {
         AMM_TRACE("swapExactOutput: FAIL pool read " << jStr(pool, "status"));
         return {};
@@ -1043,7 +1035,7 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("swapExactOutput: SUBMIT programId=" << program_id
@@ -1055,7 +1047,8 @@ std::string AmmModuleImpl::swapExactOutput(const std::string& def_a_hex,
         return {};
     }
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("swapExactOutput: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1126,9 +1119,7 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_create_pool_plan needs the config account for the twap program id the
-    // current-tick PDA derives from; a bad/absent config surfaces from the plan as
-    // config_unavailable (no bespoke check here — same as the swap plans).
+    // The config identifies the token and Oracle programs used by the pool.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1176,13 +1167,13 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     // A fresh pool PDA must still be default at submission time. The guest repeats
     // this check, which remains authoritative if another transaction wins the race.
     if (accounts.size() > 1) {
-        const json pool = readPoolAccount(accounts[1], amm_program_id);
+        const json pool = readPoolAccount(accounts[1]);
         if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
             return error(pool_error);
         if (jStr(pool, "status") == "ok")
@@ -1196,7 +1187,8 @@ LogosMap AmmModuleImpl::createPool(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("createPool: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1245,7 +1237,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -1263,6 +1255,9 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
     if (slippage_bps < 0 || slippage_bps >= 10000)
         return error("invalid_slippage");
 
+    const json resolved = resolvePool(config, pool, jStr(poolId.value, "lpDefinitionId"));
+    if (jStr(resolved, "status") != "ok")
+        return error(jStr(resolved, "error"));
     const FfiResult quoteResult = call(amm_add_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
@@ -1270,6 +1265,7 @@ LogosMap AmmModuleImpl::addLiquidityQuote(const LogosMap& request) {
         {"maxAmountB", max_b_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
+        {"lpSupply", jStr(resolved, "liquiditySupply")},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
@@ -1292,8 +1288,6 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_add_liquidity_plan needs the config account for the twap program id the
-    // current-tick PDA derives from; a bad/absent config surfaces from the plan.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1329,7 +1323,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -1356,7 +1350,7 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("addLiquidity: SUBMIT programId=" << program_id
@@ -1366,7 +1360,8 @@ LogosMap AmmModuleImpl::addLiquidity(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("addLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1412,7 +1407,7 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -1430,12 +1425,16 @@ LogosMap AmmModuleImpl::removeLiquidityQuote(const LogosMap& request) {
     if (slippage_bps < 0 || slippage_bps >= 10000)
         return error("invalid_slippage");
 
+    const json resolved = resolvePool(config, pool, jStr(poolId.value, "lpDefinitionId"));
+    if (jStr(resolved, "status") != "ok")
+        return error(jStr(resolved, "error"));
     const FfiResult quoteResult = call(amm_remove_liquidity_quote, json{
         {"tokenAId", token_a},
         {"tokenBId", token_b},
         {"lpAmount", lp_amount_decimal},
         {"slippageBps", slippage_bps},
         {"poolData", pool_data},
+        {"lpSupply", jStr(resolved, "liquiditySupply")},
     });
     if (!quoteResult.ok)
         return error(quoteResult.error.empty() ? "backend_error" : quoteResult.error);
@@ -1457,8 +1456,6 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_remove_liquidity_plan needs the config account for the twap program id the
-    // current-tick PDA derives from; a bad/absent config surfaces from the plan.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1494,7 +1491,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -1521,7 +1518,7 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("removeLiquidity: SUBMIT programId=" << program_id
@@ -1531,7 +1528,8 @@ LogosMap AmmModuleImpl::removeLiquidity(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("removeLiquidity: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1551,8 +1549,6 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     if (amm_program_id.empty())
         return error("config_missing");
 
-    // amm_sync_reserves_plan needs the config account for the twap program id the current-tick
-    // PDA derives from; a bad/absent config surfaces from the plan.
     const json config = readConfig();
     if (config.is_null())
         return error("backend_error");
@@ -1574,7 +1570,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     });
     if (!poolId.ok)
         return error(poolId.error.empty() ? "backend_error" : poolId.error);
-    const json pool = readPoolAccount(jStr(poolId.value, "poolId"), amm_program_id);
+    const json pool = readPoolAccount(jStr(poolId.value, "poolId"));
     if (const std::string pool_error = poolAccountError(pool); !pool_error.empty())
         return error(pool_error);
     const std::string pool_data = jStr(pool.value("account", json::object()), "data");
@@ -1592,7 +1588,7 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
 
     const std::vector<std::string> accounts = jsonStrVec(plan.value("accountIds", json::array()));
     const std::vector<bool> signers = jsonBoolVec(plan.value("signingRequirements", json::array()));
-    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("instruction", json::array()));
+    const std::vector<uint8_t> instruction = jsonInstructionBytes(plan.value("message", json::array()));
     const std::string program_id = jStr(plan, "programId");
 
     AMM_TRACE("syncReserves: SUBMIT programId=" << program_id
@@ -1602,7 +1598,8 @@ LogosMap AmmModuleImpl::syncReserves(const LogosMap& request) {
     if (fee_payer.empty())
         return error("invalid_fee_payer");
     const std::string reply = modules().lez_core.send_generic_public_transaction(
-        accounts, signers, instruction, program_id, fee_payer);
+        accounts, plan.at("rootMention").get<uint64_t>(), signers, instruction, fee_payer,
+        jsonStrVec(plan.at("actorProgramIds")));
     AMM_TRACE("syncReserves: tx reply=" << reply);
 
     const auto obj = json::parse(reply, nullptr, /*allow_exceptions=*/false);
@@ -1708,4 +1705,3 @@ LogosList AmmModuleImpl::resolveTokens(const LogosMap& request, bool wallet_open
         for (const auto& row : *it) out.push_back(row);
     return out;
 }
-

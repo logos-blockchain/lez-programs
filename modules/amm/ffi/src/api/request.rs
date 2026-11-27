@@ -51,9 +51,9 @@ pub struct WithdrawProtocolFeesPlanRequest {
     pub amount: String,
 }
 
-/// Builds the `CreatePriceObservations` submission — seeds the pool's TWAP observations feed for a
-/// window. `config` is the read of the config PDA (its `twap_oracle_program_id` seeds the feed
-/// PDAs); `token_ids` are hex; `window_duration_ms` is the TWAP window in milliseconds.
+/// Inputs for `CreatePriceObservations`. The token IDs select the pool, and the
+/// config identifies its Oracle program. Each setup call initializes the observations and
+/// price actors for the requested window in milliseconds.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatePriceObservationsPlanRequest {
@@ -64,8 +64,8 @@ pub struct CreatePriceObservationsPlanRequest {
     pub window_duration_ms: u64,
 }
 
-/// Builds the `CreateOraclePriceAccount` submission — creates the pool's TWAP oracle price account
-/// for a window. Same inputs as `CreatePriceObservationsPlanRequest`.
+/// Inputs for `CreateOraclePriceAccount`, addressed to the same pool as
+/// `CreatePriceObservationsPlanRequest`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateOraclePriceAccountPlanRequest {
@@ -114,6 +114,8 @@ pub struct SwapPairRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ResolvePoolRequest {
     pub pool: AccountRead,
+    /// Current LP token definition. An absent pool can be resolved without this read.
+    pub lp_definition: Option<AccountRead>,
     /// AMM config account read — the fee shown for the pool is the instance-wide
     /// `AmmConfig::swap_fee_bps`, no longer a per-pool field.
     pub config: AccountRead,
@@ -129,7 +131,7 @@ pub struct SwapExactInQuoteRequest {
     /// AMM config account read — the swap fee is instance-wide (`AmmConfig::swap_fee_bps`),
     /// no longer stored per pool, so the quote reads it here.
     pub config: AccountRead,
-    /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
+    /// Pool account data (hex Borsh `AmmState::Pool`). Empty / undecodable ⇒ the
     /// op returns the `no_pool` error.
     pub pool_data: String,
 }
@@ -144,7 +146,7 @@ pub struct SwapExactOutQuoteRequest {
     /// AMM config account read — the swap fee is instance-wide (`AmmConfig::swap_fee_bps`),
     /// no longer stored per pool, so the quote reads it here.
     pub config: AccountRead,
-    /// Pool account data (hex Borsh `PoolDefinition`). Empty / undecodable ⇒ the
+    /// Pool account data (hex Borsh `AmmState::Pool`). Empty / undecodable ⇒ the
     /// op returns the `no_pool` error.
     pub pool_data: String,
 }
@@ -172,7 +174,7 @@ pub struct SwapExactInPlanRequest {
     pub amount_in: String,
     pub min_out: String,
     pub deadline_ms: String,
-    /// Pool account data (hex Borsh `PoolDefinition`) — its stored `vault_a_id` /
+    /// Pool account data (hex Borsh `AmmState::Pool`) — its stored `vault_a_id` /
     /// `vault_b_id` are used verbatim (the guest asserts the vaults in the pool's
     /// creation order, which needn't match the canonical token order).
     pub pool_data: String,
@@ -190,7 +192,7 @@ pub struct SwapExactOutPlanRequest {
     pub amount_out: String,
     pub max_in: String,
     pub deadline_ms: String,
-    /// Pool account data (hex Borsh `PoolDefinition`) — its stored `vault_a_id` /
+    /// Pool account data (hex Borsh `AmmState::Pool`) — its stored `vault_a_id` /
     /// `vault_b_id` are used verbatim (the guest asserts the vaults in the pool's
     /// creation order, which needn't match the canonical token order).
     pub pool_data: String,
@@ -219,7 +221,7 @@ pub struct CreatePoolPlanRequest {
     /// id-deriving op) — the FFI is stateless and can't read it itself.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the `current_tick` PDA depends on (same as the swap plan requests).
+    /// the pool's current-tick actor uses (same as the swap plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
@@ -235,7 +237,9 @@ pub struct CreatePoolPlanRequest {
 
 /// Prices an `AddLiquidity` into an existing pool — the add counterpart of
 /// `CreatePoolQuoteRequest`. The two max amounts are the caller's caps (display order);
-/// `pool_data` is the hex Borsh `PoolDefinition` (empty ⇒ no pool), same as the swap quotes.
+/// `pool_data` is the hex Borsh `AmmState::Pool` (empty ⇒ no pool), same as the swap quotes.
+/// `lp_supply` is the latest LP token definition supply, which may differ from the pool snapshot
+/// after a direct LP burn.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AddLiquidityQuoteRequest {
@@ -248,6 +252,8 @@ pub struct AddLiquidityQuoteRequest {
     #[serde(default)]
     pub slippage_bps: u32,
     pub pool_data: String,
+    /// Current LP definition supply, read from the configured token actor.
+    pub lp_supply: String,
 }
 
 /// Builds the `AddLiquidity` submission — the add counterpart of `CreatePoolPlanRequest`.
@@ -260,7 +266,7 @@ pub struct AddLiquidityPlanRequest {
     /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the `current_tick` PDA depends on (same as the swap / create plan requests).
+    /// the pool's current-tick actor uses (same as the swap / create plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
@@ -276,7 +282,8 @@ pub struct AddLiquidityPlanRequest {
 
 /// Prices burning `lp_amount` of an existing pool's LP. `slippage_bps` sets the
 /// `minimumAmount*Raw` floors the submit enforces (the guest requires both nonzero and
-/// `withdraw >= min`). `pool_data` is the hex Borsh `PoolDefinition` (empty ⇒ no pool).
+/// `withdraw >= min`). `pool_data` is the hex Borsh `AmmState::Pool` (empty ⇒ no pool), and
+/// `lp_supply` is the latest LP token definition supply.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveLiquidityQuoteRequest {
@@ -286,6 +293,8 @@ pub struct RemoveLiquidityQuoteRequest {
     #[serde(default)]
     pub slippage_bps: u32,
     pub pool_data: String,
+    /// Current LP definition supply, read from the configured token actor.
+    pub lp_supply: String,
 }
 
 /// Builds the `RemoveLiquidity` submission — the remove counterpart of
@@ -300,7 +309,7 @@ pub struct RemoveLiquidityPlanRequest {
     /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the `current_tick` PDA depends on (same as the swap / add plan requests).
+    /// the pool's current-tick actor uses (same as the swap / add plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,
@@ -324,7 +333,7 @@ pub struct SyncReservesPlanRequest {
     /// Resolved by the module from the registry selection or `AMM_PROGRAM_ID`.
     pub amm_program_id: String,
     /// AMM config account read — decoded by `derive_pair` for the `twap_oracle_program_id`
-    /// the `current_tick` PDA depends on (same as the swap / liquidity plan requests).
+    /// the pool's current-tick actor uses (same as the swap / liquidity plan requests).
     pub config: AccountRead,
     pub token_a_id: String,
     pub token_b_id: String,

@@ -40,7 +40,7 @@ pub(super) fn token_holdings(request: TokenHoldingsRequest) -> Result<Value, Str
 #[cfg(test)]
 mod tests {
     use amm_core::{compute_config_pda, AmmConfig};
-    use lee_core::account::{Account, AccountId, Data};
+    use lee_core::account::{Account, AccountId, ActorState};
     use token_core::TokenHolding;
 
     use super::*;
@@ -51,30 +51,33 @@ mod tests {
     }
 
     fn holding_read(id: AccountId, definition: AccountId, balance: u128) -> AccountRead {
-        let account = Account {
-            program_owner: token_program(),
-            data: (&TokenHolding::Fungible {
-                definition_id: definition,
-                balance,
-            })
-                .into(),
-            ..Account::default()
-        };
+        let account = Account::default().with_actor_state(
+            token_program(),
+            ActorState::from(
+                token_core::TokenState::Holding(TokenHolding {
+                    definition_id: definition,
+                    balance,
+                })
+                .encode(),
+            ),
+        );
         account_read(id, &account)
     }
 
     fn config_read(amm: AccountId) -> AccountRead {
-        let account = Account {
-            program_owner: amm,
-            data: Data::from(&AmmConfig {
-                token_program_id: token_program(),
-                twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
-                authority: AccountId::new([0x09; 32]),
-                swap_fee_bps: 30,
-                protocol_fee_bps: 0,
-            }),
-            ..Account::default()
-        };
+        let account = Account::default().with_actor_state(
+            amm,
+            ActorState::from(
+                amm_core::AmmState::Config(AmmConfig {
+                    token_program_id: token_program(),
+                    twap_oracle_program_id: parse_program_id(&"02".repeat(32)).unwrap(),
+                    authority: AccountId::new([0x09; 32]),
+                    swap_fee_bps: 30,
+                    protocol_fee_bps: 0,
+                })
+                .encode(),
+            ),
+        );
         account_read(
             compute_config_pda(amm, AccountId::new([0x07; 32]), [0; 32]),
             &account,
@@ -107,10 +110,7 @@ mod tests {
     fn skips_non_token_accounts_and_fails_closed_on_bad_config() {
         let amm = parse_program_id(&"00".repeat(32)).unwrap();
         // A non-token-program account is not a holding.
-        let foreign = Account {
-            program_owner: parse_program_id(&"ee".repeat(32)).unwrap(),
-            ..Account::default()
-        };
+        let foreign = Account::default();
         let value = token_holdings(TokenHoldingsRequest {
             amm_program_id: "00".repeat(32),
             config: config_read(amm),
@@ -123,6 +123,7 @@ mod tests {
         assert!(token_holdings(TokenHoldingsRequest {
             amm_program_id: "00".repeat(32),
             config: AccountRead {
+                program_id: "00".repeat(32),
                 id: String::new(),
                 status: String::from("read_failed"),
                 account: None,

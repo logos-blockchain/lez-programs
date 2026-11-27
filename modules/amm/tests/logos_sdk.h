@@ -14,7 +14,8 @@ struct TestLezCore {
         std::vector<std::string> accounts;
         std::vector<bool> signers;
         std::vector<std::uint8_t> instruction;
-        std::string program;
+        std::uint64_t root;
+        std::vector<std::string> programs;
         std::string payer;
     };
 
@@ -40,20 +41,16 @@ struct TestLezCore {
         reads.push_back(id);
         const auto it = accounts.find(id);
         if (it != accounts.end()) return it->second;
-        // LEZ returns Account::default() for an absent public account.
-        return nlohmann::json{{"program_owner", std::string(64, '0')},
-                              {"balance", std::string(32, '0')},
-                              {"nonce", std::string(32, '0')},
-                              {"data", ""}}
-            .dump();
+        return R"({"nonce":"0","actor_states":[]})";
     }
 
     std::string send_generic_public_transaction(const std::vector<std::string>& account_ids,
+                                                std::uint64_t root,
                                                 const std::vector<bool>& signers,
                                                 const std::vector<std::uint8_t>& instruction,
-                                                const std::string& program,
-                                                const std::string& payer) {
-        submissions.push_back({account_ids, signers, instruction, program, payer});
+                                                const std::string& payer,
+                                                const std::vector<std::string>& programs) {
+        submissions.push_back({account_ids, signers, instruction, root, programs, payer});
         return submission_reply;
     }
 };

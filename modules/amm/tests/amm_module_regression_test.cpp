@@ -45,8 +45,8 @@ LOGOS_TEST(oracle_setup_rejects_invalid_windows_without_planning_or_submission) 
 
 LOGOS_TEST(oracle_setup_forwards_full_width_windows_and_refuses_existing_targets) {
     MockFixture f;
-    const auto p = plan({CONFIG, POOL, OTHER, LP, TOKEN_A}, {false, false, false, false, false},
-                        encoded(2, {{std::numeric_limits<std::uint64_t>::max(), 8}}));
+    const auto p = oraclePlan(plan({POOL, CONFIG, OTHER, LP, TOKEN_A}, {false, false, false, false, false},
+                        encoded(2, {{std::numeric_limits<std::uint64_t>::max(), 8}})), OTHER, LP);
     ffi::success("amm_create_price_observations_plan", p);
     auto r = request();
     r["windowDurationMs"] = "18446744073709551615";
@@ -61,7 +61,7 @@ LOGOS_TEST(oracle_setup_forwards_full_width_windows_and_refuses_existing_targets
 LOGOS_TEST(oracle_setup_accepts_numeric_windows_and_checks_price_account_target) {
     MockFixture f;
     const auto p =
-        plan({CONFIG, POOL, OTHER, TOKEN_A}, {false, false, false, false}, encoded(3, {{2048, 8}}));
+        oraclePlan(plan({POOL, CONFIG, OTHER, TOKEN_A}, {false, false, false, false}, encoded(3, {{2048, 8}})), OTHER, LP);
     ffi::success("amm_create_oracle_price_account_plan", p);
     auto r = request();
     r["windowDurationMs"] = std::uint64_t(2048);
@@ -76,7 +76,7 @@ LOGOS_TEST(oracle_setup_accepts_numeric_windows_and_checks_price_account_target)
 
 LOGOS_TEST(unusable_pool_reads_stop_quotes_and_plans_with_stable_codes) {
     const std::vector<std::pair<std::string, const char*>> cases = {
-        {snapshot(poolData(), OTHER).dump(), "pool_address_occupied"},
+        {R"({"nonce":"0","actor_states":false})", "pool_read_failed"},
         {"", "pool_read_failed"},
     };
     for (const auto& [account, code] : cases) {
@@ -97,23 +97,12 @@ LOGOS_TEST(unusable_pool_reads_stop_quotes_and_plans_with_stable_codes) {
     }
 }
 
-LOGOS_TEST(occupied_pool_address_prevents_resolution_and_creation) {
-    for (const auto* field : {"program_owner", "balance", "nonce", "data"}) {
-        MockFixture f;
-        auto occupied = snapshot("", std::string(64, '0'));
-        if (std::string(field) == "program_owner")
-            occupied[field] = OTHER;
-        else if (std::string(field) == "data")
-            occupied[field] = "00";
-        else
-            occupied[field] = "01" + std::string(30, '0');
-        f.modules.lez_core.accounts[POOL] = occupied.dump();
-        ffi::success("amm_resolve_pool", {{"status", "error"}, {"error", "no_pool"}});
-        ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
-        assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_address_occupied");
-        assertError(f.module.createPool(request()), "pool_address_occupied");
-        LOGOS_ASSERT_TRUE(f.modules.lez_core.submissions.empty());
-    }
+LOGOS_TEST(pool_creation_checks_the_amm_actor_on_the_derived_account) {
+    // Other programs on the same account do not occupy the AMM actor.
+    MockFixture other;
+    other.modules.lez_core.accounts[POOL] = snapshot(poolData(), OTHER).dump();
+    ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {2}));
+    assertOk(other.module.createPool(request()));
     // An AMM-owned account at the address is the pool itself.
     MockFixture f;
     ffi::success("amm_create_pool_plan", plan({CONFIG, POOL}, {false, false}, {4}));
@@ -123,13 +112,13 @@ LOGOS_TEST(occupied_pool_address_prevents_resolution_and_creation) {
 
 LOGOS_TEST(oracle_setup_requires_an_existing_amm_owned_pool) {
     for (bool foreign : {false, true}) {
-        const char* code = foreign ? "pool_address_occupied" : "no_pool";
+        const char* code = "no_pool";
         MockFixture f;
         if (foreign)
             f.modules.lez_core.accounts[POOL] = snapshot(poolData(), OTHER).dump();
         else
             f.modules.lez_core.accounts.erase(POOL);
-        const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
+        const auto p = oraclePlan(plan({POOL, CONFIG, OTHER, LP}, {false, false, false, false}, {2}), OTHER, LP);
         ffi::success("amm_create_price_observations_plan", p);
         ffi::success("amm_create_oracle_price_account_plan", p);
         assertError(f.module.createPriceObservations(request()), code);
@@ -142,7 +131,7 @@ LOGOS_TEST(pool_read_failure_is_distinct_from_an_uninitialized_pool) {
     MockFixture f;
     f.modules.lez_core.accounts[POOL] = "";
     ffi::success("amm_resolve_pool", {{"status", "error"}, {"error", "no_pool"}});
-    const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
+    const auto p = oraclePlan(plan({POOL, CONFIG, OTHER, LP}, {false, false, false, false}, {2}), OTHER, LP);
     ffi::success("amm_create_price_observations_plan", p);
     ffi::success("amm_create_oracle_price_account_plan", p);
     assertError(f.module.resolvePoolAccount(TOKEN_A, TOKEN_B), "pool_read_failed");
@@ -163,7 +152,7 @@ LOGOS_TEST(creation_rejects_failed_target_reads_before_submission) {
     }
     for (bool observations : {false, true}) {
         MockFixture f;
-        const auto p = plan({CONFIG, POOL, OTHER, LP}, {false, false, false, false}, {2});
+        const auto p = oraclePlan(plan({POOL, CONFIG, OTHER, LP}, {false, false, false, false}, {2}), OTHER, LP);
         ffi::success("amm_create_price_observations_plan", p);
         ffi::success("amm_create_oracle_price_account_plan", p);
         f.modules.lez_core.accounts[observations ? LP : OTHER] = "";

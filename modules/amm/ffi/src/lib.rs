@@ -15,5 +15,5 @@ pub use api::{
     CreatePriceObservationsPlanRequest, FeeTiersRequest, PairIdsRequest, PoolIdRequest,
     ProgramIdRequest, ResolvePoolRequest, ResolveTokensRequest, SwapExactInPlanRequest,
     SwapExactInQuoteRequest, SwapExactOutPlanRequest, SwapExactOutQuoteRequest, SwapPairRequest,
-    TransferOwnershipPlanRequest, WalletAccount, WithdrawProtocolFeesPlanRequest,
+    TransferOwnershipPlanRequest, WalletAccount, WalletActorState, WithdrawProtocolFeesPlanRequest,
 };
