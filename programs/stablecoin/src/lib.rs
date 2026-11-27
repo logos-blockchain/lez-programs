@@ -284,14 +284,18 @@ fn handle_public(input: &ReceiveInput) -> Response {
 
 /// Whether the receiver is an engine and the sender is the market price oracle it was
 /// configured with.
+///
+/// A root message has no sender, so it is answered before the state is decoded.
 fn sent_by_configured_oracle(input: &ReceiveInput) -> bool {
+    let Some(from) = input.from else {
+        return false;
+    };
     match StablecoinState::decode(&input.pre_state) {
         Some(StablecoinState::Engine(engine)) => {
-            input.from
-                == Some(Actor::new(
-                    engine.parameters.market_price_oracle_id,
-                    engine.parameters.market_price_oracle_program_id,
-                ))
+            from == Actor::new(
+                engine.parameters.market_price_oracle_id,
+                engine.parameters.market_price_oracle_program_id,
+            )
         }
         Some(StablecoinState::Position(_)) | None => false,
     }
