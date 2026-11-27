@@ -291,7 +291,7 @@ mint or burn stablecoin, set the redemption price, or change the token program, 
 definition or the collateral definition — those are fixed at `Initialize`. The admin or the
 freeze authority can return the controller to rest (`ResetRedemptionRateController`, §10.15):
 the rate goes back to `1.0` and the integral to `0`, but the price stays where it currently
-projects.
+projects, provided that projection is within the redemption-price bounds (§10.15).
 
 **Emergency.** If something goes wrong (a broken oracle, an exploit in progress), the freeze
 authority sends `Freeze` (§10.14), which sets `is_frozen`. Borrowing and opening stop, and
@@ -1336,8 +1336,14 @@ whose credit was deferred.
 `WithdrawCollateral { to, amount }`, sent to `owner@stablecoin`, signed by the owner. `to` need
 not sign.
 
-1. **owner@stablecoin**: the owner check; a position; `collateral_after = collateral_amount −
-   amount` (`"Withdrawal amount exceeds position collateral"`). The position is not changed yet.
+`to` may not be the position's own vault when `amount` is non-zero
+(`"Collateral cannot be withdrawn to the position's own vault"`). The token would debit and
+credit the same holding, so the position would record a withdrawal that moved nothing out of
+the vault. The check runs at step 1 and again at step 5, before the position is changed.
+
+1. **owner@stablecoin**: the owner check; a position; the destination check above;
+   `collateral_after = collateral_amount − amount`
+   (`"Withdrawal amount exceeds position collateral"`). The position is not changed yet.
 2. **owner → engine**: `WithdrawRequest { amount, to, collateral_after, normalized_debt_amount }`.
    While frozen, only a position with zero normalized debt may continue (`"Protocol is frozen"`).
    **If `amount == 0` or the debt is zero, the engine approves at once** (go to step 5): no
@@ -1567,9 +1573,17 @@ Never fails on the projection. It emits no event.
 **Why it exists.** A bad oracle reading, or gains tuned too hot, can leave the controller wound
 up: the integral saturated and the rate pinned at `RATE_DELTA_CLAMP`. Setting the gains to zero
 does not help, because with `Ki = 0` the integral term is frozen in place and the rate stays at
-`1 + I`. This stops the drift **without repricing the system**: the price stays where it
+`1 + I`. This stops the drift **without repricing the system**, as long as the projected price
+is within `[MINIMUM_REDEMPTION_PRICE, MAXIMUM_REDEMPTION_PRICE]`: the price stays where it
 projects to now, so no position's collateralization changes at that moment. That is why it is
-allowed although setting the redemption price is not. Allowed while frozen, so the usual
+allowed although setting the redemption price is not.
+
+**Outside the bounds the reset does reprice.** A price just below `MAXIMUM_REDEMPTION_PRICE`
+with a rate above `1.0` projects past the ceiling. `WithdrawCollateral` and `GenerateDebt`
+check collateralization against that unclamped projection (§5.3), while the reset stores the
+ceiling. So a reset in that state lowers the price the next check uses, and changes the
+collateralization of every position with debt. The same holds at the floor, in the other
+direction. Allowed while frozen, so the usual
 incident response is freeze → fix the oracle or gains → reset → unfreeze. Idempotent.
 
 ## 11. Events

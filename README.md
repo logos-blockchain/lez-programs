@@ -170,7 +170,7 @@ make idl
 spel generate-idl programs/token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
 spel generate-idl programs/amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
 spel generate-idl programs/ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
-spel generate-idl programs/stablecoin/methods/guest/src/bin/stablecoin.rs > artifacts/stablecoin-idl.json
+spel generate-idl programs/stablecoin/core > artifacts/stablecoin-idl.json   # actor model: the core crate, not a guest file
 spel generate-idl programs/twap_oracle/methods/guest/src/bin/twap_oracle.rs > artifacts/twap_oracle-idl.json
 spel generate-idl programs/token_mint_authority/methods/guest/src/bin/token_mint_authority.rs > artifacts/token_mint_authority-idl.json
 ```
@@ -186,10 +186,29 @@ to call a deployed program instruction:
 spel --idl artifacts/token-idl.json --program <TOKEN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 spel --idl artifacts/amm-idl.json --program <AMM_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 spel --idl artifacts/ata-idl.json --program <ATA_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-spel --idl artifacts/stablecoin-idl.json --program <STABLECOIN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 spel --idl artifacts/twap_oracle-idl.json --program <TWAP_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 spel --idl artifacts/token_mint_authority-idl.json --program <FAUCET_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
 ```
+
+The stablecoin runs on LEZ's actor model, where a transaction sends one message to a **root**
+actor and must declare every other actor the message reaches. Its commands use `spel send`
+(spel's `refactor/lez-v0.4.x` branch; see [`docs/token/README.md`](docs/token/README.md) for the
+argument formats and `spel.toml`):
+
+```bash
+# The permissionless fee poke: the root is the engine; it reaches the clock and, when fees
+# accrued, the stablecoin definition and the surplus holding under the token program.
+spel --program stablecoin send --fee-payer <FEE_PAYER> --root <ENGINE_ID> \
+  --actor <CLOCK_ACCOUNT_ID>@<CLOCK_PROGRAM> \
+  --actor <STABLECOIN_DEFINITION_ID>@<TOKEN_PROGRAM> \
+  --actor <SURPLUS_HOLDING_ID>@<TOKEN_PROGRAM> -- \
+  accrue-stability-fee
+```
+
+[`docs/stablecoin/README.md`](docs/stablecoin/README.md) §9.5 lists the root, the declared
+actors and the signers of every stablecoin message, and
+`cargo run -p stablecoin_program --example stablecoin_pdas -- <STABLECOIN_PROGRAM_ID>` prints
+the engine, stablecoin definition and surplus holding ids.
 
 - `--program` is the program's header account id (see [Deployment](#deployment)); spel
   rejects a binary path.

@@ -175,7 +175,10 @@ pub(crate) fn finish_set_stability_fee(
 
 /// At the engine, on the clock's reply: re-anchor the redemption price at its current
 /// projection (clamped into its bounds), then set the rate to exactly 1.0 and the integral
-/// term to 0. The price does not jump, so no position's collateralization changes.
+/// term to 0. The price does not jump while the projection is within the bounds, so no
+/// position's collateralization changes. A projection outside them is stored as the bound, and
+/// that does change the collateralization of positions with debt: a withdrawal checks against
+/// the unclamped projection.
 pub(crate) fn finish_reset_controller(
     _input: &ReceiveInput,
     mut engine: Engine,
