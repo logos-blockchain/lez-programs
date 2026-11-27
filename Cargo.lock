@@ -2165,12 +2165,15 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "clock_core",
+ "fee_core",
  "integration-test-methods",
  "lee",
  "lee_core",
  "nft-methods",
  "nft_core",
  "programs",
+ "stablecoin-methods",
+ "stablecoin_core",
  "token-methods",
  "token_core",
  "twap-oracle-methods",
@@ -4059,6 +4062,42 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+
+[[package]]
+name = "stablecoin-methods"
+version = "0.1.0"
+dependencies = [
+ "risc0-build",
+ "risc0-zkvm",
+ "stablecoin_core",
+]
+
+[[package]]
+name = "stablecoin_core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "borsh",
+ "lee_core",
+ "risc0-zkvm",
+ "ruint",
+ "serde",
+ "spel-attrs",
+ "twap_oracle_core",
+]
+
+[[package]]
+name = "stablecoin_program"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "borsh",
+ "clock_core",
+ "lee_core",
+ "stablecoin_core",
+ "token_core",
+ "twap_oracle_core",
+]
 
 [[package]]
 name = "stacker"

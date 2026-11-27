@@ -1,68 +1,33 @@
 {
-  "version": "0.1.0",
+  "version": "2",
   "name": "stablecoin",
-  "instructions": [
+  "messages": [
     {
-      "name": "initialize_program",
-      "accounts": [
+      "name": "Initialize",
+      "tag": 0,
+      "fields": [
         {
-          "name": "deployment_authority",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "initial_admin_account_id",
+          "type": "account_id"
         },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "stablecoin_master_holding",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "collateral_definition",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "market_price_oracle",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "freeze_authority_account_id",
+          "type": "account_id"
+        },
+        {
+          "name": "token_program_id",
+          "type": "account_id"
+        },
+        {
+          "name": "collateral_definition_id",
+          "type": "account_id"
+        },
+        {
+          "name": "market_price_oracle_id",
+          "type": "account_id"
+        },
+        {
+          "name": "market_price_oracle_program_id",
           "type": "account_id"
         },
         {
@@ -98,205 +63,40 @@
           "type": "string"
         },
         {
-          "name": "initial_admin_account_id",
-          "type": "account_id"
-        },
-        {
           "name": "minimum_debt_amount",
           "type": "u128"
         },
         {
           "name": "debt_ceiling",
           "type": "u128"
-        },
-        {
-          "name": "market_price_oracle_program_id",
-          "type": "account_id"
         }
       ]
     },
     {
-      "name": "accrue_stability_fee",
-      "accounts": [
-        {
-          "name": "caller",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_master_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": []
+      "name": "AccrueStabilityFee",
+      "tag": 1
     },
     {
-      "name": "update_redemption_rate",
-      "accounts": [
-        {
-          "name": "caller",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "market_price_oracle",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": []
+      "name": "UpdateRedemptionRate",
+      "tag": 2
     },
     {
-      "name": "refresh_globals",
-      "accounts": [
+      "name": "RefreshGlobals",
+      "tag": 3,
+      "fields": [
         {
-          "name": "caller",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_master_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "market_price_oracle",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "name": "consult_oracle",
+          "type": "bool"
         }
-      ],
-      "args": []
+      ]
     },
     {
-      "name": "open_position",
-      "accounts": [
+      "name": "OpenPosition",
+      "tag": 4,
+      "fields": [
         {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "vault",
-          "writable": true,
-          "signer": false,
-          "init": true
-        },
-        {
-          "name": "user_collateral_holding",
-          "writable": true,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "collateral_definition",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "position_nonce",
-          "type": "u64"
+          "name": "collateral_holding",
+          "type": "account_id"
         },
         {
           "name": "initial_collateral_amount",
@@ -305,40 +105,13 @@
       ]
     },
     {
-      "name": "deposit_collateral",
-      "accounts": [
+      "name": "DepositCollateral",
+      "tag": 5,
+      "fields": [
         {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "collateral_holding",
+          "type": "account_id"
         },
-        {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "user_collateral_holding",
-          "writable": true,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "amount",
           "type": "u128"
@@ -346,64 +119,13 @@
       ]
     },
     {
-      "name": "generate_debt",
-      "accounts": [
+      "name": "WithdrawCollateral",
+      "tag": 6,
+      "fields": [
         {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "to",
+          "type": "account_id"
         },
-        {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "user_stablecoin_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_master_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
         {
           "name": "amount",
           "type": "u128"
@@ -411,52 +133,41 @@
       ]
     },
     {
-      "name": "close_position",
-      "accounts": [
+      "name": "GenerateDebt",
+      "tag": 7,
+      "fields": [
         {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "to",
+          "type": "account_id"
         },
         {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "name": "amount",
+          "type": "u128"
         }
-      ],
-      "args": []
+      ]
     },
     {
-      "name": "set_minimum_collateralization_ratio",
-      "accounts": [
+      "name": "RepayDebt",
+      "tag": 8,
+      "fields": [
         {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "stablecoin_holding",
+          "type": "account_id"
         },
         {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "name": "maximum_amount",
+          "type": "u128"
         }
-      ],
-      "args": [
+      ]
+    },
+    {
+      "name": "ClosePosition",
+      "tag": 9
+    },
+    {
+      "name": "SetMinimumCollateralizationRatio",
+      "tag": 10,
+      "fields": [
         {
           "name": "new_ratio",
           "type": "u128"
@@ -464,22 +175,9 @@
       ]
     },
     {
-      "name": "set_controller_gains",
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "SetControllerGains",
+      "tag": 11,
+      "fields": [
         {
           "name": "new_proportional_gain",
           "type": "i128"
@@ -491,78 +189,37 @@
       ]
     },
     {
-      "name": "set_market_price_oracle",
-      "accounts": [
+      "name": "SetMarketPriceOracle",
+      "tag": 12,
+      "fields": [
         {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "oracle_account_id",
+          "type": "account_id"
         },
         {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "new_oracle",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "new_oracle_program_id",
+          "name": "oracle_program_id",
           "type": "account_id"
         }
       ]
     },
     {
-      "name": "set_timing_parameters",
-      "accounts": [
+      "name": "SetTimingParameters",
+      "tag": 13,
+      "fields": [
         {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "new_minimum_milliseconds_between_rate_updates",
+          "name": "minimum_milliseconds_between_rate_updates",
           "type": "u64"
         },
         {
-          "name": "new_maximum_oracle_price_age_milliseconds",
+          "name": "maximum_oracle_price_age_milliseconds",
           "type": "u64"
         }
       ]
     },
     {
-      "name": "set_admin",
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "SetAdmin",
+      "tag": 14,
+      "fields": [
         {
           "name": "new_admin_account_id",
           "type": "account_id"
@@ -570,22 +227,9 @@
       ]
     },
     {
-      "name": "set_freeze_authority",
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "SetFreezeAuthority",
+      "tag": 15,
+      "fields": [
         {
           "name": "new_freeze_authority_account_id",
           "type": "account_id"
@@ -593,46 +237,9 @@
       ]
     },
     {
-      "name": "set_stability_fee_per_millisecond",
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_master_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "SetStabilityFeePerMillisecond",
+      "tag": 16,
+      "fields": [
         {
           "name": "new_rate",
           "type": "u128"
@@ -640,206 +247,21 @@
       ]
     },
     {
-      "name": "freeze",
-      "accounts": [
-        {
-          "name": "freeze_authority",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": []
+      "name": "Freeze",
+      "tag": 17
     },
     {
-      "name": "unfreeze",
-      "accounts": [
-        {
-          "name": "freeze_authority",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": []
+      "name": "Unfreeze",
+      "tag": 18
     },
     {
-      "name": "withdraw_collateral",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "vault",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "user_collateral_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u128"
-        }
-      ]
+      "name": "ResetRedemptionRateController",
+      "tag": 19
     },
     {
-      "name": "repay_debt",
-      "accounts": [
-        {
-          "name": "owner",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "position",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stablecoin_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "user_stablecoin_holding",
-          "writable": true,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "stablecoin_master_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "stability_fee_accumulator",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
-        {
-          "name": "amount",
-          "type": "u128"
-        }
-      ]
-    },
-    {
-      "name": "reset_redemption_rate_controller",
-      "accounts": [
-        {
-          "name": "authority",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "redemption_price_state",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "set_debt_limits",
-      "accounts": [
-        {
-          "name": "admin",
-          "writable": false,
-          "signer": true,
-          "init": false
-        },
-        {
-          "name": "protocol_parameters",
-          "writable": true,
-          "signer": false,
-          "init": false
-        }
-      ],
-      "args": [
+      "name": "SetDebtLimits",
+      "tag": 20,
+      "fields": [
         {
           "name": "minimum_debt_amount",
           "type": "u128"
@@ -851,394 +273,600 @@
       ]
     }
   ],
-  "accounts": [
+  "state_types": [
+    "StablecoinState"
+  ],
+  "events": [
     {
-      "name": "ProtocolParameters",
+      "name": "Initialized",
+      "selector": "f0b9fa3d1a7eaebf",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "schema_version",
-            "type": "u8"
-          },
-          {
-            "name": "admin_account_id",
-            "type": "account_id"
-          },
-          {
-            "name": "freeze_authority_account_id",
-            "type": "account_id"
-          },
-          {
-            "name": "stablecoin_definition_id",
-            "type": "account_id"
-          },
-          {
-            "name": "collateral_definition_id",
-            "type": "account_id"
-          },
-          {
-            "name": "market_price_oracle_id",
-            "type": "account_id"
-          },
-          {
-            "name": "stability_fee_per_millisecond",
-            "type": "u128"
-          },
-          {
-            "name": "controller_proportional_gain",
-            "type": "i128"
-          },
-          {
-            "name": "controller_integral_gain",
-            "type": "i128"
-          },
-          {
-            "name": "minimum_collateralization_ratio",
-            "type": "u128"
-          },
-          {
-            "name": "minimum_milliseconds_between_rate_updates",
-            "type": "u64"
-          },
-          {
-            "name": "maximum_oracle_price_age_milliseconds",
-            "type": "u64"
-          },
-          {
-            "name": "market_price_oracle_program_id",
-            "type": "account_id"
-          },
-          {
-            "name": "is_frozen",
-            "type": "bool"
-          },
-          {
-            "name": "minimum_debt_amount",
-            "type": "u128"
-          },
-          {
-            "name": "debt_ceiling",
-            "type": "u128"
-          }
-        ]
+        "defined": "Initialized"
       }
     },
     {
-      "name": "RedemptionPriceState",
+      "name": "PositionOpened",
+      "selector": "c5fc75a0a63c5963",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "redemption_price_at_last_update",
-            "type": "u128"
-          },
-          {
-            "name": "redemption_rate_per_millisecond",
-            "type": "u128"
-          },
-          {
-            "name": "controller_integral_term",
-            "type": "i128"
-          },
-          {
-            "name": "last_updated_at",
-            "type": "u64"
-          }
-        ]
+        "defined": "PositionOpened"
       }
     },
     {
-      "name": "StabilityFeeAccumulator",
+      "name": "CollateralDeposited",
+      "selector": "1abfebc6aa9e8c1e",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "schema_version",
-            "type": "u8"
-          },
-          {
-            "name": "accumulated_rate_at_last_accrual",
-            "type": "u128"
-          },
-          {
-            "name": "last_accrued_at",
-            "type": "u64"
-          },
-          {
-            "name": "total_normalized_debt",
-            "type": "u128"
-          }
-        ]
+        "defined": "CollateralDeposited"
       }
     },
     {
-      "name": "Position",
+      "name": "CollateralWithdrawn",
+      "selector": "3fad8da2a7bffe45",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "owner_account_id",
-            "type": "account_id"
-          },
-          {
-            "name": "position_nonce",
-            "type": "u64"
-          },
-          {
-            "name": "vault_account_id",
-            "type": "account_id"
-          },
-          {
-            "name": "collateral_amount",
-            "type": "u128"
-          },
-          {
-            "name": "normalized_debt_amount",
-            "type": "u128"
-          },
-          {
-            "name": "opened_at",
-            "type": "u64"
-          }
-        ]
+        "defined": "CollateralWithdrawn"
       }
     },
     {
-      "name": "TokenDefinition",
+      "name": "DebtGenerated",
+      "selector": "7671548323817200",
       "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Fungible",
-            "fields": [
-              {
-                "name": "name",
-                "type": "string"
-              },
-              {
-                "name": "total_supply",
-                "type": "u128"
-              },
-              {
-                "name": "metadata_id",
-                "type": {
-                  "option": "account_id"
-                }
-              },
-              {
-                "name": "authority",
-                "type": {
-                  "option": "account_id"
-                }
-              }
-            ]
-          },
-          {
-            "name": "NonFungible",
-            "fields": [
-              {
-                "name": "name",
-                "type": "string"
-              },
-              {
-                "name": "printable_supply",
-                "type": "u128"
-              },
-              {
-                "name": "metadata_id",
-                "type": "account_id"
-              }
-            ]
-          }
-        ]
+        "defined": "DebtGenerated"
       }
     },
     {
-      "name": "TokenHolding",
+      "name": "DebtRepaid",
+      "selector": "30e8a053182ecb92",
       "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Fungible",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "balance",
-                "type": "u128"
-              }
-            ]
-          },
-          {
-            "name": "NftMaster",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "print_balance",
-                "type": "u128"
-              }
-            ]
-          },
-          {
-            "name": "NftPrintedCopy",
-            "fields": [
-              {
-                "name": "definition_id",
-                "type": "account_id"
-              },
-              {
-                "name": "owned",
-                "type": "bool"
-              }
-            ]
-          }
-        ]
+        "defined": "DebtRepaid"
       }
     },
     {
-      "name": "TokenMetadata",
+      "name": "PositionClosed",
+      "selector": "37502be18bea903b",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "definition_id",
-            "type": "account_id"
-          },
-          {
-            "name": "standard",
-            "type": {
-              "defined": "MetadataStandard"
-            }
-          },
-          {
-            "name": "uri",
-            "type": "string"
-          },
-          {
-            "name": "creators",
-            "type": "string"
-          },
-          {
-            "name": "primary_sale_date",
-            "type": "u64"
-          }
-        ]
+        "defined": "PositionClosed"
       }
     },
     {
-      "name": "PriceObservations",
+      "name": "StabilityFeeAccrued",
+      "selector": "cc21ec5bf8c5bf85",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "price_source_id",
-            "type": "account_id"
-          },
-          {
-            "name": "write_index",
-            "type": "u32"
-          },
-          {
-            "name": "total_entries",
-            "type": "u64"
-          },
-          {
-            "name": "last_recorded_tick",
-            "type": "i32"
-          },
-          {
-            "name": "entries",
-            "type": {
-              "vec": {
-                "defined": "ObservationEntry"
-              }
-            }
-          }
-        ]
+        "defined": "StabilityFeeAccrued"
       }
     },
     {
-      "name": "OraclePriceAccount",
+      "name": "RedemptionRateUpdated",
+      "selector": "78e8dc0138600f94",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "base_asset",
-            "type": "account_id"
-          },
-          {
-            "name": "quote_asset",
-            "type": "account_id"
-          },
-          {
-            "name": "price",
-            "type": "u128"
-          },
-          {
-            "name": "timestamp",
-            "type": "u64"
-          },
-          {
-            "name": "source_id",
-            "type": "account_id"
-          },
-          {
-            "name": "confidence_interval",
-            "type": "u128"
-          }
-        ]
+        "defined": "RedemptionRateUpdated"
       }
     },
     {
-      "name": "CurrentTickAccount",
+      "name": "ParametersChanged",
+      "selector": "7c2b9f2b5a0c248c",
       "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "tick",
-            "type": "i32"
-          },
-          {
-            "name": "last_updated",
-            "type": "u64"
-          }
-        ]
+        "defined": "ParametersChanged"
+      }
+    },
+    {
+      "name": "FrozenChanged",
+      "selector": "875f82465beee407",
+      "type": {
+        "defined": "FrozenChanged"
       }
     }
   ],
   "types": [
     {
-      "name": "MetadataStandard",
-      "kind": "enum",
-      "variants": [
+      "name": "CollateralDeposited",
+      "kind": "struct",
+      "fields": [
         {
-          "name": "Simple"
+          "name": "owner",
+          "type": "account_id"
         },
         {
-          "name": "Expanded"
+          "name": "amount",
+          "type": "u128"
         }
       ]
     },
     {
-      "name": "ObservationEntry",
+      "name": "CollateralWithdrawn",
       "kind": "struct",
       "fields": [
         {
-          "name": "timestamp",
-          "type": "u64"
+          "name": "owner",
+          "type": "account_id"
         },
         {
-          "name": "tick_cumulative",
-          "type": "i64"
+          "name": "to",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "DebtGenerated",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "account_id"
+        },
+        {
+          "name": "to",
+          "type": "account_id"
+        },
+        {
+          "name": "amount",
+          "type": "u128"
+        },
+        {
+          "name": "normalized_debt_delta",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "DebtRepaid",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "account_id"
+        },
+        {
+          "name": "amount_burned",
+          "type": "u128"
+        },
+        {
+          "name": "normalized_debt_delta",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "Engine",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        },
+        {
+          "name": "fee",
+          "type": {
+            "defined": "StabilityFeeAccumulator"
+          }
+        },
+        {
+          "name": "redemption",
+          "type": {
+            "defined": "RedemptionPriceState"
+          }
+        },
+        {
+          "name": "pending",
+          "type": {
+            "option": {
+              "defined": "Pending"
+            }
+          },
+          "docs": "The operation waiting for a reply; `None` between transactions."
+        }
+      ]
+    },
+    {
+      "name": "FrozenChanged",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "is_frozen",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "Initialized",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "engine",
+          "type": "account_id"
+        },
+        {
+          "name": "stablecoin_definition",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "ParametersChanged",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "parameters",
+          "type": {
+            "defined": "ProtocolParameters"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Pending",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Initialize"
+        },
+        {
+          "name": "AccrueStabilityFee"
+        },
+        {
+          "name": "UpdateRedemptionRate"
+        },
+        {
+          "name": "RefreshGlobals",
+          "fields": [
+            {
+              "name": "consult_oracle",
+              "type": "bool"
+            }
+          ]
+        },
+        {
+          "name": "SetStabilityFee",
+          "fields": [
+            {
+              "name": "new_rate",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "ResetController"
+        },
+        {
+          "name": "GenerateDebt",
+          "fields": [
+            {
+              "name": "position",
+              "type": "account_id"
+            },
+            {
+              "name": "amount",
+              "type": "u128"
+            },
+            {
+              "name": "to",
+              "type": "account_id"
+            },
+            {
+              "name": "collateral_amount",
+              "type": "u128"
+            },
+            {
+              "name": "normalized_debt_amount",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "RepayDebt",
+          "fields": [
+            {
+              "name": "position",
+              "type": "account_id"
+            },
+            {
+              "name": "maximum_amount",
+              "type": "u128"
+            },
+            {
+              "name": "from_holding",
+              "type": "account_id"
+            },
+            {
+              "name": "normalized_debt_amount",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "Withdraw",
+          "fields": [
+            {
+              "name": "position",
+              "type": "account_id"
+            },
+            {
+              "name": "amount",
+              "type": "u128"
+            },
+            {
+              "name": "to",
+              "type": "account_id"
+            },
+            {
+              "name": "collateral_after",
+              "type": "u128"
+            },
+            {
+              "name": "normalized_debt_amount",
+              "type": "u128"
+            }
+          ]
+        },
+        {
+          "name": "OraclePrice",
+          "fields": [
+            {
+              "name": "now",
+              "type": "u64"
+            },
+            {
+              "name": "hard",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Position",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "token_program_id",
+          "type": "account_id",
+          "docs": "The token program the vault lives in, pinned when the position opened."
+        },
+        {
+          "name": "collateral_definition_id",
+          "type": "account_id",
+          "docs": "The collateral token's definition, pinned when the position opened. A deposit\ninitializes the vault's holding of it, which pins the vault into the transaction."
+        },
+        {
+          "name": "collateral_amount",
+          "type": "u128",
+          "docs": "Collateral held in the position's vault, in raw collateral units."
+        },
+        {
+          "name": "normalized_debt_amount",
+          "type": "u128",
+          "docs": "Debt divided by the stability fee accumulator at the time it was taken, so the debt\ngrows with the accumulator without touching the position."
+        }
+      ]
+    },
+    {
+      "name": "PositionClosed",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "account_id"
+        }
+      ]
+    },
+    {
+      "name": "PositionOpened",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "owner",
+          "type": "account_id"
+        },
+        {
+          "name": "vault",
+          "type": "account_id"
+        },
+        {
+          "name": "collateral_amount",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "ProtocolParameters",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "admin_account_id",
+          "type": "account_id",
+          "docs": "Authority required for every parameter-update and admin-rotation action."
+        },
+        {
+          "name": "freeze_authority_account_id",
+          "type": "account_id",
+          "docs": "Authority required for `Freeze` / `Unfreeze`."
+        },
+        {
+          "name": "token_program_id",
+          "type": "account_id",
+          "docs": "The token program every stablecoin and collateral token lives in. IMMUTABLE."
+        },
+        {
+          "name": "stablecoin_definition_id",
+          "type": "account_id",
+          "docs": "The stablecoin's token definition PDA. IMMUTABLE: changing it would break supply\naccounting against the existing float."
+        },
+        {
+          "name": "collateral_definition_id",
+          "type": "account_id",
+          "docs": "The single accepted collateral's token definition. IMMUTABLE: changing it would orphan\nevery position vault."
+        },
+        {
+          "name": "market_price_oracle_id",
+          "type": "account_id",
+          "docs": "Address of the market price oracle's price actor used by the controller."
+        },
+        {
+          "name": "market_price_oracle_program_id",
+          "type": "account_id",
+          "docs": "The program the bound oracle's price actor must belong to. Set with its address by the\nadmin, including when the oracle does not exist yet."
+        },
+        {
+          "name": "stability_fee_per_millisecond",
+          "type": "u128",
+          "docs": "Per-millisecond stability fee multiplier in fixed-point, stored as\n`(1 + r_per_millisecond) * FIXED_POINT_ONE`."
+        },
+        {
+          "name": "controller_proportional_gain",
+          "type": "i128",
+          "docs": "PI controller `Kp`. Signed."
+        },
+        {
+          "name": "controller_integral_gain",
+          "type": "i128",
+          "docs": "PI controller `Ki`. Signed."
+        },
+        {
+          "name": "minimum_collateralization_ratio",
+          "type": "u128",
+          "docs": "Minimum collateralization ratio in fixed-point (`1.5 * FIXED_POINT_ONE` = 150%)."
+        },
+        {
+          "name": "minimum_milliseconds_between_rate_updates",
+          "type": "u64",
+          "docs": "Minimum milliseconds between successful `UpdateRedemptionRate` calls."
+        },
+        {
+          "name": "maximum_oracle_price_age_milliseconds",
+          "type": "u64",
+          "docs": "Reject oracle observations older than this."
+        },
+        {
+          "name": "is_frozen",
+          "type": "bool",
+          "docs": "`true` blocks `OpenPosition`, `GenerateDebt`, and `WithdrawCollateral` for positions\nwith nonzero normalized debt. Debt-free withdrawals remain allowed."
+        },
+        {
+          "name": "minimum_debt_amount",
+          "type": "u128",
+          "docs": "Minimum positive accrued position debt, in raw stablecoin atomic units."
+        },
+        {
+          "name": "debt_ceiling",
+          "type": "u128",
+          "docs": "Aggregate accrued debt ceiling for new borrowing, in raw atomic units."
+        }
+      ]
+    },
+    {
+      "name": "RedemptionPriceState",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "redemption_price_at_last_update",
+          "type": "u128",
+          "docs": "Redemption price at [`Self::last_updated_at`], collateral-per-stablecoin\nfixed-point."
+        },
+        {
+          "name": "redemption_rate_per_millisecond",
+          "type": "u128",
+          "docs": "Per-millisecond drift multiplier, fixed-point. Below `FIXED_POINT_ONE` means\ndecay; above means growth."
+        },
+        {
+          "name": "controller_integral_term",
+          "type": "i128",
+          "docs": "Persisted PI integral state, signed. Clamped against windup on every\n`update_redemption_rate` (anti-windup bounds live in code constants in\nv1; see spec §8)."
+        },
+        {
+          "name": "last_updated_at",
+          "type": "u64",
+          "docs": "Unix milliseconds of the last `update_redemption_rate` call (or of\n`initialize_program`, for the initial state)."
+        }
+      ]
+    },
+    {
+      "name": "RedemptionRateUpdated",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "redemption_price",
+          "type": "u128"
+        },
+        {
+          "name": "redemption_rate_per_millisecond",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "StabilityFeeAccrued",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "accumulated_rate",
+          "type": "u128"
+        },
+        {
+          "name": "accrued_fees",
+          "type": "u128"
+        },
+        {
+          "name": "now",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "StabilityFeeAccumulator",
+      "kind": "struct",
+      "fields": [
+        {
+          "name": "accumulated_rate_at_last_accrual",
+          "type": "u128",
+          "docs": "Accumulator value at [`Self::last_accrued_at`], fixed-point. Initialized\nto `FIXED_POINT_ONE` and monotonically non-decreasing."
+        },
+        {
+          "name": "last_accrued_at",
+          "type": "u64",
+          "docs": "Unix milliseconds of the last accrual."
+        },
+        {
+          "name": "total_normalized_debt",
+          "type": "u128",
+          "docs": "Sum of every position's `normalized_debt_amount` (RAI's `debtAmount`).\n\nEach accrual mints `total_normalized_debt × Δaccumulator / FIXED_POINT_ONE`\nstablecoin to the protocol's surplus holding, so the supply keeps pace with\nthe total nominal debt (spec §6.6, RFP R1). `generate_debt` and\n`repay_debt` keep it in step with the positions."
+        }
+      ]
+    },
+    {
+      "name": "StablecoinState",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Engine",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "Engine"
+              }
+            }
+          ]
+        },
+        {
+          "name": "Position",
+          "fields": [
+            {
+              "name": "0",
+              "type": {
+                "defined": "Position"
+              }
+            }
+          ]
         }
       ]
     }
-  ],
-  "instruction_type": "stablecoin_core::Instruction"
+  ]
 }

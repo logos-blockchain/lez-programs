@@ -1,237 +1,591 @@
+//! `WithdrawCollateral`: the owner takes collateral out of the vault. The position asks the
+//! engine, which approves after checking the freeze flag and, when the position has debt, the
+//! collateralization ratio at the clock's time; the position then decrements its collateral and
+//! transfers from the vault.
+//!
+//! The destination may not be the position's own vault: the token would debit and credit the
+//! same holding, so the position would record a withdrawal that moved nothing out.
+
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response, SyncMessage},
 };
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_redemption_price_state_pda,
-    compute_stability_fee_accumulator_pda,
+    compute_position_vault_pda_seed,
+    event::{CollateralWithdrawn, StablecoinEvent as _},
     math::{compute_current_accumulated_rate_wide, compute_current_redemption_price_wide},
-    verify_position_and_get_seed, verify_position_vault_and_get_seed, Position, ProtocolParameters,
-    RedemptionPriceState, StabilityFeeAccumulator,
+    Engine, Internal, Pending,
 };
-use token_core::TokenHolding;
 
-/// Withdraw `amount` collateral tokens from `position`'s vault back to `user_collateral_holding`.
-///
-/// Decreases `Position.collateral_amount` by `amount` and emits a single chained
-/// `Token::Transfer` from the vault to `user_collateral_holding`, authorized by the vault
-/// PDA seed. The position diff is a plain data write —
-/// the initial PDA claim already happened in
-/// [`crate::open_position::open_position`].
-///
-/// While frozen, only positions with exactly zero normalized debt may withdraw.
-/// The exception is checked after validating the globals, clock and position
-/// ownership, PDA and owner binding; malformed inputs can fail before the frozen
-/// error. After the decrement, the §6.2
-/// collateralization invariant is checked against debt and redemption price both
-/// projected forward to the clock timestamp (§5.3) — unless `amount` is zero or
-/// the position carries no debt, in which case the projections are skipped
-/// entirely. A zero-amount withdrawal is a valid no-op (§11) and leaves the
-/// position untouched, so there is nothing for the check to re-examine.
+use crate::{
+    checks, clock, engine_actor, engine_state, position_state, save_engine, save_position,
+};
+
+/// At the owner's actor, signed as a root message: work out the collateral left after the
+/// withdrawal and ask the engine to approve. The position is not changed in this run.
 ///
 /// # Panics
-/// - `owner` is not authorized.
-/// - `position` is uninitialized, not owned by `stablecoin_program_id`, holds data that does not
-///   decode as a [`Position`], or sits at an address that does not match
-///   `compute_position_pda(stablecoin_program_id, owner, Position.position_nonce)`.
-/// - `vault` sits at an address that does not match
-///   `compute_position_vault_pda(stablecoin_program_id, position_id)`.
-/// - `vault` holds a token other than `protocol_parameters.collateral_definition_id`.
-/// - `user_collateral_holding` is uninitialized, owned by a different Token Program than the vault,
-///   or holds a [`TokenHolding`] whose `definition_id` does not match the vault holding's
-///   collateral definition.
-/// - `protocol_parameters`, `stability_fee_accumulator` or `redemption_price_state` is
-///   uninitialized, wrongly owned, not at its canonical PDA, or does not decode.
-/// - `protocol_parameters.is_frozen` is set and the position has nonzero normalized debt.
-/// - `clock` is not the initialized system `CLOCK_01` account.
-/// - A nonzero withdrawal from an indebted position projects the redemption price to zero.
-/// - `amount > Position.collateral_amount`, or §6.2 fails post-decrement.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the eight account inputs mirror the spec §10.6 ABI; a param struct would obscure it"
-)]
-pub fn withdraw_collateral(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    vault: AccountWithMetadata,
-    user_collateral_holding: AccountWithMetadata,
-    stability_fee_accumulator: AccountWithMetadata,
-    redemption_price_state: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    amount: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let parameters = crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    );
-    let parameters =
-        ProtocolParameters::try_from(&parameters).expect("ProtocolParameters must decode");
-
-    let accumulator_data = crate::checks::decode_global(
-        &stability_fee_accumulator,
-        compute_stability_fee_accumulator_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "StabilityFeeAccumulator",
-    );
-    let accumulator = StabilityFeeAccumulator::try_from(&accumulator_data)
-        .expect("StabilityFeeAccumulator must decode");
-
-    let redemption_data = crate::checks::decode_global(
-        &redemption_price_state,
-        compute_redemption_price_state_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "RedemptionPriceState",
-    );
-    let redemption =
-        RedemptionPriceState::try_from(&redemption_data).expect("RedemptionPriceState must decode");
-
-    let now = crate::accrue_stability_fee::read_clock(&clock);
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert_ne!(
-        position.account,
-        Account::default(),
-        "Position account must be initialized"
-    );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
-        "Position is not owned by this stablecoin program"
-    );
-
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
-    // `verify_position_and_get_seed` asserts the position address matches the
-    // (owner, position_nonce) PDA derivation. We do not use the seed
-    // downstream — the position is already PDA-claimed.
-    let _position_seed = verify_position_and_get_seed(
-        &position,
-        &owner,
-        position_data.position_nonce,
-        stablecoin_program_id,
-    );
-    // The PDA derivation above already binds the owner; this guards the stored
-    // discovery copy against silently drifting out of sync.
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
-        "Position owner_account_id does not match the owner account"
-    );
-    assert!(
-        !parameters.is_frozen || position_data.normalized_debt_amount == 0,
-        "Protocol is frozen"
-    );
-    let vault_seed =
-        verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
-    assert_eq!(
-        position_data.vault_account_id, vault.account_id,
-        "Position vault_account_id does not match the vault account"
-    );
-
-    let vault_holding = TokenHolding::try_from(&vault.account.data)
-        .expect("Vault account must hold a valid TokenHolding");
-    // `ProtocolParameters` is the authority on which token is collateral. The
-    // vault PDA is verified to belong to this position and was created against
-    // that same definition, so this should always hold — it is pinned anyway, as
-    // in `deposit_collateral`, so the two instructions cannot drift apart.
-    let collateral_definition_id = parameters.collateral_definition_id;
-    assert_eq!(
-        vault_holding.definition_id(),
-        collateral_definition_id,
-        "Vault holding does not match the protocol's collateral definition"
-    );
-
-    let token_program_id = vault.account.program_owner;
-    assert_ne!(
-        user_collateral_holding.account,
-        Account::default(),
-        "User collateral holding must be initialized"
-    );
-    assert_eq!(
-        user_collateral_holding.account.program_owner, token_program_id,
-        "User collateral holding must be owned by the same Token Program as the vault"
-    );
-    let user_holding = TokenHolding::try_from(&user_collateral_holding.account.data)
-        .expect("User collateral holding must hold a valid TokenHolding");
-    assert_eq!(
-        user_holding.definition_id(),
-        collateral_definition_id,
-        "User collateral holding definition does not match the position's collateral definition"
-    );
-
-    let new_collateral = position_data
+/// - `"only the account's owner may send this"` when the message is nested or unsigned.
+/// - `"this account has no position"` when the receiver holds no position.
+/// - `"Withdrawal amount exceeds position collateral"` when `amount` exceeds the collateral.
+/// - `"Collateral cannot be withdrawn to the position's own vault"` when a non-zero withdrawal
+///   names the vault as its destination.
+pub(crate) fn withdraw_collateral(input: &ReceiveInput, to: AccountId, amount: u128) -> Response {
+    checks::assert_owner(input);
+    let position = position_state(input);
+    assert_leaves_the_vault(input, to, amount);
+    let collateral_after = position
         .collateral_amount
         .checked_sub(amount)
         .expect("Withdrawal amount exceeds position collateral");
+    Response::keep_state().send_sync(
+        engine_actor(input),
+        &Internal::WithdrawRequest {
+            amount,
+            to,
+            collateral_after,
+            normalized_debt_amount: position.normalized_debt_amount,
+        },
+    )
+}
 
-    let updated_position = Position {
-        owner_account_id: position_data.owner_account_id,
-        position_nonce: position_data.position_nonce,
-        vault_account_id: position_data.vault_account_id,
-        collateral_amount: new_collateral,
-        normalized_debt_amount: position_data.normalized_debt_amount,
-        opened_at: position_data.opened_at,
-    };
-    // Spec §6.2 is enforced *after* the decrement, against debt and redemption
-    // price both projected forward to `now` (§5.3).
-    //
-    // Two cases skip the check, and with it the projections. `amount == 0` is a
-    // valid no-op (§11): collateral and debt are unchanged, so re-running the
-    // check could only reject a position the call did not touch. A position
-    // with no debt has nothing to collateralize. Projecting is `O(log Δt)`
-    // `U512` multiplications, so skipping is worth it on its own in the guest.
-    if amount != 0 && updated_position.normalized_debt_amount != 0 {
-        let current_redemption_price = compute_current_redemption_price_wide(
-            redemption.redemption_price_at_last_update,
-            redemption.redemption_rate_per_millisecond,
-            redemption.last_updated_at,
+/// At the engine, from the position's actor: while frozen only a debt-free position may leave.
+/// A zero withdrawal, or one from a debt-free position, is approved at once; otherwise the
+/// request is parked and the clock asked for the time. Only the program's own code, after the
+/// owner check, sends `WithdrawRequest` from the position's state.
+///
+/// # Panics
+/// - `"this actor is not the engine"` when the receiver holds no engine state.
+/// - `"Protocol is frozen"` while frozen and the position has debt.
+/// - `"the engine is already waiting for a reply"` when another operation is parked.
+pub(crate) fn request(
+    input: &ReceiveInput,
+    from: Actor,
+    amount: u128,
+    to: AccountId,
+    collateral_after: u128,
+    normalized_debt_amount: u128,
+) -> Response {
+    let engine = engine_state(input);
+    assert!(
+        !engine.parameters.is_frozen || normalized_debt_amount == 0,
+        "Protocol is frozen"
+    );
+    if amount == 0 || normalized_debt_amount == 0 {
+        return Response::keep_state().send_sync(from, &Internal::WithdrawApproved { amount, to });
+    }
+    clock::read_clock(
+        engine,
+        Pending::Withdraw {
+            position: from.account_id,
+            amount,
+            to,
+            collateral_after,
+            normalized_debt_amount,
+        },
+    )
+}
+
+/// At the engine, on the clock's reply: check the collateralization ratio of what is left, with
+/// the fee accumulator and the redemption price projected to `now`, and approve. Nothing
+/// accrues, so `fee` and `redemption` are saved as they were.
+///
+/// # Panics
+/// - `"Redemption price projected to zero"` when the projected price is zero.
+/// - `"Position is undercollateralized"` when the position would fall under the ratio.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parked `Pending::Withdraw` fields plus the engine, the clock's time and the input"
+)]
+pub(crate) fn finish(
+    input: &ReceiveInput,
+    engine: Engine,
+    position: AccountId,
+    amount: u128,
+    to: AccountId,
+    collateral_after: u128,
+    normalized_debt_amount: u128,
+    now: u64,
+) -> Response {
+    let redemption_price = compute_current_redemption_price_wide(
+        engine.redemption.redemption_price_at_last_update,
+        engine.redemption.redemption_rate_per_millisecond,
+        engine.redemption.last_updated_at,
+        now,
+    );
+    // A rate below 1.0 can decay the projected price to zero, which would zero the required
+    // collateral and let an indebted position be drained.
+    assert!(
+        !redemption_price.is_zero(),
+        "Redemption price projected to zero"
+    );
+    checks::assert_position_is_collateralized(
+        collateral_after,
+        normalized_debt_amount,
+        compute_current_accumulated_rate_wide(
+            engine.fee.accumulated_rate_at_last_accrual,
+            engine.parameters.stability_fee_per_millisecond,
+            engine.fee.last_accrued_at,
             now,
-        );
-        // A rate below 1.0 decays the projected price toward zero, and it does
-        // reach zero over a long enough gap. Zero would zero out the required
-        // collateral and let an indebted position be drained completely.
-        assert!(
-            !current_redemption_price.is_zero(),
-            "Redemption price projected to zero"
-        );
-        crate::checks::assert_position_is_collateralized(
-            &updated_position,
-            compute_current_accumulated_rate_wide(
-                accumulator.accumulated_rate_at_last_accrual,
-                parameters.stability_fee_per_millisecond,
-                accumulator.last_accrued_at,
-                now,
+        ),
+        redemption_price,
+        engine.parameters.minimum_collateralization_ratio,
+    );
+    save_engine(engine).send_sync(
+        crate::stablecoin_actor(input, position),
+        &Internal::WithdrawApproved { amount, to },
+    )
+}
+
+/// At the owner's actor, from the engine: decrement the collateral and transfer `amount` from
+/// the vault to `to` (no transfer when it is zero).
+///
+/// # Panics
+/// - `"only the engine may send this"` when the sender is anyone else.
+/// - `"this account has no position"` when the receiver holds no position.
+/// - `"Withdrawal amount exceeds position collateral"` when `amount` exceeds the collateral.
+/// - `"Collateral cannot be withdrawn to the position's own vault"` when a non-zero withdrawal
+///   names the vault as its destination.
+pub(crate) fn approved(input: &ReceiveInput, amount: u128, to: AccountId) -> Response {
+    checks::assert_from_engine(input);
+    let mut position = position_state(input);
+    assert_leaves_the_vault(input, to, amount);
+    position.collateral_amount = position
+        .collateral_amount
+        .checked_sub(amount)
+        .expect("Withdrawal amount exceeds position collateral");
+    if amount == 0 {
+        return Response::keep_state();
+    }
+    let owner = input.receiver.account_id;
+    let vault = stablecoin_core::compute_position_vault_pda(crate::program_id(input), owner);
+    let token_program_id = position.token_program_id;
+    save_position(position)
+        .send(
+            SyncMessage::new(
+                Actor::new(vault, token_program_id),
+                &token_core::Message::Transfer { to, amount },
+            )
+            .with_pda_seeds([compute_position_vault_pda_seed(owner)]),
+        )
+        .event(CollateralWithdrawn { owner, to, amount }.to_program_event())
+}
+
+/// A non-zero withdrawal must name a destination other than the receiver's own vault.
+fn assert_leaves_the_vault(input: &ReceiveInput, to: AccountId, amount: u128) {
+    let vault = stablecoin_core::compute_position_vault_pda(
+        crate::program_id(input),
+        input.receiver.account_id,
+    );
+    assert!(
+        amount == 0 || to != vault,
+        "Collateral cannot be withdrawn to the position's own vault"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use stablecoin_core::{
+        compute_position_vault_pda_seed,
+        event::{CollateralWithdrawn, StablecoinEvent as _},
+        Internal,
+    };
+
+    use super::*;
+    use crate::test_utils::*;
+
+    /// A rate one legacy clamp away from 1.0.
+    const RATE_DELTA: u128 = FIXED_POINT_ONE / 100_000;
+    const NOW: u64 = 1_000_000_000;
+
+    fn position(collateral_amount: u128, normalized_debt_amount: u128) -> StablecoinState {
+        StablecoinState::Position(Position {
+            token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
+            collateral_amount,
+            normalized_debt_amount,
+        })
+    }
+
+    fn withdraw_to(to: AccountId, amount: u128) -> Response {
+        run(
+            stablecoin(OWNER),
+            None,
+            true,
+            Some(&position(10, 0)),
+            &Message::WithdrawCollateral { to, amount },
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "Collateral cannot be withdrawn to the position's own vault")]
+    fn position_refuses_a_withdrawal_to_its_own_vault() {
+        let _ = withdraw_to(vault_id(OWNER), 10);
+    }
+
+    #[test]
+    fn position_allows_a_zero_withdrawal_that_names_its_own_vault() {
+        assert_eq!(
+            withdraw_to(vault_id(OWNER), 0),
+            Response::keep_state().send_sync(
+                engine(),
+                &Internal::WithdrawRequest {
+                    amount: 0,
+                    to: vault_id(OWNER),
+                    collateral_after: 10,
+                    normalized_debt_amount: 0,
+                },
             ),
-            current_redemption_price,
-            parameters.minimum_collateralization_ratio,
         );
     }
 
-    let vault_id = vault.account_id;
-    let user_collateral_holding_id = user_collateral_holding.account_id;
+    #[test]
+    #[should_panic(expected = "Collateral cannot be withdrawn to the position's own vault")]
+    fn position_refuses_an_approval_that_pays_its_own_vault() {
+        let _ = run(
+            stablecoin(OWNER),
+            Some(engine()),
+            false,
+            Some(&position(10, 0)),
+            &Internal::WithdrawApproved {
+                amount: 10,
+                to: vault_id(OWNER),
+            },
+        );
+    }
 
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::from(&updated_position)),
-        AccountStateDiff::unchanged(vault),
-        AccountStateDiff::unchanged(user_collateral_holding),
-        AccountStateDiff::unchanged(stability_fee_accumulator),
-        AccountStateDiff::unchanged(redemption_price_state),
-        AccountStateDiff::unchanged(protocol_parameters),
-        AccountStateDiff::unchanged(clock),
-    ];
+    fn withdraw(
+        from: Option<Actor>,
+        is_authorized: bool,
+        pre: Option<&StablecoinState>,
+        amount: u128,
+    ) -> Response {
+        run(
+            stablecoin(OWNER),
+            from,
+            is_authorized,
+            pre,
+            &Message::WithdrawCollateral {
+                to: RECIPIENT,
+                amount,
+            },
+        )
+    }
 
-    // The vault PDA seed is the authority over the vault for the chained
-    // transfer; pre-states are ids now, so there is no flag to flip.
-    let transfer_call = ChainedCall::new(
-        token_program_id,
-        vec![vault_id, user_collateral_holding_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: amount,
-        },
-    )
-    .with_pda_seeds(vec![vault_seed]);
+    fn engine_with(frozen: bool) -> Engine {
+        let mut engine = engine_at(NOW);
+        engine.parameters.is_frozen = frozen;
+        engine
+    }
 
-    (state_diffs, vec![transfer_call])
+    fn request(engine: Engine, amount: u128, debt: u128) -> Response {
+        run(
+            self::engine(),
+            Some(stablecoin(OWNER)),
+            false,
+            Some(&StablecoinState::Engine(engine)),
+            &Internal::WithdrawRequest {
+                amount,
+                to: RECIPIENT,
+                collateral_after: 300,
+                normalized_debt_amount: debt,
+            },
+        )
+    }
+
+    fn approved_message(amount: u128) -> SyncMessage {
+        SyncMessage::new(
+            stablecoin(OWNER),
+            &Internal::WithdrawApproved {
+                amount,
+                to: RECIPIENT,
+            },
+        )
+    }
+
+    /// Redemption price 0.5, fee accumulator 1.0, ratio 1.5, as in the v0.2.5 fixtures: the
+    /// required collateral is `debt * 0.75`.
+    fn parked_engine(
+        collateral_after: u128,
+        normalized_debt_amount: u128,
+        rate: u128,
+        updated_at: u64,
+        ratio: u128,
+    ) -> Engine {
+        let mut engine = engine_at(NOW);
+        engine.redemption.redemption_price_at_last_update = FIXED_POINT_ONE / 2;
+        engine.redemption.redemption_rate_per_millisecond = rate;
+        engine.redemption.last_updated_at = updated_at;
+        engine.parameters.minimum_collateralization_ratio = ratio;
+        engine.pending = Some(Pending::Withdraw {
+            position: OWNER,
+            amount: 1,
+            to: RECIPIENT,
+            collateral_after,
+            normalized_debt_amount,
+        });
+        engine
+    }
+
+    fn finish(engine: &Engine) -> Response {
+        run(
+            self::engine(),
+            Some(clock()),
+            false,
+            Some(&StablecoinState::Engine(engine.clone())),
+            &clock_reply(NOW),
+        )
+    }
+
+    fn finish_default(collateral_after: u128, debt: u128) -> Response {
+        finish(&parked_engine(
+            collateral_after,
+            debt,
+            FIXED_POINT_ONE,
+            NOW,
+            FIXED_POINT_ONE * 3 / 2,
+        ))
+    }
+
+    // --- position, root message ---
+
+    #[test]
+    fn position_sends_the_request_and_keeps_its_state() {
+        let response = withdraw(None, true, Some(&position(500, 20)), 200);
+        assert_eq!(response.post_state, None);
+        assert_eq!(
+            response.sync_messages,
+            vec![SyncMessage::new(
+                engine(),
+                &Internal::WithdrawRequest {
+                    amount: 200,
+                    to: RECIPIENT,
+                    collateral_after: 300,
+                    normalized_debt_amount: 20,
+                },
+            )]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Withdrawal amount exceeds position collateral")]
+    fn position_refuses_more_than_the_collateral() {
+        let _ = withdraw(None, true, Some(&position(500, 20)), 501);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn position_refuses_an_unsigned_withdrawal() {
+        let _ = withdraw(None, false, Some(&position(500, 20)), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn position_refuses_a_nested_withdrawal() {
+        let _ = withdraw(Some(outsider(OWNER)), true, Some(&position(500, 20)), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "this account has no position")]
+    fn position_refuses_a_withdrawal_without_a_position() {
+        let _ = withdraw(None, true, None, 1);
+    }
+
+    // --- engine, request ---
+
+    #[test]
+    fn engine_approves_a_debt_free_request_at_once() {
+        let response = request(engine_with(false), 200, 0);
+        assert_eq!(response.post_state, None);
+        assert_eq!(response.sync_messages, vec![approved_message(200)]);
+    }
+
+    #[test]
+    fn engine_approves_a_debt_free_request_while_frozen() {
+        let response = request(engine_with(true), 200, 0);
+        assert_eq!(response.sync_messages, vec![approved_message(200)]);
+    }
+
+    #[test]
+    fn engine_approves_a_zero_request_with_debt_at_once() {
+        let response = request(engine_with(false), 0, 20);
+        assert_eq!(response.post_state, None);
+        assert_eq!(response.sync_messages, vec![approved_message(0)]);
+    }
+
+    #[test]
+    fn engine_parks_a_request_with_debt_and_asks_the_clock() {
+        let response = request(engine_with(false), 200, 20);
+        let mut expected = engine_with(false);
+        expected.pending = Some(Pending::Withdraw {
+            position: OWNER,
+            amount: 200,
+            to: RECIPIENT,
+            collateral_after: 300,
+            normalized_debt_amount: 20,
+        });
+        assert_eq!(saved_engine(&response), expected);
+        assert_eq!(
+            response.sync_messages,
+            vec![SyncMessage::new(
+                clock(),
+                &clock_core::Message::ReadTimestamp { granularity: 1 },
+            )]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Protocol is frozen")]
+    fn engine_refuses_a_request_with_debt_while_frozen() {
+        let _ = request(engine_with(true), 200, 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "Protocol is frozen")]
+    fn engine_refuses_a_zero_request_with_debt_while_frozen() {
+        let _ = request(engine_with(true), 0, 20);
+    }
+
+    #[test]
+    #[should_panic(expected = "this actor is not the engine")]
+    fn request_at_an_actor_that_is_not_the_engine_panics() {
+        let _ = run(
+            stablecoin(OWNER),
+            Some(stablecoin(OWNER)),
+            false,
+            Some(&position(500, 20)),
+            &Internal::WithdrawRequest {
+                amount: 1,
+                to: RECIPIENT,
+                collateral_after: 1,
+                normalized_debt_amount: 1,
+            },
+        );
+    }
+
+    // --- engine, clock reply ---
+
+    #[test]
+    fn engine_approves_a_healthy_withdrawal_and_changes_nothing_else() {
+        // debt 100 needs 75 collateral; 900 remain.
+        let before = parked_engine(900, 100, FIXED_POINT_ONE, NOW, FIXED_POINT_ONE * 3 / 2);
+        let response = finish(&before);
+        let mut expected = before.clone();
+        expected.pending = None;
+        assert_eq!(saved_engine(&response), expected);
+        assert_eq!(response.sync_messages, vec![approved_message(1)]);
+    }
+
+    #[test]
+    fn engine_approves_at_the_exact_ratio_boundary() {
+        // debt 100 needs exactly 75.
+        let _ = finish_default(75, 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "Position is undercollateralized")]
+    fn engine_refuses_one_unit_below_the_ratio() {
+        let _ = finish_default(74, 100);
+    }
+
+    #[test]
+    #[should_panic(expected = "Redemption price projected to zero")]
+    fn engine_refuses_a_redemption_price_that_projects_to_zero() {
+        let _ = finish(&parked_engine(
+            500_000,
+            300,
+            FIXED_POINT_ONE - RATE_DELTA,
+            NOW - 7_000_000,
+            FIXED_POINT_ONE * 3 / 2,
+        ));
+    }
+
+    #[test]
+    fn engine_compares_a_projected_price_beyond_u128_instead_of_overflowing() {
+        // Required about 585_174_061_358 against 900_000_000_000 left.
+        let mut engine = parked_engine(
+            900_000_000_000,
+            1,
+            FIXED_POINT_ONE + RATE_DELTA,
+            NOW - 2_700_000,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+        engine.redemption.redemption_price_at_last_update = FIXED_POINT_ONE;
+        let _ = finish(&engine);
+    }
+
+    #[test]
+    #[should_panic(expected = "Position is undercollateralized")]
+    fn engine_refuses_when_the_projected_price_exceeds_the_collateral() {
+        let mut engine = parked_engine(
+            999,
+            1,
+            FIXED_POINT_ONE + RATE_DELTA,
+            NOW - 2_700_000,
+            FIXED_POINT_ONE * 11 / 10,
+        );
+        engine.redemption.redemption_price_at_last_update = FIXED_POINT_ONE;
+        let _ = finish(&engine);
+    }
+
+    // --- position, approved ---
+
+    fn approve(from: Actor, pre: Option<&StablecoinState>, amount: u128) -> Response {
+        run(
+            stablecoin(OWNER),
+            Some(from),
+            false,
+            pre,
+            &Internal::WithdrawApproved {
+                amount,
+                to: RECIPIENT,
+            },
+        )
+    }
+
+    #[test]
+    fn position_transfers_from_the_vault_and_decrements_its_collateral() {
+        let response = approve(engine(), Some(&position(500, 20)), 200);
+        assert_eq!(response.post_state, Some(position(300, 20).encode().into()));
+        assert_eq!(
+            response.sync_messages,
+            vec![SyncMessage::new(
+                token(vault_id(OWNER)),
+                &token_core::Message::Transfer {
+                    to: RECIPIENT,
+                    amount: 200,
+                },
+            )
+            .with_pda_seeds([compute_position_vault_pda_seed(OWNER)])]
+        );
+        assert_eq!(
+            response.events,
+            vec![CollateralWithdrawn {
+                owner: OWNER,
+                to: RECIPIENT,
+                amount: 200,
+            }
+            .to_program_event()]
+        );
+    }
+
+    #[test]
+    fn position_does_nothing_for_a_zero_withdrawal() {
+        let response = approve(engine(), Some(&position(500, 20)), 0);
+        assert_eq!(response.post_state, None);
+        assert!(response.sync_messages.is_empty());
+        assert!(response.events.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "only the engine may send this")]
+    fn position_refuses_an_approval_from_a_non_engine_actor() {
+        let _ = approve(stablecoin(OWNER), Some(&position(500, 20)), 200);
+    }
+
+    #[test]
+    #[should_panic(expected = "Withdrawal amount exceeds position collateral")]
+    fn position_refuses_an_approval_beyond_its_collateral() {
+        let _ = approve(engine(), Some(&position(100, 20)), 200);
+    }
 }

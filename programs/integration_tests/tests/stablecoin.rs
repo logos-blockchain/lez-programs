@@ -1,4856 +1,1108 @@
-use std::collections::HashMap;
+//! The stablecoin through its real guest, against the real token program, the real TWAP oracle
+//! and LEZ's clock: every conversation of the design, as whole transactions on a `V03State`.
+//!
+//! [`harness::send`] checks after every stablecoin transaction, successful or refused, that the
+//! engine is not left waiting for a reply.
 
-use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
-use integration_tests::{
-    private_authorized_init_identity, private_authorized_update_identity,
-    private_foreign_init_identity, GroupOwner,
-};
-use lee::{
-    error::LeeError,
-    execute_and_prove,
-    privacy_preserving_transaction::{
-        circuit::ProgramWithDependencies, Message, PrivacyPreservingTransaction, WitnessSet,
-    },
-    program::Program,
-    public_transaction, PrivateKey, PublicKey, PublicTransaction, V03State,
-};
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data, Nonce},
-    encryption::ViewingPublicKey,
-    AuthorizationSecretKey, Commitment, InputAccountIdentity, Nullifier, NullifierPublicKey,
-    NullifierSecretKey,
-};
+#[path = "stablecoin/harness.rs"]
+mod harness;
+
+use clock_core::clock_actor;
+use harness::*;
+use integration_tests::{account, assert_refused, key, tick};
+use lee::error::{InvalidProgramBehaviorError, LeeError};
+use lee_core::{account::AccountId, execution_state::ExecutionError, program::TransactionEvent};
 use stablecoin_core::{
-    compute_position_pda, compute_position_vault_pda, compute_protocol_parameters_pda,
-    compute_redemption_price_state_pda, compute_stability_fee_accumulator_pda,
-    compute_stablecoin_definition_pda, compute_stablecoin_master_holding_pda, Position,
+    event::{DebtRepaid, RedemptionRateUpdated, StabilityFeeAccrued},
+    math::mul_div,
+    Message, FIXED_POINT_ONE,
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::TokenDefinition;
 
-struct Keys;
-struct Ids;
-struct Balances;
-struct Accounts;
-struct PrivateKeys;
+/// The surplus and stablecoin balances that move together, read at once.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct Stablecoin {
+    surplus: u128,
+    supply: u128,
+}
 
-impl PrivateKeys {
-    /// The authorization key is the root credential under v0.2.5: the circuit takes an
-    /// `ask` and derives the `nsk` from it, so the fixture roots here.
-    fn destination_ask() -> AuthorizationSecretKey {
-        AuthorizationSecretKey([111; 32])
-    }
-
-    fn destination_nsk() -> NullifierSecretKey {
-        NullifierSecretKey::from(&Self::destination_ask())
-    }
-
-    fn destination_npk() -> NullifierPublicKey {
-        NullifierPublicKey::from(&Self::destination_nsk())
-    }
-
-    fn destination_vpk() -> ViewingPublicKey {
-        ViewingPublicKey::from_seed(&[141; 32], &[142; 32])
-    }
-
-    fn destination_id() -> AccountId {
-        AccountId::for_regular_private_account(
-            &Self::destination_npk(),
-            &Self::destination_vpk(),
-            0,
-        )
-    }
-
-    /// The authorization key is the root credential under v0.2.5: the circuit takes an
-    /// `ask` and derives the `nsk` from it, so the fixture roots here.
-    fn stablecoin_holding_ask() -> AuthorizationSecretKey {
-        AuthorizationSecretKey([121; 32])
-    }
-
-    fn stablecoin_holding_nsk() -> NullifierSecretKey {
-        NullifierSecretKey::from(&Self::stablecoin_holding_ask())
-    }
-
-    fn stablecoin_holding_npk() -> NullifierPublicKey {
-        NullifierPublicKey::from(&Self::stablecoin_holding_nsk())
-    }
-
-    fn stablecoin_holding_vpk() -> ViewingPublicKey {
-        ViewingPublicKey::from_seed(&[151; 32], &[152; 32])
-    }
-
-    fn stablecoin_holding_id() -> AccountId {
-        AccountId::for_regular_private_account(
-            &Self::stablecoin_holding_npk(),
-            &Self::stablecoin_holding_vpk(),
-            0,
-        )
+fn stablecoin_balances(world: &World) -> Stablecoin {
+    Stablecoin {
+        surplus: holding_balance(world, surplus_id(world)),
+        supply: total_supply(world, definition_id(world)),
     }
 }
 
-impl Keys {
-    fn owner() -> PrivateKey {
-        PrivateKey::try_new([41; 32]).expect("valid private key")
-    }
-
-    fn user_holding() -> PrivateKey {
-        PrivateKey::try_new([42; 32]).expect("valid private key")
-    }
-
-    fn user_stablecoin_holding() -> PrivateKey {
-        PrivateKey::try_new([43; 32]).expect("valid private key")
-    }
-
-    fn admin() -> PrivateKey {
-        PrivateKey::try_new([44; 32]).expect("valid private key")
-    }
-
-    fn freeze_authority() -> PrivateKey {
-        PrivateKey::try_new([45; 32]).expect("valid private key")
-    }
-
-    fn deployment_authority() -> PrivateKey {
-        PrivateKey::try_new([46; 32]).expect("valid private key")
-    }
-
-    fn second_deployment_authority() -> PrivateKey {
-        PrivateKey::try_new([47; 32]).expect("valid private key")
-    }
+fn debt(world: &World, user: &User) -> u128 {
+    position(world, user.id())
+        .expect("the user has a position")
+        .normalized_debt_amount
 }
 
-impl Ids {
-    /// The program's account id: since v0.2.5 a program is addressed by its deployed
-    /// `ProgramHeader` account, and the test harness seeds that header at the ImageID
-    /// bijection address, so `AccountId::from(<ELF>_ID)` is where it lives here.
-    fn token_program() -> AccountId {
-        AccountId::from(token_methods::TOKEN_ID)
-    }
-
-    /// The deployed header has its own signing key, independent of the ELF's ImageID.
-    fn stablecoin_program() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(
-            &Keys::deployment_authority(),
-        ))
-    }
-
-    fn second_stablecoin_program() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(
-            &Keys::second_deployment_authority(),
-        ))
-    }
-
-    fn collateral_definition() -> AccountId {
-        AccountId::new([5; 32])
-    }
-
-    fn owner() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::owner()))
-    }
-
-    fn user_holding() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::user_holding()))
-    }
-
-    fn stablecoin_definition() -> AccountId {
-        AccountId::new([6; 32])
-    }
-
-    fn user_stablecoin_holding() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(
-            &Keys::user_stablecoin_holding(),
-        ))
-    }
-
-    fn position_nonce() -> u64 {
-        0
-    }
-
-    fn position() -> AccountId {
-        compute_position_pda(
-            Self::stablecoin_program(),
-            Self::owner(),
-            Self::position_nonce(),
-        )
-    }
-
-    fn vault() -> AccountId {
-        compute_position_vault_pda(Self::stablecoin_program(), Self::position())
-    }
-
-    fn admin() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::admin()))
-    }
-
-    fn freeze_authority() -> AccountId {
-        AccountId::from(&PublicKey::new_from_private_key(&Keys::freeze_authority()))
-    }
-
-    fn oracle() -> AccountId {
-        AccountId::new([0x70; 32])
-    }
-
-    /// The stablecoin's `TokenDefinition` PDA created by `initialize_program`
-    /// (distinct from `stablecoin_definition`, the externally-owned definition
-    /// the repay test uses).
-    fn stablecoin_definition_pda() -> AccountId {
-        compute_stablecoin_definition_pda(Self::stablecoin_program())
-    }
+fn collateral(world: &World, user: &User) -> u128 {
+    position(world, user.id())
+        .expect("the user has a position")
+        .collateral_amount
 }
 
-impl Balances {
-    fn user_holding_init() -> u128 {
-        1_000_000
-    }
-
-    fn collateral_deposit() -> u128 {
-        500_000
-    }
-
-    fn collateral_top_up() -> u128 {
-        100_000
-    }
-
-    fn collateral_withdraw() -> u128 {
-        200_000
-    }
-
-    fn stablecoin_supply_init() -> u128 {
-        1_000
-    }
-
-    fn user_stablecoin_holding_init() -> u128 {
-        1_000
-    }
-
-    fn initial_debt() -> u128 {
-        300
-    }
-
-    fn debt_repay_amount() -> u128 {
-        100
-    }
+/// An initialized world and a user with `collateral` in a holding.
+fn world_with_user(collateral: u128) -> (World, User) {
+    let mut world = world();
+    initialize(&mut world);
+    let user = user(&mut world, 30, collateral);
+    (world, user)
 }
 
-impl Accounts {
-    fn collateral_definition_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("Gold"),
-                total_supply: Balances::user_holding_init(),
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn user_holding_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::collateral_definition(),
-                balance: Balances::user_holding_init(),
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn stablecoin_definition_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("DAI"),
-                total_supply: Balances::stablecoin_supply_init(),
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    /// The surplus holding fee accruals mint into: the stablecoin master holding.
-    fn stablecoin_master_holding_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::stablecoin_definition(),
-                balance: 0,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn user_stablecoin_holding_init() -> Account {
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0_u128,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::stablecoin_definition(),
-                balance: Balances::user_stablecoin_holding_init(),
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn position_with_debt_init() -> Account {
-        Account {
-            program_owner: Ids::stablecoin_program(),
-            balance: 0_u128,
-            data: Data::from(&Position {
-                owner_account_id: Ids::owner(),
-                position_nonce: Ids::position_nonce(),
-                vault_account_id: Ids::vault(),
-                collateral_amount: Balances::collateral_deposit(),
-                normalized_debt_amount: Balances::initial_debt(),
-                opened_at: 0,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    /// A bootstrapped `ProtocolParameters`, force-inserted rather than produced by
-    /// `initialize_program`, so the position tests stay independent of the bootstrap
-    /// flow. The full lifecycle test in Plan 3 issue 08 uses the real bootstrap.
-    fn protocol_parameters_init() -> Account {
-        Account {
-            program_owner: Ids::stablecoin_program(),
-            balance: 0,
-            data: Data::from(&stablecoin_core::ProtocolParameters {
-                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
-                minimum_debt_amount: 1,
-                debt_ceiling: u128::MAX,
-                admin_account_id: Ids::admin(),
-                freeze_authority_account_id: Ids::freeze_authority(),
-                stablecoin_definition_id: Ids::stablecoin_definition(),
-                collateral_definition_id: Ids::collateral_definition(),
-                market_price_oracle_id: Ids::oracle(),
-                market_price_oracle_program_id: AccountId::new([9; 32]),
-                stability_fee_per_millisecond: protocol_config::STABILITY_FEE_PER_MILLISECOND,
-                controller_proportional_gain: 0,
-                controller_integral_gain: 0,
-                minimum_collateralization_ratio: stablecoin_core::math::FIXED_POINT_ONE * 3 / 2,
-                minimum_milliseconds_between_rate_updates:
-                    protocol_config::MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES,
-                maximum_oracle_price_age_milliseconds:
-                    protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
-                is_frozen: false,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn stability_fee_accumulator_init(total_normalized_debt: u128) -> Account {
-        Account {
-            program_owner: Ids::stablecoin_program(),
-            balance: 0,
-            data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
-                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
-                total_normalized_debt,
-                accumulated_rate_at_last_accrual: stablecoin_core::math::FIXED_POINT_ONE,
-                last_accrued_at: OPEN_POSITION_NOW,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn redemption_price_state_init() -> Account {
-        Account {
-            program_owner: Ids::stablecoin_program(),
-            balance: 0,
-            data: Data::from(&stablecoin_core::RedemptionPriceState {
-                redemption_price_at_last_update: protocol_config::INITIAL_REDEMPTION_PRICE,
-                redemption_rate_per_millisecond: stablecoin_core::math::FIXED_POINT_ONE,
-                controller_integral_term: 0,
-                last_updated_at: OPEN_POSITION_NOW,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-
-    fn oracle_init(base_asset: AccountId, quote_asset: AccountId) -> Account {
-        Self::oracle_with(
-            base_asset,
-            quote_asset,
-            // 0.5 in the oracle's Q64.64 encoding.
-            1 << 63,
-            0,
-        )
-    }
-
-    /// An oracle observation at an explicit price and timestamp — the poke tests
-    /// need both to control the controller's error term and the freshness gate.
-    fn oracle_with(
-        base_asset: AccountId,
-        quote_asset: AccountId,
-        price: u128,
-        timestamp: u64,
-    ) -> Account {
-        Account {
-            program_owner: AccountId::new([9u8; 32]),
-            balance: 0_u128,
-            data: Data::from(&twap_oracle_core::OraclePriceAccount {
-                base_asset,
-                quote_asset,
-                price,
-                timestamp,
-                source_id: Ids::oracle(),
-                confidence_interval: 0,
-            }),
-            nonce: Nonce(0),
-        }
-    }
-}
-
-/// Seeds the canonical `CLOCK_01` account at `timestamp`. `V03State::new()` no longer
-/// auto-creates it, and `initialize_program` reads it for wall-clock time.
-fn seed_clock(state: &mut V03State, timestamp: u64) {
-    let data = ClockAccountData {
-        block_id: 0,
-        timestamp,
-    }
-    .to_bytes();
-    let clock_account = Account {
-        // The real CLOCK_01 system account is owned by the clock program, not the
-        // default program (see lee `system_accounts::clock_account`). A default owner
-        // makes the spel-framework output filter drop the (unchanged, unclaimed)
-        // clock post-state, which v0.2.1's DeclaredAccountMissingFromOutput invariant
-        // then rejects. Use a non-default placeholder owner, as the oracle fixture does.
-        program_owner: AccountId::new([8u8; 32]),
-        data: Data::try_from(data).expect("clock account data fits"),
-        ..Account::default()
-    };
-    state.force_insert_account(CLOCK_01_PROGRAM_ACCOUNT_ID, clock_account);
-}
-
-// v0.2.5 deleted `ProgramDeploymentTransaction`; deployment is now the `program_loader`
-// pseudo-program's WriteSegment/CreateHeader flow. `with_programs` seeds each program in the
-// shape that flow produces — a loader-owned header plus its segment — without making every
-// test drive a deployment. Copy the stablecoin header to a keyed address so bootstrap
-// authorization uses a real signature; retain the valid loader-owned header and segment.
-fn deploy_programs(state: &mut V03State) {
-    *state = std::mem::take(state).with_programs([
-        Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF"),
-        Program::new(stablecoin_methods::STABLECOIN_ELF.to_vec().into())
-            .expect("valid stablecoin ELF"),
-    ]);
-    let header = state.get_account_by_id(AccountId::from(stablecoin_methods::STABLECOIN_ID));
-    state.force_insert_account(Ids::stablecoin_program(), header);
-}
-
-fn state_for_stablecoin_tests() -> V03State {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
-    // Seed the owner as a non-default-owned account. In lee, balance-holding user
-    // accounts are owned by a system program (see lee `system_accounts` / the
-    // `time_locked_transfer` sender), not the default program. A default-owned owner
-    // works the first time it signs (its pre-state is still `Account::default()`), but
-    // once `open_position` bumps its nonce the spel-framework output filter drops the
-    // (unchanged, unclaimed, default-owned) owner post-state from the second
-    // transaction — which v0.2.1's DeclaredAccountMissingFromOutput invariant then
-    // rejects. A non-default owner keeps it in the diff across both transactions.
-    state.force_insert_account(
-        Ids::owner(),
-        Account {
-            program_owner: AccountId::new([7u8; 32]),
-            ..Account::default()
-        },
-    );
-    state.force_insert_account(
-        compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        Accounts::protocol_parameters_init(),
-    );
-    state.force_insert_account(
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Accounts::stability_fee_accumulator_init(0),
-    );
-    state.force_insert_account(
-        compute_redemption_price_state_pda(Ids::stablecoin_program()),
-        Accounts::redemption_price_state_init(),
-    );
-    seed_clock(&mut state, OPEN_POSITION_NOW);
-    state
-}
-
-fn current_nonce(state: &V03State, account_id: AccountId) -> Nonce {
-    state.get_account_by_id(account_id).nonce
-}
-
-fn state_for_stablecoin_repay_tests() -> V03State {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    state.force_insert_account(
-        Ids::stablecoin_definition(),
-        Accounts::stablecoin_definition_init(),
-    );
-    state.force_insert_account(Ids::position(), Accounts::position_with_debt_init());
-    state.force_insert_account(
-        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-        Accounts::stablecoin_master_holding_init(),
-    );
-    state.force_insert_account(
-        Ids::user_stablecoin_holding(),
-        Accounts::user_stablecoin_holding_init(),
-    );
-    state.force_insert_account(
-        compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        Accounts::protocol_parameters_init(),
-    );
-    state.force_insert_account(
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Accounts::stability_fee_accumulator_init(Balances::initial_debt()),
-    );
-    seed_clock(&mut state, OPEN_POSITION_NOW);
-    state
-}
-
-fn assert_position(state: &V03State, expected_collateral: u128) {
-    let position =
-        Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
-    assert_eq!(position.collateral_amount, expected_collateral);
-    assert_eq!(position.normalized_debt_amount, 0);
-    assert_eq!(position.vault_account_id, Ids::vault());
-    assert_eq!(position.owner_account_id, Ids::owner());
-    assert_eq!(position.position_nonce, Ids::position_nonce());
-}
-
-fn assert_fungible_balance(state: &V03State, account_id: AccountId, expected_balance: u128) {
-    assert_fungible_balance_of(
-        state,
-        account_id,
-        Ids::collateral_definition(),
-        expected_balance,
-    );
-}
-
-/// Same check, for holdings of a definition other than the collateral one (the
-/// lifecycle test also asserts stablecoin balances).
-fn assert_fungible_balance_of(
-    state: &V03State,
-    account_id: AccountId,
-    expected_definition: AccountId,
-    expected_balance: u128,
-) {
-    let holding = TokenHolding::try_from(&state.get_account_by_id(account_id).data)
-        .expect("valid TokenHolding");
-    match holding {
-        TokenHolding::Fungible {
-            definition_id,
-            balance,
-        } => {
-            assert_eq!(definition_id, expected_definition);
-            assert_eq!(balance, expected_balance);
-        }
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("expected Fungible holding")
-        }
-    }
-}
+// ── Initialize ───────────────────────────────────────────────────────────────────
 
 #[test]
-fn stablecoin_open_position_then_withdraw_collateral() {
-    let mut state = state_for_stablecoin_tests();
-
-    // Open the position: deposit collateral from the user's holding into a fresh vault.
-    let open = stablecoin_core::Instruction::OpenPosition {
-        position_nonce: Ids::position_nonce(),
-        initial_collateral_amount: Balances::collateral_deposit(),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            current_nonce(&state, Ids::owner()),
-            current_nonce(&state, Ids::user_holding()),
-        ],
-        open,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::owner(), &Keys::user_holding()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 0, 0)
-        .expect("open_position must succeed");
-
-    assert_position(&state, Balances::collateral_deposit());
-    assert_fungible_balance(&state, Ids::vault(), Balances::collateral_deposit());
-    assert_fungible_balance(
-        &state,
-        Ids::user_holding(),
-        Balances::user_holding_init() - Balances::collateral_deposit(),
-    );
-
-    // Top the position up with more collateral from the same user holding.
-    let deposit = stablecoin_core::Instruction::DepositCollateral {
-        amount: Balances::collateral_top_up(),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        ],
-        vec![
-            current_nonce(&state, Ids::owner()),
-            current_nonce(&state, Ids::user_holding()),
-        ],
-        deposit,
-    )
-    .expect("valid deposit_collateral message");
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::owner(), &Keys::user_holding()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 0, 0)
-        .expect("deposit_collateral must succeed");
-
-    let after_top_up = Balances::collateral_deposit() + Balances::collateral_top_up();
-    assert_position(&state, after_top_up);
-    assert_fungible_balance(&state, Ids::vault(), after_top_up);
-    assert_fungible_balance(
-        &state,
-        Ids::user_holding(),
-        Balances::user_holding_init() - after_top_up,
-    );
-
-    // Withdraw part of the collateral back to the same user holding.
-    let withdraw = stablecoin_core::Instruction::WithdrawCollateral {
-        amount: Balances::collateral_withdraw(),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![current_nonce(&state, Ids::owner())],
-        withdraw,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::owner()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 0, 0)
-        .expect("withdraw_collateral must succeed");
-
-    let after_withdraw = after_top_up - Balances::collateral_withdraw();
-    assert_position(&state, after_withdraw);
-    assert_fungible_balance(&state, Ids::vault(), after_withdraw);
-    assert_fungible_balance(
-        &state,
-        Ids::user_holding(),
-        Balances::user_holding_init() - after_withdraw,
-    );
-}
-
-#[test]
-fn stablecoin_repay_debt_burns_stablecoins_and_decreases_debt() {
-    let mut state = state_for_stablecoin_repay_tests();
-
-    let repay = stablecoin_core::Instruction::RepayDebt {
-        amount: Balances::debt_repay_amount(),
-    };
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            current_nonce(&state, Ids::owner()),
-            current_nonce(&state, Ids::user_stablecoin_holding()),
-        ],
-        repay,
-    )
-    .unwrap();
-    let witness_set = public_transaction::WitnessSet::for_message(
-        &message,
-        &[&Keys::owner(), &Keys::user_stablecoin_holding()],
-    );
-    let tx = PublicTransaction::new(message, witness_set);
-    state
-        .transition_from_public_transaction(&tx, 0, 0)
-        .expect("repay_debt must succeed");
-
-    // Position debt decreased; collateral untouched.
-    let position =
-        Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position");
+fn initialize_creates_the_engine_and_the_stablecoin_token() {
+    let mut world = world();
+    initialize(&mut world);
+    let engine = engine(&world);
+    assert_eq!(engine.pending, None);
+    assert_eq!(engine.fee.last_accrued_at, T0);
+    assert_eq!(engine.redemption.last_updated_at, T0);
+    assert_eq!(engine.parameters.token_program_id, world.token);
+    assert_eq!(engine.fee.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
+    assert_eq!(engine.fee.total_normalized_debt, 0);
+    let parameters = &engine.parameters;
+    assert_eq!(parameters.admin_account_id, account(&world.admin));
     assert_eq!(
-        position.normalized_debt_amount,
-        Balances::initial_debt() - Balances::debt_repay_amount()
+        parameters.freeze_authority_account_id,
+        account(&world.freeze_authority)
     );
-    assert_eq!(position.collateral_amount, Balances::collateral_deposit());
+    assert_eq!(parameters.stablecoin_definition_id, definition_id(&world));
     assert_eq!(
-        read_accumulator(&state).total_normalized_debt,
-        position.normalized_debt_amount
+        parameters.collateral_definition_id,
+        world.collateral_definition
     );
-
-    // Stablecoin total supply decreased by the burn amount.
-    let definition =
-        TokenDefinition::try_from(&state.get_account_by_id(Ids::stablecoin_definition()).data)
-            .expect("valid TokenDefinition");
-    match definition {
-        TokenDefinition::Fungible { total_supply, .. } => {
-            assert_eq!(
-                total_supply,
-                Balances::stablecoin_supply_init() - Balances::debt_repay_amount()
-            );
+    assert_eq!(parameters.market_price_oracle_id, price_account_id(&world));
+    assert_eq!(parameters.market_price_oracle_program_id, world.oracle);
+    assert_eq!(parameters.minimum_debt_amount, 10);
+    assert_eq!(parameters.debt_ceiling, 1_000_000_000);
+    assert!(!parameters.is_frozen);
+    assert_eq!(
+        stablecoin_balances(&world),
+        Stablecoin {
+            surplus: 0,
+            supply: 0
         }
-        TokenDefinition::NonFungible { .. } => panic!("expected Fungible definition"),
-    }
-
-    // User stablecoin holding decreased by the burn amount.
-    let holding =
-        TokenHolding::try_from(&state.get_account_by_id(Ids::user_stablecoin_holding()).data)
-            .expect("valid TokenHolding");
-    match holding {
-        TokenHolding::Fungible { balance, .. } => {
-            assert_eq!(
-                balance,
-                Balances::user_stablecoin_holding_init() - Balances::debt_repay_amount()
-            );
+    );
+    // The stablecoin definition is its own mint authority, so the engine can mint through it.
+    assert_eq!(
+        definition(&world, definition_id(&world)),
+        TokenDefinition {
+            name: "Stable".to_owned(),
+            total_supply: 0,
+            authority: Some(definition_id(&world)),
         }
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("expected Fungible holding")
-        }
-    }
-}
-
-/// A repayment fixture with matching token balance and total supply. Positions
-/// and globals are seeded like the existing repayment tests. The clock stays at
-/// the accumulator's anchor: nothing accrues, so no surplus mint is needed.
-fn repayment_state(normalized_debt: u128, balance: u128, accumulator: u128) -> V03State {
-    let mut state = state_for_stablecoin_repay_tests();
-    let mut position_account = state.get_account_by_id(Ids::position());
-    let mut position = Position::try_from(&position_account.data).expect("valid position");
-    position.normalized_debt_amount = normalized_debt;
-    position_account.data = Data::from(&position);
-    state.force_insert_account(Ids::position(), position_account);
-    state.force_insert_account(
-        Ids::user_stablecoin_holding(),
-        Account {
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::stablecoin_definition(),
-                balance,
-            }),
-            ..Accounts::user_stablecoin_holding_init()
-        },
     );
-    state.force_insert_account(
-        Ids::stablecoin_definition(),
-        Account {
-            data: Data::from(&TokenDefinition::Fungible {
-                name: String::from("DAI"),
-                total_supply: balance,
-                metadata_id: None,
-                authority: None,
-            }),
-            ..Accounts::stablecoin_definition_init()
-        },
+    assert_eq!(
+        holding(&world, surplus_id(&world)).definition_id,
+        definition_id(&world)
     );
-    state.force_insert_account(
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Account {
-            data: Data::from(&stablecoin_core::StabilityFeeAccumulator {
-                schema_version: stablecoin_core::GLOBAL_SCHEMA_VERSION,
-                accumulated_rate_at_last_accrual: accumulator,
-                last_accrued_at: OPEN_POSITION_NOW,
-                total_normalized_debt: normalized_debt,
-            }),
-            ..Accounts::stability_fee_accumulator_init(normalized_debt)
-        },
-    );
-    state
-}
-
-fn submit_repayment(state: &mut V03State, maximum: u128, now: u64) -> Result<(), LeeError> {
-    try_submit(
-        state,
-        &mut 0,
-        now,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (
-                &Keys::user_stablecoin_holding(),
-                Ids::user_stablecoin_holding(),
-            ),
-        ],
-        stablecoin_core::Instruction::RepayDebt { amount: maximum },
-    )
+    assert_eq!(position(&world, account(&world.admin)), None);
 }
 
 #[test]
-fn stablecoin_repay_debt_caps_burn_and_preserves_unused_maximum() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
+fn initialize_signed_by_anyone_else_is_refused() {
+    let mut world = world();
+    let other = key(9);
+    let root = stablecoin(&world, account(&other));
+    let past_root = initialize_actors(&world);
+    let message = Message::from(initialize_args(&world));
 
-    for (debt, accumulator, maximum, balance, expected_balance) in [
-        (100, FIXED_POINT_ONE, 101, 101, 1),
-        (100, FIXED_POINT_ONE * 3 / 2, u128::MAX, 150, 0),
-        (0, FIXED_POINT_ONE, u128::MAX, 0, 0),
-    ] {
-        let mut state = repayment_state(debt, balance, accumulator);
-        let before = read_position(&state);
-        submit_repayment(&mut state, maximum, OPEN_POSITION_NOW)
-            .expect("only the capped burn must fit the holding");
-        let after = read_position(&state);
-        assert_eq!(after.normalized_debt_amount, 0);
-        assert_eq!(
-            after,
-            Position {
-                normalized_debt_amount: 0,
-                ..before
-            }
-        );
-        assert_fungible_balance_of(
-            &state,
-            Ids::user_stablecoin_holding(),
-            Ids::stablecoin_definition(),
-            expected_balance,
-        );
-        assert_eq!(
-            read_total_supply(&state, Ids::stablecoin_definition()),
-            expected_balance,
-            "total supply must fall by actual burn, not by the signed maximum"
-        );
-    }
+    let result = send(&mut world, root, &past_root, &[&other], &message);
+
+    assert_refused(&result, "only the program's own account may initialize it");
+    assert_eq!(stablecoin_state(&world, engine_id(&world)), None);
 }
 
 #[test]
-fn stablecoin_repay_debt_insufficient_capped_burn_rolls_back() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
+fn initialize_twice_is_refused() {
+    let mut world = world();
+    initialize(&mut world);
+    let before = engine(&world);
+    let definition_before = definition(&world, definition_id(&world));
 
-    let mut state = repayment_state(100, 149, FIXED_POINT_ONE * 3 / 2);
-    let unchanged_accounts = [
-        Ids::position(),
-        Ids::stablecoin_definition(),
-        Ids::user_stablecoin_holding(),
-    ]
-    .map(|id| (id, state.get_account_by_id(id)));
-    assert_rejected_with(
-        submit_repayment(&mut state, u128::MAX, OPEN_POSITION_NOW),
-        "Insufficient balance to burn",
-        "repayment short by one token unit",
-    );
-    for (id, before) in unchanged_accounts {
-        assert_eq!(
-            state.get_account_by_id(id),
-            before,
-            "failed burn must roll back every write"
-        );
-    }
+    let result = try_initialize(&mut world);
+
+    // The program account's first message is the token relay, so the token's `NewDefinition`
+    // at the existing definition fails before the engine sees `InitializeEngine`.
+    assert_refused(&result, "definition account must be empty");
+    assert_eq!(engine(&world), before);
+    assert_eq!(definition(&world, definition_id(&world)), definition_before);
 }
 
-/// A bootstrapped protocol whose owner opened a position and borrowed
-/// `LIFECYCLE_BORROW` at `start`, so the position holds the only debt.
-fn borrowed_owner_state(start: u64) -> V03State {
-    let mut state = bootstrapped_owner_state(start);
-    let mut block = 1u64;
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (&Keys::user_holding(), Ids::user_holding()),
-        ],
-        stablecoin_core::Instruction::OpenPosition {
-            position_nonce: Ids::position_nonce(),
-            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
-        },
-        "open_position",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::GenerateDebt {
-            amount: LIFECYCLE_BORROW,
-        },
-        "generate_debt",
-    );
-    state
-}
+// ── AccrueStabilityFee ───────────────────────────────────────────────────────────
 
-/// Repaying a millisecond after borrowing: the accrual first mints the
-/// position's fees to the surplus holding, and the signed maximum still bounds
-/// the burn against the execution-time debt.
 #[test]
-fn stablecoin_repay_debt_uses_execution_time_debt_within_signed_maximum() {
-    use stablecoin_core::math::{
-        compute_current_accumulated_rate, mul_div, mul_div_ceil, FIXED_POINT_ONE,
+fn anyone_can_accrue_and_the_engine_follows_the_clock() {
+    let mut world = world();
+    initialize(&mut world);
+    tick(&mut world.state, T0 + 60_000);
+    accrue(&mut world).expect("the poke succeeds");
+    let engine = engine(&world);
+    assert_eq!(engine.pending, None);
+    assert_eq!(engine.fee.last_accrued_at, T0 + 60_000);
+    // The fee is above 1.0 per millisecond, so 60_000 ms of the clock's time compound it.
+    assert!(engine.fee.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
+}
+
+#[test]
+fn accrue_with_debt_mints_the_fees_to_the_surplus_holding() {
+    let (mut world, user) = world_with_user(200_000_000);
+    open_position(&mut world, &user, 150_000_000).expect("the position opens");
+    generate(&mut world, &user, 100_000_000).expect("the debt is generated");
+    let before = stablecoin_balances(&world);
+    let rate_before = engine(&world).fee.accumulated_rate_at_last_accrual;
+    tick(&mut world.state, T0 + 3_600_000);
+
+    let events = accrue(&mut world).expect("the poke succeeds");
+
+    let accrued = events_of::<StabilityFeeAccrued>(&events);
+    let [StabilityFeeAccrued { accrued_fees, .. }] = accrued.as_slice() else {
+        panic!("expected one accrual event, got {accrued:?}");
     };
-
-    let start: u64 = 1_700_000_000_000;
-    let now = start + 1;
-    let accumulator = compute_current_accumulated_rate(
-        FIXED_POINT_ONE,
-        protocol_config::STABILITY_FEE_PER_MILLISECOND,
-        start,
-        now,
+    // An hour at about 100% a year on 100_000_000 is about 7_900.
+    assert!(*accrued_fees > 7_000, "{accrued_fees}");
+    assert_eq!(
+        stablecoin_balances(&world),
+        Stablecoin {
+            surplus: before.surplus + accrued_fees,
+            supply: before.supply + accrued_fees,
+        }
     );
-    let fees = mul_div(
-        LIFECYCLE_BORROW,
-        accumulator - FIXED_POINT_ONE,
+    let engine = engine(&world);
+    assert!(engine.fee.accumulated_rate_at_last_accrual > rate_before);
+    assert_eq!(engine.fee.last_accrued_at, T0 + 3_600_000);
+    assert_eq!(engine.fee.total_normalized_debt, 100_000_000);
+    assert_eq!(debt(&world, &user), 100_000_000);
+}
+
+// ── Positions ────────────────────────────────────────────────────────────────────
+
+#[test]
+fn full_position_lifecycle() {
+    let (mut world, user) = world_with_user(10_000);
+    let vault = vault_id(&world, user.id());
+
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    assert_eq!(collateral(&world, &user), 1_500);
+    assert_eq!(debt(&world, &user), 0);
+    assert_eq!(holding_balance(&world, vault), 1_500);
+    assert_eq!(holding_balance(&world, user.collateral_id()), 8_500);
+
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+    // The accumulator is still 1.0: no time has passed since initialize.
+    assert_eq!(debt(&world, &user), 1_000);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 1_000);
+    assert_eq!(holding_balance(&world, user.stable_id()), 1_000);
+    assert_eq!(total_supply(&world, definition_id(&world)), 1_000);
+
+    // A second owner provides the stablecoin to top the holding up for the accrued fee. Their
+    // larger debt makes the repayment's own accrual mint whole units to the surplus.
+    let donor = harness::user(&mut world, 40, 20_000_000);
+    open_position(&mut world, &donor, 20_000_000).expect("the donor's position opens");
+    generate(&mut world, &donor, 10_000_000).expect("the donor's debt is generated");
+    tick(&mut world.state, T0 + 60_000);
+    transfer(&mut world, &donor.stable, user.stable_id(), 1).expect("the top-up arrives");
+    let before = stablecoin_balances(&world);
+    let fee_before = engine(&world).fee;
+
+    let events = repay(&mut world, &user, 2_000).expect("the debt is repaid");
+
+    // A minute at about 100% a year makes 1_000 of debt cost 1_000.0013: the repayment burns
+    // the ceiling of that, not the 2_000 the owner authorized.
+    let repaid = events_of::<DebtRepaid>(&events);
+    assert_eq!(
+        repaid,
+        vec![DebtRepaid {
+            owner: user.id(),
+            amount_burned: 1_001,
+            normalized_debt_delta: 1_000,
+        }]
+    );
+    // The fees on 10_001_000 of normalized debt over the minute, from the engine's own
+    // accumulator, not from the events: about 13.
+    let accrued = mul_div(
+        fee_before.total_normalized_debt,
+        engine(&world).fee.accumulated_rate_at_last_accrual
+            - fee_before.accumulated_rate_at_last_accrual,
         FIXED_POINT_ONE,
     );
-    let full_debt = mul_div_ceil(LIFECYCLE_BORROW, accumulator, FIXED_POINT_ONE);
+    assert_eq!(accrued, 13);
+    assert_eq!(holding_balance(&world, user.stable_id()), 0);
+    // The repayment passes through the surplus holding and is burned there: the surplus moves
+    // only by the accrued fees, the supply falls by the burn.
+    assert_eq!(
+        stablecoin_balances(&world),
+        Stablecoin {
+            surplus: before.surplus + accrued,
+            supply: before.supply + accrued - 1_001,
+        }
+    );
+    assert_eq!(debt(&world, &user), 0);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 10_000_000);
+
+    withdraw(&mut world, &user, 1_500).expect("the collateral is withdrawn");
+    assert_eq!(collateral(&world, &user), 0);
+    assert_eq!(holding_balance(&world, vault), 0);
+    assert_eq!(holding_balance(&world, user.collateral_id()), 10_000);
+
+    close(&mut world, &user).expect("the position closes");
+    assert_eq!(position(&world, user.id()), None);
+}
+
+#[test]
+fn debt_limits_bound_minting_and_partial_repayment() {
+    let (mut world, user) = world_with_user(5_000);
+    open_position(&mut world, &user, 5_000).expect("the position opens");
+
+    assert_refused(
+        &generate(&mut world, &user, 5),
+        "Position debt is below minimum_debt_amount",
+    );
+    assert_refused(
+        &generate(&mut world, &user, 1_000_000_001),
+        "Global debt ceiling exceeded",
+    );
+
+    assert_refused(
+        &admin(
+            &mut world,
+            &Message::SetDebtLimits {
+                minimum_debt_amount: 0,
+                debt_ceiling: 10,
+            },
+        ),
+        "Debt limits require 0 < minimum_debt_amount <= debt_ceiling",
+    );
+    admin(
+        &mut world,
+        &Message::SetDebtLimits {
+            minimum_debt_amount: 100,
+            debt_ceiling: 2_000,
+        },
+    )
+    .expect("the admin sets the debt limits");
+    let parameters = engine(&world).parameters;
+    assert_eq!(parameters.minimum_debt_amount, 100);
+    assert_eq!(parameters.debt_ceiling, 2_000);
+
+    assert_refused(
+        &generate(&mut world, &user, 50),
+        "Position debt is below minimum_debt_amount",
+    );
+    assert_refused(
+        &generate(&mut world, &user, 2_001),
+        "Global debt ceiling exceeded",
+    );
+    generate(&mut world, &user, 1_000).expect("a debt within the limits is generated");
+    assert_eq!(debt(&world, &user), 1_000);
+
+    // A partial repayment may not leave the position under the floor.
+    assert_refused(
+        &repay(&mut world, &user, 950),
+        "Position debt is below minimum_debt_amount",
+    );
+    assert_eq!(debt(&world, &user), 1_000);
+    repay(&mut world, &user, 900).expect("a repayment leaving the floor succeeds");
+    assert_eq!(debt(&world, &user), 100);
+    assert_eq!(holding_balance(&world, user.stable_id()), 100);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 100);
+}
+
+/// The token debits and credits the same holding, so nothing would leave the vault.
+#[test]
+fn a_withdrawal_to_the_positions_own_vault_is_refused() {
+    let (mut world, user) = world_with_user(2_000);
+    let vault = vault_id(&world, user.id());
+    open_position(&mut world, &user, 10).expect("the position opens");
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, vault),
+    ];
+
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::WithdrawCollateral {
+            to: vault,
+            amount: 10,
+        },
+    );
+
+    // A refused transaction records no events, so no `CollateralWithdrawn` either.
+    assert_refused(
+        &result,
+        "Collateral cannot be withdrawn to the position's own vault",
+    );
+    assert_eq!(
+        position(&world, user.id())
+            .expect("the position stays")
+            .collateral_amount,
+        10
+    );
+    assert_eq!(holding_balance(&world, vault), 10);
+}
+
+#[test]
+fn a_debt_free_position_withdraws_while_frozen() {
+    let (mut world, user) = world_with_user(2_000);
+    let vault = vault_id(&world, user.id());
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let mut accrued = 0;
+    let mut count_fees = |events: &[TransactionEvent]| {
+        accrued += events_of::<StabilityFeeAccrued>(events)
+            .iter()
+            .map(|event| event.accrued_fees)
+            .sum::<u128>();
+    };
+    count_fees(&generate(&mut world, &user, 1_000).expect("the debt is generated"));
+    count_fees(&repay(&mut world, &user, 1_000).expect("the debt is repaid"));
+    tick(&mut world.state, T0 + 60_000);
+    count_fees(&accrue(&mut world).expect("the poke succeeds"));
+    freeze(&mut world);
+    assert!(engine(&world).parameters.is_frozen);
+
+    withdraw(&mut world, &user, 1_500).expect("a debt-free position withdraws while frozen");
+    close(&mut world, &user).expect("the position closes while frozen");
+
+    assert_eq!(holding_balance(&world, vault), 0);
+    assert_eq!(holding_balance(&world, user.collateral_id()), 2_000);
+    assert_eq!(position(&world, user.id()), None);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 0);
+    assert_eq!(holding_balance(&world, surplus_id(&world)), accrued);
+}
+
+#[test]
+fn deposit_then_withdraw_respects_the_ratio() {
+    let (mut world, user) = world_with_user(10_000);
+    let vault = vault_id(&world, user.id());
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    // 1_000 of debt at a redemption price of 1.0 and a ratio of 1.5 needs exactly 1_500.
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+
+    assert_refused(
+        &withdraw(&mut world, &user, 1),
+        "Position is undercollateralized",
+    );
+    assert_eq!(collateral(&world, &user), 1_500);
+
+    deposit(&mut world, &user, 300).expect("the deposit succeeds");
+    assert_eq!(collateral(&world, &user), 1_800);
+    assert_eq!(holding_balance(&world, vault), 1_800);
+
+    withdraw(&mut world, &user, 300).expect("the surplus collateral is withdrawn");
+    assert_eq!(collateral(&world, &user), 1_500);
+    assert_eq!(holding_balance(&world, vault), 1_500);
+    assert_eq!(holding_balance(&world, user.collateral_id()), 8_500);
+    assert_refused(
+        &withdraw(&mut world, &user, 1),
+        "Position is undercollateralized",
+    );
+}
+
+#[test]
+fn freeze_blocks_open_generate_and_indebted_withdraw_but_not_deposit_repay_close() {
+    let (mut world, indebted) = world_with_user(10_000);
+    open_position(&mut world, &indebted, 3_000).expect("the position opens");
+    generate(&mut world, &indebted, 1_000).expect("the debt is generated");
+    let newcomer = user(&mut world, 40, 1_000);
+    let empty = user(&mut world, 50, 0);
+    open_position(&mut world, &empty, 0).expect("an empty position opens");
+    freeze(&mut world);
+
+    assert_refused(
+        &open_position(&mut world, &newcomer, 500),
+        "Protocol is frozen",
+    );
+    assert_eq!(position(&world, newcomer.id()), None);
+    assert_refused(&generate(&mut world, &indebted, 10), "Protocol is frozen");
+    assert_refused(&withdraw(&mut world, &indebted, 1), "Protocol is frozen");
+    assert_eq!(debt(&world, &indebted), 1_000);
+    assert_eq!(collateral(&world, &indebted), 3_000);
+
+    deposit(&mut world, &indebted, 100).expect("a deposit succeeds while frozen");
+    assert_eq!(collateral(&world, &indebted), 3_100);
+    repay(&mut world, &indebted, 500).expect("a repayment succeeds while frozen");
+    assert_eq!(debt(&world, &indebted), 500);
+    close(&mut world, &empty).expect("a close succeeds while frozen");
+    assert_eq!(position(&world, empty.id()), None);
+
+    unfreeze(&mut world);
+    generate(&mut world, &indebted, 10).expect("generating resumes after unfreeze");
+    assert_eq!(debt(&world, &indebted), 510);
+}
+
+#[test]
+fn only_the_owner_moves_a_position() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let before = position(&world, user.id());
+    let other = key(9);
+    let root = stablecoin(&world, user.id());
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, vault_id(&world, user.id())),
+        token(&world, account(&other)),
+    ];
+    let message = Message::WithdrawCollateral {
+        to: account(&other),
+        amount: 1_500,
+    };
+
+    let signed_by_another = send(&mut world, root, &past_root, &[&other], &message);
+    let unsigned = send(&mut world, root, &past_root, &[], &message);
+
+    assert_refused(&signed_by_another, "only the account's owner may send this");
+    assert_refused(&unsigned, "only the account's owner may send this");
+    assert_eq!(position(&world, user.id()), before);
+    assert_eq!(holding_balance(&world, vault_id(&world, user.id())), 1_500);
+}
+
+#[test]
+fn a_donation_to_the_vault_is_ignored() {
+    let (mut world, user) = world_with_user(10_000);
+    let vault = vault_id(&world, user.id());
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+
+    transfer(&mut world, &user.collateral, vault, 500).expect("the donation arrives");
+    assert_eq!(holding_balance(&world, vault), 2_000);
+    assert_eq!(collateral(&world, &user), 1_500);
+
+    withdraw(&mut world, &user, 1_500).expect("the stored collateral is withdrawn");
+    close(&mut world, &user).expect("the position closes");
+    assert_eq!(position(&world, user.id()), None);
+    // The donation stays in the vault, stranded.
+    assert_eq!(holding_balance(&world, vault), 500);
+}
+
+#[test]
+fn a_deposit_from_a_holding_of_another_token_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let other_holding = key(61);
+    create_token(&mut world, &key(60), "Other", 1_000, &other_holding);
+
+    let result = deposit_from(&mut world, &user, &other_holding, 100);
+
+    // The vault is a collateral holding, so the token refuses to credit it with another token.
+    assert_refused(&result, "recipient holds another token");
+    assert_eq!(collateral(&world, &user), 1_500);
+    assert_eq!(holding_balance(&world, account(&other_holding)), 1_000);
+    assert_eq!(holding_balance(&world, vault_id(&world, user.id())), 1_500);
+}
+
+/// The vault's credit is an async `IncreaseBalance`. The deposit's seeded `InitializeHolding`
+/// is a sync message to the vault, so a caller who leaves the vault out of the declared actors
+/// cannot get the credit, and with it the refusal of another token, deferred: the transaction
+/// fails before anything is counted.
+#[test]
+fn a_deposit_that_leaves_the_vault_undeclared_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let other_holding = key(61);
+    create_token(&mut world, &key(60), "Other", 1_000, &other_holding);
+    let vault = vault_id(&world, user.id());
+
+    let past_root = [token(&world, account(&other_holding))];
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[&other_holding],
+        &Message::DepositCollateral {
+            collateral_holding: account(&other_holding),
+            amount: 100,
+        },
+    );
+
     assert!(
-        full_debt > LIFECYCLE_BORROW,
-        "a millisecond of fees must raise the debt"
+        matches!(
+            &result,
+            Err(LeeError::InvalidProgramBehavior(InvalidProgramBehaviorError::Execution(
+                ExecutionError::UndeclaredActor { actor }
+            ))) if *actor == token(&world, vault)
+        ),
+        "expected the vault to be undeclared, got {result:?}"
     );
-    for (maximum, expected_burn, remaining_debt) in [
-        (full_debt, full_debt, 0),
+    assert_eq!(collateral(&world, &user), 1_500);
+    assert_eq!(holding_balance(&world, vault), 1_500);
+    assert_eq!(holding_balance(&world, account(&other_holding)), 1_000);
+}
+
+// ── Debt ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn replies_reach_only_the_requesting_position() {
+    let (mut world, first) = world_with_user(10_000);
+    let second = user(&mut world, 40, 10_000);
+    open_position(&mut world, &first, 1_500).expect("the first position opens");
+    open_position(&mut world, &second, 1_500).expect("the second position opens");
+    let second_before = position(&world, second.id());
+
+    generate(&mut world, &second, 700).expect("the second owner generates debt");
+
+    assert_eq!(debt(&world, &second), 700);
+    assert_eq!(holding_balance(&world, second.stable_id()), 700);
+    assert_eq!(debt(&world, &first), 0);
+    assert_eq!(holding_balance(&world, first.stable_id()), 0);
+    assert_eq!(
+        position(&world, second.id()).map(|p| p.collateral_amount),
+        second_before.map(|p| p.collateral_amount)
+    );
+    assert_eq!(engine(&world).fee.total_normalized_debt, 700);
+
+    generate(&mut world, &first, 300).expect("the first owner generates debt");
+    assert_eq!(debt(&world, &first), 300);
+    assert_eq!(holding_balance(&world, first.stable_id()), 300);
+    assert_eq!(debt(&world, &second), 700);
+    assert_eq!(holding_balance(&world, second.stable_id()), 700);
+}
+
+#[test]
+fn a_zero_generate_and_a_zero_repay_change_nothing() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    generate(&mut world, &user, 0).expect("a zero generate on a debt-free position succeeds");
+    assert_eq!(debt(&world, &user), 0);
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+    let snapshot = |world: &World| {
         (
-            LIFECYCLE_BORROW,
-            LIFECYCLE_BORROW,
-            LIFECYCLE_BORROW - mul_div(LIFECYCLE_BORROW, FIXED_POINT_ONE, accumulator),
-        ),
-    ] {
-        let mut state = borrowed_owner_state(start);
-        let balance = LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW;
-        let supply = read_total_supply(&state, Ids::stablecoin_definition_pda());
-        submit(
-            &mut state,
-            &mut 3,
-            now,
-            vec![
-                Ids::owner(),
-                Ids::position(),
-                Ids::stablecoin_definition_pda(),
-                Ids::user_stablecoin_holding(),
-                compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-                compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-                compute_protocol_parameters_pda(Ids::stablecoin_program()),
-                CLOCK_01_PROGRAM_ACCOUNT_ID,
-            ],
-            vec![
-                (&Keys::owner(), Ids::owner()),
-                (
-                    &Keys::user_stablecoin_holding(),
-                    Ids::user_stablecoin_holding(),
-                ),
-            ],
-            stablecoin_core::Instruction::RepayDebt { amount: maximum },
-            "repay_debt a millisecond after borrowing",
-        );
-        assert_eq!(read_position(&state).normalized_debt_amount, remaining_debt);
-        assert_fungible_balance_of(
-            &state,
-            Ids::user_stablecoin_holding(),
-            Ids::stablecoin_definition_pda(),
-            balance - expected_burn,
-        );
-        assert_fungible_balance_of(
-            &state,
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            Ids::stablecoin_definition_pda(),
-            fees,
-        );
-        assert_eq!(
-            read_total_supply(&state, Ids::stablecoin_definition_pda()),
-            supply + fees - expected_burn,
-        );
-    }
-}
-
-/// Seeds the three globals and the clock that the fee-aware position
-/// instructions read. The privacy tests build their state by hand rather than via
-/// `initialize_program`, so they need these inserted explicitly.
-fn seed_stablecoin_globals(state: &mut V03State, total_normalized_debt: u128) {
-    state.force_insert_account(
-        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-        Accounts::stablecoin_master_holding_init(),
-    );
-    state.force_insert_account(
-        compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        Accounts::protocol_parameters_init(),
-    );
-    state.force_insert_account(
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        Accounts::stability_fee_accumulator_init(total_normalized_debt),
-    );
-    state.force_insert_account(
-        compute_redemption_price_state_pda(Ids::stablecoin_program()),
-        Accounts::redemption_price_state_init(),
-    );
-    seed_clock(state, OPEN_POSITION_NOW);
-}
-
-fn public_pre_state(state: &V03State, account_id: AccountId) -> AccountWithMetadata {
-    AccountWithMetadata::new(state.get_account_by_id(account_id), false, account_id)
-}
-
-/// The four trailing public inputs of `WithdrawCollateral`, in ABI order.
-fn withdraw_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
-    vec![
-        public_pre_state(
-            state,
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        ),
-        public_pre_state(
-            state,
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-        ),
-        public_pre_state(
-            state,
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        ),
-        public_pre_state(state, CLOCK_01_PROGRAM_ACCOUNT_ID),
-    ]
-}
-
-/// The four trailing public inputs of `RepayDebt`, in ABI order.
-fn repay_global_pre_states(state: &V03State) -> Vec<AccountWithMetadata> {
-    vec![
-        public_pre_state(
-            state,
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-        ),
-        public_pre_state(
-            state,
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        ),
-        public_pre_state(
-            state,
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        ),
-        public_pre_state(state, CLOCK_01_PROGRAM_ACCOUNT_ID),
-    ]
-}
-
-fn stablecoin_program() -> Program {
-    Program::new(stablecoin_methods::STABLECOIN_ELF.to_vec().into()).expect("valid stablecoin ELF")
-}
-
-fn token_program_instance() -> Program {
-    Program::new(token_methods::TOKEN_ELF.to_vec().into()).expect("valid token ELF")
-}
-
-fn stablecoin_with_token_deps() -> ProgramWithDependencies {
-    ProgramWithDependencies::new(
-        stablecoin_program(),
-        Ids::stablecoin_program(),
-        HashMap::from([(Ids::token_program(), token_program_instance())]),
-    )
-}
-
-/// `OpenPosition` through the privacy-preserving circuit, which LEZ v0.2.5 makes expressible.
-///
-/// Under v0.2.4 this was rejected with "Inconsistent authorization for account": the vault is
-/// touched by two chained calls, and the caller had to hand each one a pre-state carrying its
-/// own `is_authorized` flag — the second occurrence declared `false` after the first had been
-/// authorized by a `pda_seeds` match. v0.2.5's chained calls carry bare account ids and the
-/// runtime resolves both the state and the authorization itself, so the contradiction the
-/// caller used to be able to state no longer exists.
-#[test]
-fn stablecoin_open_position_via_privacy_transaction() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
-    // The rebuilt `open_position` reads the global parameters and the clock before it
-    // reaches the chained calls, so both must exist for the circuit to get as far as
-    // the rejection this test is about.
-    let parameters_id = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    state.force_insert_account(parameters_id, Accounts::protocol_parameters_init());
-    seed_clock(&mut state, OPEN_POSITION_NOW);
-
-    let owner_id = Ids::owner();
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
-
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre = AccountWithMetadata::new(Account::default(), false, position_id);
-    let vault_pre = AccountWithMetadata::new(Account::default(), false, vault_id);
-    let user_holding_pre =
-        AccountWithMetadata::new(Accounts::user_holding_init(), true, Ids::user_holding());
-    let definition_pre = AccountWithMetadata::new(
-        Accounts::collateral_definition_init(),
-        false,
-        Ids::collateral_definition(),
-    );
-
-    let parameters_pre =
-        AccountWithMetadata::new(state.get_account_by_id(parameters_id), false, parameters_id);
-    let clock_pre = AccountWithMetadata::new(
-        state.get_account_by_id(CLOCK_01_PROGRAM_ACCOUNT_ID),
-        false,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    );
-
-    let instruction = stablecoin_core::Instruction::OpenPosition {
-        position_nonce: Ids::position_nonce(),
-        initial_collateral_amount: Balances::collateral_deposit(),
-    };
-
-    let result = execute_and_prove(
-        vec![
-            owner_pre,
-            position_pre,
-            vault_pre,
-            user_holding_pre,
-            definition_pre,
-            parameters_pre,
-            clock_pre,
-        ],
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    );
-
-    let (output, _proof) =
-        result.expect("v0.2.5 resolves the vault's two chained-call occurrences consistently");
-
-    // Stop at the circuit: every account here is public, and a privacy-preserving transaction
-    // needs at least one private action to be submittable. What this test pins is the circuit's
-    // handling of an account touched by two sibling chained calls, which is exactly what used
-    // to fail. Applying OpenPosition end to end is covered by
-    // `stablecoin_open_position_then_withdraw_collateral` on the public path.
-    let vault_post = output
-        .public_actions
-        .iter()
-        .find(|action| action.pre.account_id == vault_id)
-        .expect("the vault must appear in the circuit output");
-    assert_eq!(
-        vault_post.post.program_owner,
-        Ids::token_program(),
-        "the chained InitializeAccount must leave the vault owned by the token program"
-    );
-}
-
-/// `WithdrawCollateral` to private account (`PrivateAuthorized`; `nsk` is known).
-#[test]
-fn stablecoin_withdraw_collateral_private_destination() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state, 0);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-
-    let owner_id = Ids::owner();
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
-
-    let position_collateral = 500_000_u128;
-    let withdraw_amount = 200_000_u128;
-
-    let position_account = Account {
-        program_owner: Ids::stablecoin_program(),
-        balance: 0,
-        data: Data::from(&Position {
-            owner_account_id: owner_id,
-            position_nonce: Ids::position_nonce(),
-            vault_account_id: vault_id,
-            collateral_amount: position_collateral,
-            normalized_debt_amount: 0,
-            opened_at: 0,
-        }),
-        nonce: Nonce(0),
-    };
-    let vault_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: position_collateral,
-        }),
-        nonce: Nonce(0),
-    };
-    state.force_insert_account(position_id, position_account);
-    state.force_insert_account(vault_id, vault_account);
-
-    let destination_ask = PrivateKeys::destination_ask();
-    let destination_nsk = NullifierSecretKey::from(&destination_ask);
-    let destination_vpk = PrivateKeys::destination_vpk();
-    let destination_id = PrivateKeys::destination_id();
-    let destination_initial_balance = 100_000_u128;
-    let destination_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: destination_initial_balance,
-        }),
-        nonce: Nonce::private_account_nonce_init(&destination_id),
-    };
-    state = state.with_private_accounts([(
-        Commitment::new(&destination_id, &destination_account),
-        Nullifier::for_account_initialization(&destination_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&Commitment::new(&destination_id, &destination_account))
-        .expect("destination's commitment must be in the set");
-
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre =
-        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
-    let vault_pre = AccountWithMetadata::new(state.get_account_by_id(vault_id), false, vault_id);
-    let destination_pre =
-        AccountWithMetadata::new(destination_account.clone(), true, destination_id);
-
-    let instruction = stablecoin_core::Instruction::WithdrawCollateral {
-        amount: withdraw_amount,
-    };
-
-    let (output, proof) = execute_and_prove(
-        [
-            vec![owner_pre, position_pre, vault_pre, destination_pre],
-            withdraw_global_pre_states(&state),
-        ]
-        .concat(),
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(destination_ask, &destination_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![Nonce(0)], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::owner()]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
+            position(world, user.id()),
+            engine(world).fee,
+            holding_balance(world, user.stable_id()),
+            stablecoin_balances(world),
         )
-        .unwrap();
-
-    let position =
-        Position::try_from(&state.get_account_by_id(position_id).data).expect("valid Position");
-    assert_eq!(
-        position.collateral_amount,
-        position_collateral - withdraw_amount
-    );
-    assert_eq!(position.normalized_debt_amount, 0);
-
-    match TokenHolding::try_from(&state.get_account_by_id(vault_id).data).expect("valid holding") {
-        TokenHolding::Fungible { balance, .. } => {
-            assert_eq!(balance, position_collateral - withdraw_amount);
-        }
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("expected Fungible vault holding")
-        }
-    }
-
-    let destination_nonce_after = Nonce::private_account_nonce_init(&destination_id)
-        .private_account_nonce_increment(&destination_nsk);
-    let new_destination_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: destination_initial_balance + withdraw_amount,
-        }),
-        nonce: destination_nonce_after,
     };
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&destination_id, &new_destination_account))
-        .is_some());
-}
+    let before = snapshot(&world);
 
-/// `WithdrawCollateral` blocks withdraws to private accounts (via private donations);
-/// `PrivateUnauthorized` account initialization (e.g., `nsk` is not known) is not permitted
-/// due to the assertion in `withdraw_collateral.rs` asserts `destination.account !=
-/// Account::default()`
-#[test]
-fn stablecoin_withdraw_collateral_to_new_private_destination_is_not_expressible() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state, 0);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-
-    let owner_id = Ids::owner();
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
-
-    let position_collateral = 500_000_u128;
-    let withdraw_amount = 200_000_u128;
-
-    let position_account = Account {
-        program_owner: Ids::stablecoin_program(),
-        balance: 0,
-        data: Data::from(&Position {
-            owner_account_id: owner_id,
-            position_nonce: Ids::position_nonce(),
-            vault_account_id: vault_id,
-            collateral_amount: position_collateral,
-            normalized_debt_amount: 0,
-            opened_at: 0,
-        }),
-        nonce: Nonce(0),
-    };
-    let vault_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: position_collateral,
-        }),
-        nonce: Nonce(0),
-    };
-    state.force_insert_account(position_id, position_account);
-    state.force_insert_account(vault_id, vault_account);
-
-    let destination_npk = PrivateKeys::destination_npk();
-    let destination_vpk = PrivateKeys::destination_vpk();
-    let destination_id = PrivateKeys::destination_id();
-
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre =
-        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
-    let vault_pre = AccountWithMetadata::new(state.get_account_by_id(vault_id), false, vault_id);
-    let destination_pre = AccountWithMetadata::new(Account::default(), false, destination_id);
-
-    let instruction = stablecoin_core::Instruction::WithdrawCollateral {
-        amount: withdraw_amount,
-    };
-
-    let result = execute_and_prove(
-        [
-            vec![owner_pre, position_pre, vault_pre, destination_pre],
-            withdraw_global_pre_states(&state),
-        ]
-        .concat(),
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_foreign_init_identity(
-                destination_npk,
-                &destination_vpk,
-                state.commitment_root(),
-            ),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    );
-
-    let err = result.expect_err(
-        "WithdrawCollateral must be rejected: destination is a brand-new (default) private \
-         account, but withdraw_collateral.rs requires the destination to already be initialized",
-    );
-    let message = format!("{err:?}");
-    assert!(
-        message.contains("User collateral holding must be initialized"),
-        "expected the destination-must-be-initialized rejection, got a different error: {message}"
-    );
+    // The token accepts a zero mint, a zero transfer and a zero burn, so the engine sends them.
+    generate(&mut world, &user, 0).expect("a zero generate succeeds");
+    assert_eq!(snapshot(&world), before);
+    repay(&mut world, &user, 0).expect("a zero repay succeeds");
+    assert_eq!(snapshot(&world), before);
 }
 
 #[test]
-fn stablecoin_withdraw_collateral_group_owned_destination() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state, 0);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
+fn repay_with_a_holding_of_another_token_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+    let collateral_before = holding_balance(&world, user.collateral_id());
+    let stablecoin_before = stablecoin_balances(&world);
 
-    let owner_id = Ids::owner();
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
+    // The owner signs for their collateral holding and names it as the stablecoin to burn.
+    let result = repay_from(&mut world, &user, &user.collateral, 500);
 
-    let position_collateral = 500_000_u128;
-    let withdraw_amount = 200_000_u128;
-
-    let position_account = Account {
-        program_owner: Ids::stablecoin_program(),
-        balance: 0,
-        data: Data::from(&Position {
-            owner_account_id: owner_id,
-            position_nonce: Ids::position_nonce(),
-            vault_account_id: vault_id,
-            collateral_amount: position_collateral,
-            normalized_debt_amount: 0,
-            opened_at: 0,
-        }),
-        nonce: Nonce(0),
-    };
-    let vault_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: position_collateral,
-        }),
-        nonce: Nonce(0),
-    };
-    state.force_insert_account(position_id, position_account);
-    state.force_insert_account(vault_id, vault_account);
-
-    // Alice creates the group and derives the shared destination's keys; Bob is admitted via
-    // the real seal/unseal handshake and independently re-derives the same keys.
-    let alice = GroupOwner::new([7_u8; 32]);
-    let bob_ask = alice.admit_member();
-    let bob_nsk = NullifierSecretKey::from(&bob_ask);
-    let destination_vpk = alice.vpk;
-    let destination_id = alice.id;
-
-    let destination_initial_balance = 100_000_u128;
-    let destination_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: destination_initial_balance,
-        }),
-        nonce: Nonce::private_account_nonce_init(&destination_id),
-    };
-    state = state.with_private_accounts([(
-        Commitment::new(&destination_id, &destination_account),
-        Nullifier::for_account_initialization(&destination_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&Commitment::new(&destination_id, &destination_account))
-        .expect("destination's commitment must be in the set");
-
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre =
-        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
-    let vault_pre = AccountWithMetadata::new(state.get_account_by_id(vault_id), false, vault_id);
-    let destination_pre =
-        AccountWithMetadata::new(destination_account.clone(), true, destination_id);
-
-    let instruction = stablecoin_core::Instruction::WithdrawCollateral {
-        amount: withdraw_amount,
-    };
-
-    let (output, proof) = execute_and_prove(
-        [
-            vec![owner_pre, position_pre, vault_pre, destination_pre],
-            withdraw_global_pre_states(&state),
-        ]
-        .concat(),
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_ask, &destination_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![Nonce(0)], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::owner()]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
-        )
-        .unwrap();
-
-    let position =
-        Position::try_from(&state.get_account_by_id(position_id).data).expect("valid Position");
+    // The repayment is paid into the surplus holding first, a stablecoin holding, so the
+    // token refuses the collateral.
+    assert_refused(&result, "recipient holds another token");
+    assert_eq!(debt(&world, &user), 1_000);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 1_000);
     assert_eq!(
-        position.collateral_amount,
-        position_collateral - withdraw_amount
+        holding_balance(&world, user.collateral_id()),
+        collateral_before
+    );
+    assert_eq!(
+        total_supply(&world, world.collateral_definition),
+        COLLATERAL_SUPPLY
+    );
+    assert_eq!(stablecoin_balances(&world), stablecoin_before);
+}
+
+/// The refusal when a holding the transaction did not sign for is asked to move tokens: no
+/// signature covers its account, and the stablecoin attaches no seed to the token messages it
+/// sends to a caller-named holding.
+const UNSIGNED_HOLDING: &str = "sender holding must authorize the transfer";
+
+#[test]
+fn repay_from_the_surplus_holding_is_refused() {
+    let (mut world, user) = world_with_user(200_000_000);
+    open_position(&mut world, &user, 150_000_000).expect("the position opens");
+    generate(&mut world, &user, 100_000_000).expect("the debt is generated");
+    tick(&mut world.state, T0 + 3_600_000);
+    accrue(&mut world).expect("the poke succeeds");
+    let before = stablecoin_balances(&world);
+    assert!(before.surplus > 0, "the surplus holds the accrued fees");
+    let surplus = surplus_id(&world);
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, definition_id(&world)),
+        token(&world, surplus),
+    ];
+
+    // The owner names the surplus holding as the stablecoin to repay with, and signs alone.
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::RepayDebt {
+            stablecoin_holding: surplus,
+            maximum_amount: 1_000,
+        },
     );
 
-    let destination_nonce_after = Nonce::private_account_nonce_init(&destination_id)
-        .private_account_nonce_increment(&bob_nsk);
-    let new_destination_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: destination_initial_balance + withdraw_amount,
-        }),
-        nonce: destination_nonce_after,
-    };
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&destination_id, &new_destination_account))
-        .is_some());
+    // The transfer out of the surplus holding carries no seed and a PDA cannot sign, so the
+    // protocol's fees cannot be burned against the caller's debt.
+    assert_refused(&result, UNSIGNED_HOLDING);
+    assert_eq!(debt(&world, &user), 100_000_000);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 100_000_000);
+    assert_eq!(stablecoin_balances(&world), before);
 }
 
 #[test]
-fn stablecoin_repay_debt_private_stablecoin_holding() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state, Balances::initial_debt());
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    state.force_insert_account(
-        Ids::stablecoin_definition(),
-        Accounts::stablecoin_definition_init(),
-    );
+fn repay_from_another_users_holding_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+    let other = harness::user(&mut world, 40, 10_000);
+    open_position(&mut world, &other, 1_500).expect("the other position opens");
+    generate(&mut world, &other, 1_000).expect("the other debt is generated");
+    let stablecoin_before = stablecoin_balances(&world);
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, definition_id(&world)),
+        token(&world, surplus_id(&world)),
+        token(&world, other.stable_id()),
+    ];
 
-    let owner_id = Ids::owner();
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
-
-    let position_collateral = Balances::collateral_deposit();
-    let initial_debt = Balances::initial_debt();
-    let repay_amount = initial_debt;
-
-    let position_account = Account {
-        program_owner: Ids::stablecoin_program(),
-        balance: 0,
-        data: Data::from(&Position {
-            owner_account_id: owner_id,
-            position_nonce: Ids::position_nonce(),
-            vault_account_id: vault_id,
-            collateral_amount: position_collateral,
-            normalized_debt_amount: initial_debt,
-            opened_at: 0,
-        }),
-        nonce: Nonce(0),
-    };
-    state.force_insert_account(position_id, position_account);
-
-    let stablecoin_holding_ask = PrivateKeys::stablecoin_holding_ask();
-    let stablecoin_holding_nsk = NullifierSecretKey::from(&stablecoin_holding_ask);
-    let stablecoin_holding_vpk = PrivateKeys::stablecoin_holding_vpk();
-    let stablecoin_holding_id = PrivateKeys::stablecoin_holding_id();
-    let initial_stablecoin_balance = Balances::user_stablecoin_holding_init();
-    let stablecoin_holding_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::stablecoin_definition(),
-            balance: initial_stablecoin_balance,
-        }),
-        nonce: Nonce::private_account_nonce_init(&stablecoin_holding_id),
-    };
-    state = state.with_private_accounts([(
-        Commitment::new(&stablecoin_holding_id, &stablecoin_holding_account),
-        Nullifier::for_account_initialization(&stablecoin_holding_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&Commitment::new(
-            &stablecoin_holding_id,
-            &stablecoin_holding_account,
-        ))
-        .expect("stablecoin holding's commitment must be in the set");
-
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre =
-        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
-    let definition_pre = AccountWithMetadata::new(
-        Accounts::stablecoin_definition_init(),
-        false,
-        Ids::stablecoin_definition(),
-    );
-    let stablecoin_holding_pre = AccountWithMetadata::new(
-        stablecoin_holding_account.clone(),
-        true,
-        stablecoin_holding_id,
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::RepayDebt {
+            stablecoin_holding: other.stable_id(),
+            maximum_amount: 1_000,
+        },
     );
 
-    let instruction = stablecoin_core::Instruction::RepayDebt { amount: u128::MAX };
-
-    let (output, proof) = execute_and_prove(
-        [
-            vec![
-                owner_pre,
-                position_pre,
-                definition_pre,
-                stablecoin_holding_pre,
-            ],
-            repay_global_pre_states(&state),
-        ]
-        .concat(),
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(
-                stablecoin_holding_ask,
-                &stablecoin_holding_vpk,
-                membership_proof,
-            ),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![Nonce(0)], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::owner()]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
-        )
-        .unwrap();
-
-    let position =
-        Position::try_from(&state.get_account_by_id(position_id).data).expect("valid Position");
-    assert_eq!(position.normalized_debt_amount, initial_debt - repay_amount);
-    assert_eq!(position.collateral_amount, position_collateral);
-    assert_eq!(
-        read_accumulator(&state).total_normalized_debt,
-        position.normalized_debt_amount
-    );
-
-    match TokenDefinition::try_from(&state.get_account_by_id(Ids::stablecoin_definition()).data)
-        .expect("valid TokenDefinition")
-    {
-        TokenDefinition::Fungible { total_supply, .. } => {
-            assert_eq!(
-                total_supply,
-                Balances::stablecoin_supply_init() - repay_amount
-            );
-        }
-        _ => panic!("expected Fungible definition"),
-    }
-
-    let stablecoin_holding_nonce_after = Nonce::private_account_nonce_init(&stablecoin_holding_id)
-        .private_account_nonce_increment(&stablecoin_holding_nsk);
-    let new_stablecoin_holding_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::stablecoin_definition(),
-            balance: initial_stablecoin_balance - repay_amount,
-        }),
-        nonce: stablecoin_holding_nonce_after,
-    };
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(
-            &stablecoin_holding_id,
-            &new_stablecoin_holding_account
-        ))
-        .is_some());
+    assert_refused(&result, UNSIGNED_HOLDING);
+    assert_eq!(debt(&world, &user), 1_000);
+    assert_eq!(debt(&world, &other), 1_000);
+    assert_eq!(holding_balance(&world, other.stable_id()), 1_000);
+    assert_eq!(engine(&world).fee.total_normalized_debt, 2_000);
+    assert_eq!(stablecoin_balances(&world), stablecoin_before);
 }
 
 #[test]
-fn stablecoin_repay_debt_group_owned_stablecoin_holding() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state, Balances::initial_debt());
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    state.force_insert_account(
-        Ids::stablecoin_definition(),
-        Accounts::stablecoin_definition_init(),
-    );
+fn a_deposit_from_a_vault_is_refused() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+    let other = harness::user(&mut world, 40, 10_000);
+    open_position(&mut world, &other, 1_000).expect("the other position opens");
+    let own_vault = vault_id(&world, user.id());
+    let other_vault = vault_id(&world, other.id());
 
-    let owner_id = Ids::owner();
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
-
-    let position_collateral = Balances::collateral_deposit();
-    let initial_debt = Balances::initial_debt();
-    let repay_amount = initial_debt;
-
-    let position_account = Account {
-        program_owner: Ids::stablecoin_program(),
-        balance: 0,
-        data: Data::from(&Position {
-            owner_account_id: owner_id,
-            position_nonce: Ids::position_nonce(),
-            vault_account_id: vault_id,
-            collateral_amount: position_collateral,
-            normalized_debt_amount: initial_debt,
-            opened_at: 0,
-        }),
-        nonce: Nonce(0),
-    };
-    state.force_insert_account(position_id, position_account);
-
-    // Alice creates the group and derives the shared stablecoin holding's keys; Bob is
-    // admitted via the real seal/unseal handshake and independently re-derives the same keys.
-    let alice = GroupOwner::new([7_u8; 32]);
-    let bob_ask = alice.admit_member();
-    let bob_nsk = NullifierSecretKey::from(&bob_ask);
-    let holding_vpk = alice.vpk;
-    let holding_id = alice.id;
-
-    let initial_stablecoin_balance = Balances::user_stablecoin_holding_init();
-    let holding_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::stablecoin_definition(),
-            balance: initial_stablecoin_balance,
-        }),
-        nonce: Nonce::private_account_nonce_init(&holding_id),
-    };
-    state = state.with_private_accounts([(
-        Commitment::new(&holding_id, &holding_account),
-        Nullifier::for_account_initialization(&holding_id),
-    )]);
-    let membership_proof = state
-        .get_proof_for_commitment(&Commitment::new(&holding_id, &holding_account))
-        .expect("stablecoin holding's commitment must be in the set");
-
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre =
-        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
-    let definition_pre = AccountWithMetadata::new(
-        Accounts::stablecoin_definition_init(),
-        false,
-        Ids::stablecoin_definition(),
-    );
-    let holding_pre = AccountWithMetadata::new(holding_account.clone(), true, holding_id);
-
-    let instruction = stablecoin_core::Instruction::RepayDebt { amount: u128::MAX };
-
-    let (output, proof) = execute_and_prove(
-        [
-            vec![owner_pre, position_pre, definition_pre, holding_pre],
-            repay_global_pre_states(&state),
-        ]
-        .concat(),
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            private_authorized_update_identity(bob_ask, &holding_vpk, membership_proof),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![Nonce(0)], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[&Keys::owner()]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
-        )
-        .unwrap();
-
-    let position =
-        Position::try_from(&state.get_account_by_id(position_id).data).expect("valid Position");
-    assert_eq!(position.normalized_debt_amount, initial_debt - repay_amount);
-
-    let holding_nonce_after =
-        Nonce::private_account_nonce_init(&holding_id).private_account_nonce_increment(&bob_nsk);
-    let new_holding_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::stablecoin_definition(),
-            balance: initial_stablecoin_balance - repay_amount,
-        }),
-        nonce: holding_nonce_after,
-    };
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&holding_id, &new_holding_account))
-        .is_some());
-}
-
-#[test]
-fn stablecoin_group_owned_position_owner() {
-    let mut state = V03State::new();
-    deploy_programs(&mut state);
-    seed_stablecoin_globals(&mut state, 0);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
-
-    // Alice creates the group and derives the shared owner identity's keys; Bob is admitted
-    // via the real seal/unseal handshake and independently re-derives the same keys.
-    let alice = GroupOwner::new([7_u8; 32]);
-    let bob_ask = alice.admit_member();
-    let owner_id = alice.id;
-
-    // Position/vault addresses are derived from the group-owned owner_id — still ordinary
-    // public PDAs (the seed formula doesn't care whether owner_id is public or private), seeded
-    // directly since OpenPosition can't be routed through the privacy circuit at all.
-    let position_id =
-        compute_position_pda(Ids::stablecoin_program(), owner_id, Ids::position_nonce());
-    let vault_id = compute_position_vault_pda(Ids::stablecoin_program(), position_id);
-
-    let position_collateral = 500_000_u128;
-    let withdraw_amount = 200_000_u128;
-    let position_account = Account {
-        program_owner: Ids::stablecoin_program(),
-        balance: 0,
-        data: Data::from(&Position {
-            owner_account_id: owner_id,
-            position_nonce: Ids::position_nonce(),
-            vault_account_id: vault_id,
-            collateral_amount: position_collateral,
-            normalized_debt_amount: 0,
-            opened_at: 0,
-        }),
-        nonce: Nonce(0),
-    };
-    let vault_account = Account {
-        program_owner: Ids::token_program(),
-        balance: 0,
-        data: Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance: position_collateral,
-        }),
-        nonce: Nonce(0),
-    };
-    state.force_insert_account(position_id, position_account);
-    state.force_insert_account(vault_id, vault_account);
-
-    // Bob self-initializes and signs the owner identity in the same transaction, then
-    // withdraws collateral through it. Destination stays public to isolate what's under test:
-    // only the owner identity's privacy/sharing, nothing else.
-    let owner_pre = AccountWithMetadata::new(Account::default(), true, owner_id);
-    let position_pre =
-        AccountWithMetadata::new(state.get_account_by_id(position_id), false, position_id);
-    let vault_pre = AccountWithMetadata::new(state.get_account_by_id(vault_id), false, vault_id);
-    let destination_pre =
-        AccountWithMetadata::new(Accounts::user_holding_init(), false, Ids::user_holding());
-
-    let instruction = stablecoin_core::Instruction::WithdrawCollateral {
-        amount: withdraw_amount,
-    };
-
-    let (output, proof) = execute_and_prove(
-        [
-            vec![owner_pre, position_pre, vault_pre, destination_pre],
-            withdraw_global_pre_states(&state),
-        ]
-        .concat(),
-        Program::serialize_instruction(instruction).unwrap(),
-        vec![
-            private_authorized_init_identity(bob_ask, &alice.vpk, state.commitment_root()),
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-            InputAccountIdentity::Public,
-        ],
-        &stablecoin_with_token_deps(),
-    )
-    .unwrap();
-
-    let message = Message::from_circuit_output(vec![], output);
-    let witness_set = WitnessSet::for_message(&message, proof, &[]);
-    state
-        .transition_from_privacy_preserving_transaction(
-            &PrivacyPreservingTransaction::new(message, witness_set),
-            0,
-            0,
-        )
-        .unwrap();
-
-    let position =
-        Position::try_from(&state.get_account_by_id(position_id).data).expect("valid Position");
-    assert_eq!(
-        position.collateral_amount,
-        position_collateral - withdraw_amount
-    );
-
-    match TokenHolding::try_from(&state.get_account_by_id(Ids::user_holding()).data)
-        .expect("valid holding")
-    {
-        TokenHolding::Fungible { balance, .. } => {
-            assert_eq!(balance, Balances::user_holding_init() + withdraw_amount);
-        }
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("expected Fungible destination holding")
-        }
-    }
-
-    let owner_expected = Account {
-        nonce: Nonce::private_account_nonce_init(&owner_id),
-        ..Account::default()
-    };
-    assert!(state
-        .get_proof_for_commitment(&Commitment::new(&owner_id, &owner_expected))
-        .is_some());
-}
-
-/// Protocol parameters the initialized-protocol helper installs. Kept as
-/// constants so the poke tests can reason about the interval / staleness gates.
-/// Wall clock for the open/withdraw fixture, in Unix milliseconds.
-const OPEN_POSITION_NOW: u64 = 1_700_000_000_000;
-
-/// Amounts for the full-lifecycle test.
-const LIFECYCLE_OPEN_COLLATERAL: u128 = 500_000;
-const LIFECYCLE_TOP_UP: u128 = 100_000;
-const LIFECYCLE_BORROW: u128 = 100_000;
-/// Stablecoin the owner holds before borrowing, standing in for a market purchase.
-/// Needed because accrued fees make full repayment cost more than was minted.
-const LIFECYCLE_STABLECOIN_BUFFER: u128 = 50_000;
-
-mod protocol_config {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    /// ~5% annual, expressed per millisecond.
-    pub(super) const STABILITY_FEE_PER_MILLISECOND: u128 = FIXED_POINT_ONE + 1_500_000_000_000_000;
-    pub(super) const MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES: u64 = 300_000;
-    pub(super) const MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS: u64 = 900_000;
-    pub(super) const INITIAL_REDEMPTION_PRICE: u128 = FIXED_POINT_ONE / 2;
-}
-
-/// Deploys both programs with fresh globals and valid external bootstrap inputs.
-fn uninitialized_protocol(now: u64, oracle_exists: bool) -> V03State {
-    let mut state = V03State::new();
-    seed_clock(&mut state, now);
-    deploy_programs(&mut state);
-    state.force_insert_account(
-        Ids::collateral_definition(),
-        Accounts::collateral_definition_init(),
-    );
-    if oracle_exists {
-        state.force_insert_account(
-            Ids::oracle(),
-            Accounts::oracle_init(
-                Ids::stablecoin_definition_pda(),
-                Ids::collateral_definition(),
-            ),
-        );
-    }
-    // The selected admin signs subsequent pokes and setters. A non-default owner
-    // keeps this unchanged account in the framework's output after nonce advances.
-    state.force_insert_account(
-        Ids::admin(),
-        Account {
-            program_owner: AccountId::new([7u8; 32]),
-            ..Account::default()
-        },
-    );
-    state
-}
-
-fn initialize_instruction(
-    initial_admin_account_id: AccountId,
-    controller_proportional_gain: i128,
-) -> stablecoin_core::Instruction {
-    stablecoin_core::Instruction::InitializeProgram {
-        freeze_authority_account_id: Ids::freeze_authority(),
-        initial_stability_fee_per_millisecond: protocol_config::STABILITY_FEE_PER_MILLISECOND,
-        initial_controller_proportional_gain: controller_proportional_gain,
-        initial_controller_integral_gain: 0,
-        initial_minimum_collateralization_ratio: stablecoin_core::math::FIXED_POINT_ONE * 3 / 2,
-        minimum_milliseconds_between_rate_updates:
-            protocol_config::MINIMUM_MILLISECONDS_BETWEEN_RATE_UPDATES,
-        maximum_oracle_price_age_milliseconds:
-            protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS,
-        initial_redemption_price: protocol_config::INITIAL_REDEMPTION_PRICE,
-        stablecoin_name: String::from("test-stable"),
-        initial_admin_account_id,
-        minimum_debt_amount: 1,
-        debt_ceiling: 1_000_000_000,
-        market_price_oracle_program_id: AccountId::new([9; 32]),
-    }
-}
-
-fn initialize_accounts(
-    program_id: AccountId,
-    deployment_authority: AccountId,
-    oracle_id: AccountId,
-) -> Vec<AccountId> {
-    vec![
-        deployment_authority,
-        compute_protocol_parameters_pda(program_id),
-        compute_stability_fee_accumulator_pda(program_id),
-        compute_redemption_price_state_pda(program_id),
-        compute_stablecoin_definition_pda(program_id),
-        compute_stablecoin_master_holding_pda(program_id),
-        Ids::collateral_definition(),
-        oracle_id,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    ]
-}
-
-/// Boots the protocol with the header's signature and a separately selected admin.
-/// The controller gain lets poke tests exercise a live controller.
-fn initialize_protocol(now: u64, controller_proportional_gain: i128) -> V03State {
-    initialize_protocol_with_oracle(now, controller_proportional_gain, true)
-}
-
-/// [`initialize_protocol`], optionally binding the market-price oracle's address
-/// without creating it — the RAI-style launch, where the oracle only exists once
-/// the stablecoin trades (spec §3.2).
-fn initialize_protocol_with_oracle(
-    now: u64,
-    controller_proportional_gain: i128,
-    oracle_exists: bool,
-) -> V03State {
-    let mut state = uninitialized_protocol(now, oracle_exists);
-    let header_before = state.get_account_by_id(Ids::stablecoin_program());
-    submit(
-        &mut state,
-        &mut 1,
-        now,
-        initialize_accounts(
-            Ids::stablecoin_program(),
-            Ids::stablecoin_program(),
-            Ids::oracle(),
-        ),
-        vec![(&Keys::deployment_authority(), Ids::stablecoin_program())],
-        initialize_instruction(Ids::admin(), controller_proportional_gain),
-        "initialize_program",
-    );
-    let header_after = state.get_account_by_id(Ids::stablecoin_program());
-    assert_eq!(header_after.data, header_before.data);
-    assert_eq!(header_after.program_owner, header_before.program_owner);
-    assert_eq!(header_after.balance, header_before.balance);
-    state
-}
-
-/// Submits a no-parameter poke signed by the admin (pokes are permissionless —
-/// the admin key is just a convenient signer) and advances the clock to `now`
-/// first, so the guest reads the intended timestamp.
-fn submit_poke(
-    state: &mut V03State,
-    now: u64,
-    block_id: u64,
-    instruction: stablecoin_core::Instruction,
-    accounts: Vec<AccountId>,
-) -> Result<(), LeeError> {
-    seed_clock(state, now);
-    let mut account_ids = vec![Ids::admin()];
-    account_ids.extend(accounts);
-    let message = public_transaction::Message::try_new(
-        Ids::stablecoin_program(),
-        account_ids,
-        vec![current_nonce(state, Ids::admin())],
-        instruction,
-    )
-    .expect("valid poke message");
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &[&Keys::admin()]);
-    let tx = PublicTransaction::new(message, witness_set);
-    // v0.2.5 returns the transaction's emitted events; these helpers report success only.
-    state
-        .transition_from_public_transaction(&tx, block_id, now)
-        .map(|_events| ())
-}
-
-/// A really-bootstrapped protocol plus everything a position owner needs: a
-/// non-default-owned owner and freeze authority, a funded collateral holding, a
-/// fresh oracle observation, and a market-acquired stablecoin buffer (credited
-/// to `total_supply` so the books stay consistent).
-fn bootstrapped_owner_state(start: u64) -> V03State {
-    bootstrapped_owner_state_with_oracle(start, true)
-}
-
-/// [`bootstrapped_owner_state`], optionally without ever creating the oracle.
-fn bootstrapped_owner_state_with_oracle(start: u64, oracle_exists: bool) -> V03State {
-    let mut state = initialize_protocol_with_oracle(start, 0, oracle_exists);
-    state.force_insert_account(
-        Ids::freeze_authority(),
-        Account {
-            program_owner: AccountId::new([7u8; 32]),
-            ..Account::default()
-        },
-    );
-
-    // The owner, their collateral, and a market-acquired stablecoin balance. The
-    // buffer matters: stability fees mean repaying the debt costs more stablecoin
-    // than was minted, which is exactly the spec's §2 "acquire from market" model.
-    state.force_insert_account(
-        Ids::owner(),
-        Account {
-            program_owner: AccountId::new([7u8; 32]),
-            ..Account::default()
-        },
-    );
-    state.force_insert_account(Ids::user_holding(), Accounts::user_holding_init());
-    // A fresh observation for the controller pokes: the bootstrap fixture's
-    // oracle is anchored at 0, which they read as stale against a real clock.
-    if oracle_exists {
-        state.force_insert_account(
-            Ids::oracle(),
-            Accounts::oracle_with(
-                Ids::stablecoin_definition_pda(),
-                Ids::collateral_definition(),
-                // 0.25 in the oracle's Q64.64 encoding.
-                1 << 62,
-                start,
-            ),
-        );
-    }
-    state.force_insert_account(
-        Ids::user_stablecoin_holding(),
-        Account {
-            program_owner: Ids::token_program(),
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::stablecoin_definition_pda(),
-                balance: LIFECYCLE_STABLECOIN_BUFFER,
-            }),
-            nonce: Nonce(0),
-        },
-    );
-    // Credit the buffer to `total_supply` too. Force-inserting a holding without
-    // it would leave the token's books inconsistent, and the chained Burn during
-    // repayment would underflow.
-    let mut definition = state.get_account_by_id(Ids::stablecoin_definition_pda());
-    let bootstrapped = TokenDefinition::try_from(&definition.data).expect("valid TokenDefinition");
-    match bootstrapped {
-        TokenDefinition::Fungible {
-            name,
-            total_supply,
-            metadata_id,
-            authority,
-        } => {
-            definition.data = Data::from(&TokenDefinition::Fungible {
-                name,
-                total_supply: total_supply
-                    .checked_add(LIFECYCLE_STABLECOIN_BUFFER)
-                    .expect("seeded supply fits"),
-                metadata_id,
-                authority,
-            });
-        }
-        TokenDefinition::NonFungible { .. } => panic!("stablecoin definition must be fungible"),
-    }
-    state.force_insert_account(Ids::stablecoin_definition_pda(), definition);
-
-    state
-}
-
-/// Full position lifecycle through the zkVM against a really-bootstrapped
-/// protocol: open → deposit → borrow → accrue → repay → withdraw → close.
-///
-/// This is "Mode A" — Plan 2 has shipped, so `accrue_stability_fee` runs between
-/// borrowing and repaying and the §6.3 rounding is exercised at a non-trivial
-/// accumulator rather than at exactly 1.0.
-#[test]
-fn stablecoin_full_position_lifecycle() {
-    use stablecoin_core::math::{compute_current_accumulated_rate, mul_div_ceil, FIXED_POINT_ONE};
-
-    let start: u64 = 1_700_000_000_000;
-    let mut state = bootstrapped_owner_state(start);
-
-    let mut block = 1u64;
-
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
-
-    // 1. Open with collateral.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (&Keys::user_holding(), Ids::user_holding()),
-        ],
-        stablecoin_core::Instruction::OpenPosition {
-            position_nonce: Ids::position_nonce(),
-            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
-        },
-        "open_position",
-    );
-    assert_position(&state, LIFECYCLE_OPEN_COLLATERAL);
-
-    // 2. Top up.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            params_pda,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (&Keys::user_holding(), Ids::user_holding()),
-        ],
-        stablecoin_core::Instruction::DepositCollateral {
-            amount: LIFECYCLE_TOP_UP,
-        },
-        "deposit_collateral",
-    );
-    let collateral = LIFECYCLE_OPEN_COLLATERAL + LIFECYCLE_TOP_UP;
-    assert_position(&state, collateral);
-    assert_fungible_balance(&state, Ids::vault(), collateral);
-
-    // 3. Borrow. The accumulator is still exactly 1.0, so normalized == nominal.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            accumulator_pda,
-            redemption_pda,
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::GenerateDebt {
-            amount: LIFECYCLE_BORROW,
-        },
-        "generate_debt",
-    );
-    let borrowed = read_position(&state);
-    assert_eq!(borrowed.normalized_debt_amount, LIFECYCLE_BORROW);
-    assert_eq!(
-        read_accumulator(&state).total_normalized_debt,
-        LIFECYCLE_BORROW
-    );
-    assert_fungible_balance_of(
-        &state,
-        Ids::user_stablecoin_holding(),
-        Ids::stablecoin_definition_pda(),
-        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
-    );
-    assert_eq!(
-        read_total_supply(&state, Ids::stablecoin_definition_pda()),
-        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
-        "the chained Mint must credit total_supply by exactly the amount minted"
-    );
-
-    // 4. Let an hour of fees accrue, then poke.
-    let accumulator_before = read_accumulator(&state);
-    assert_eq!(
-        accumulator_before.total_normalized_debt, borrowed.normalized_debt_amount,
-        "generate_debt must add the position's debt to the protocol-wide total"
-    );
-    let after_accrual = start + 3_600_000;
-    submit_poke(
-        &mut state,
-        after_accrual,
-        block,
-        stablecoin_core::Instruction::AccrueStabilityFee,
-        vec![
-            params_pda,
-            accumulator_pda,
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("accrue_stability_fee must succeed");
-    block += 1;
-    let accumulator = read_accumulator(&state);
-    assert_eq!(accumulator.total_normalized_debt, LIFECYCLE_BORROW);
-    assert!(
-        accumulator.accumulated_rate_at_last_accrual > FIXED_POINT_ONE,
-        "an hour of stability fee must move the accumulator above 1.0"
-    );
-    // RFP R1: the accrued fees are minted to the surplus holding, so the supply
-    // backing this position's debt keeps pace with its nominal debt (to within
-    // the one-unit rounding of the mint and the accrual).
-    let surplus = stablecoin_core::math::mul_div(
-        accumulator_before.total_normalized_debt,
-        accumulator.accumulated_rate_at_last_accrual
-            - accumulator_before.accumulated_rate_at_last_accrual,
-        FIXED_POINT_ONE,
-    );
-    assert_fungible_balance_of(
-        &state,
-        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-        Ids::stablecoin_definition_pda(),
-        surplus,
-    );
-    let supply_backing_debt =
-        read_total_supply(&state, Ids::stablecoin_definition_pda()) - LIFECYCLE_STABLECOIN_BUFFER;
-    let nominal_debt_now = stablecoin_core::math::mul_div(
-        borrowed.normalized_debt_amount,
-        accumulator.accumulated_rate_at_last_accrual,
-        FIXED_POINT_ONE,
-    );
-    assert!(
-        nominal_debt_now.abs_diff(supply_backing_debt) <= 1,
-        "supply {supply_backing_debt} must match the nominal debt {nominal_debt_now}"
-    );
-
-    // 5. Authorize a maximum above the holding balance. The execution-time burn
-    // is capped at the full debt, which costs more than was minted.
-    let current_accumulator = compute_current_accumulated_rate(
-        accumulator.accumulated_rate_at_last_accrual,
-        protocol_config::STABILITY_FEE_PER_MILLISECOND,
-        accumulator.last_accrued_at,
-        after_accrual,
-    );
-    let nominal_debt = mul_div_ceil(
-        borrowed.normalized_debt_amount,
-        current_accumulator,
-        FIXED_POINT_ONE,
-    );
-    assert!(
-        nominal_debt > LIFECYCLE_BORROW,
-        "accrued nominal debt must exceed the amount minted"
-    );
-    submit(
-        &mut state,
-        &mut block,
-        after_accrual,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            accumulator_pda,
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (
-                &Keys::user_stablecoin_holding(),
-                Ids::user_stablecoin_holding(),
-            ),
-        ],
-        stablecoin_core::Instruction::RepayDebt { amount: u128::MAX },
-        "repay_debt",
-    );
-    assert_eq!(read_position(&state).normalized_debt_amount, 0);
-    assert_eq!(read_accumulator(&state).total_normalized_debt, 0);
-    // The books stay consistent, and the gap is the fee: the owner burned more
-    // than was minted, so the buffer absorbed the difference.
-    let remaining = LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW - nominal_debt;
-    assert_fungible_balance_of(
-        &state,
-        Ids::user_stablecoin_holding(),
-        Ids::stablecoin_definition_pda(),
-        remaining,
-    );
-    assert_eq!(
-        read_total_supply(&state, Ids::stablecoin_definition_pda()),
-        remaining + surplus,
-        "total_supply must track the burn; the surplus holding keeps the fees"
-    );
-    assert!(
-        remaining < LIFECYCLE_STABLECOIN_BUFFER,
-        "repaying accrued debt must cost more stablecoin than was minted"
-    );
-
-    // 6. Withdraw every last unit of collateral — allowed now the debt is gone.
-    submit(
-        &mut state,
-        &mut block,
-        after_accrual,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            accumulator_pda,
-            redemption_pda,
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::WithdrawCollateral { amount: collateral },
-        "withdraw_collateral",
-    );
-    assert_position(&state, 0);
-    assert_fungible_balance(&state, Ids::vault(), 0);
-
-    // 7. Close. The position is released; the vault lingers empty (§12).
-    submit(
-        &mut state,
-        &mut block,
-        after_accrual,
-        vec![Ids::owner(), Ids::position(), Ids::vault(), params_pda],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::ClosePosition,
-        "close_position",
-    );
-    let closed = state.get_account_by_id(Ids::position());
-    assert_eq!(
-        closed.data,
-        Data::default(),
-        "close_position must clear the position data"
-    );
-    // The account itself lingers, stablecoin-owned: LEE forbids a program from
-    // changing `program_owner` or `nonce`, so the PDA cannot be released.
-    assert_eq!(closed.program_owner, Ids::stablecoin_program());
-    assert_fungible_balance(&state, Ids::vault(), 0);
-    assert_eq!(read_accumulator(&state).total_normalized_debt, 0);
-}
-
-fn submit(
-    state: &mut V03State,
-    block: &mut u64,
-    now: u64,
-    accounts: Vec<AccountId>,
-    signers: Vec<(&PrivateKey, AccountId)>,
-    instruction: stablecoin_core::Instruction,
-    label: &str,
-) {
-    try_submit(state, block, now, accounts, signers, instruction)
-        .unwrap_or_else(|e| panic!("{label} must succeed: {e:?}"));
-}
-
-/// Like [`submit`], but hands the outcome back so a test can assert that an
-/// instruction is *rejected* — and why. `block` advances only on success.
-fn try_submit(
-    state: &mut V03State,
-    block: &mut u64,
-    now: u64,
-    accounts: Vec<AccountId>,
-    signers: Vec<(&PrivateKey, AccountId)>,
-    instruction: stablecoin_core::Instruction,
-) -> Result<(), LeeError> {
-    try_submit_to_program(
-        state,
-        block,
-        now,
-        Ids::stablecoin_program(),
-        accounts,
-        signers,
-        instruction,
-    )
-}
-
-fn try_submit_to_program(
-    state: &mut V03State,
-    block: &mut u64,
-    now: u64,
-    program_id: AccountId,
-    accounts: Vec<AccountId>,
-    signers: Vec<(&PrivateKey, AccountId)>,
-    instruction: stablecoin_core::Instruction,
-) -> Result<(), LeeError> {
-    seed_clock(state, now);
-    let nonces = signers
-        .iter()
-        .map(|(_, id)| current_nonce(state, *id))
-        .collect();
-    let keys: Vec<&PrivateKey> = signers.iter().map(|(key, _)| *key).collect();
-    let message = public_transaction::Message::try_new(program_id, accounts, nonces, instruction)
-        .expect("valid message");
-    let witness_set = public_transaction::WitnessSet::for_message(&message, &keys);
-    let tx = PublicTransaction::new(message, witness_set);
-    state.transition_from_public_transaction(&tx, *block, now)?;
-    *block = block.saturating_add(1);
-    Ok(())
-}
-
-/// Asserts a rejected transition failed inside the guest with `message`.
-fn assert_rejected_with(result: Result<(), LeeError>, message: &str, label: &str) {
-    let err = result.expect_err(&format!("{label} must be rejected"));
-    let text = format!("{err:?}");
-    assert!(
-        text.contains(message),
-        "{label}: expected rejection containing {message:?}, got {text}"
-    );
-}
-
-fn read_total_supply(state: &V03State, definition_id: AccountId) -> u128 {
-    let definition = TokenDefinition::try_from(&state.get_account_by_id(definition_id).data)
-        .expect("valid TokenDefinition");
-    match definition {
-        TokenDefinition::Fungible { total_supply, .. } => total_supply,
-        TokenDefinition::NonFungible { .. } => panic!("expected a fungible definition"),
-    }
-}
-
-/// Spec §10.10–10.16: the admin retunes parameters, then rotates the role away.
-///
-/// The rotation is the part worth proving end to end: it is one-step and
-/// effective immediately, so the previous admin must be locked out on the very
-/// next instruction.
-#[test]
-fn stablecoin_admin_retunes_parameters_then_rotates_the_role() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let start: u64 = 1_700_000_000_000;
-    let mut state = initialize_protocol(start, 0);
-    state.force_insert_account(
-        Ids::freeze_authority(),
-        Account {
-            program_owner: AccountId::new([7u8; 32]),
-            ..Account::default()
-        },
-    );
-    let mut block = 1u64;
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let admin = (&Keys::admin(), Ids::admin());
-
-    // A fee change auto-accrues the elapsed gap at the OLD rate first.
-    let one_hour_later = start + 3_600_000;
-    let new_rate = FIXED_POINT_ONE + 2_000_000_000_000_000;
-    submit(
-        &mut state,
-        &mut block,
-        one_hour_later,
-        vec![
-            Ids::admin(),
-            params_pda,
-            accumulator_pda,
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![admin],
-        stablecoin_core::Instruction::SetStabilityFeePerMillisecond { new_rate },
-        "set_stability_fee_per_millisecond",
-    );
-    assert_eq!(
-        read_parameters(&state).stability_fee_per_millisecond,
-        new_rate
-    );
-    let accrued = read_accumulator(&state);
-    assert!(
-        accrued.accumulated_rate_at_last_accrual > FIXED_POINT_ONE,
-        "the elapsed hour must have accrued before the rate changed"
-    );
-    assert_eq!(accrued.last_accrued_at, one_hour_later);
-
-    // The bundled setters.
-    let new_ratio = FIXED_POINT_ONE * 2;
-    submit(
-        &mut state,
-        &mut block,
-        one_hour_later,
-        vec![Ids::admin(), params_pda],
-        vec![admin],
-        stablecoin_core::Instruction::SetMinimumCollateralizationRatio { new_ratio },
-        "set_minimum_collateralization_ratio",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        one_hour_later,
-        vec![Ids::admin(), params_pda],
-        vec![admin],
-        stablecoin_core::Instruction::SetControllerGains {
-            new_proportional_gain: 7,
-            new_integral_gain: 11,
-        },
-        "set_controller_gains",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        one_hour_later,
-        vec![Ids::admin(), params_pda],
-        vec![admin],
-        stablecoin_core::Instruction::SetTimingParameters {
-            new_minimum_milliseconds_between_rate_updates: 1_000,
-            new_maximum_oracle_price_age_milliseconds: 2_000,
-        },
-        "set_timing_parameters",
-    );
-    let after_tuning = read_parameters(&state);
-    assert_eq!(after_tuning.minimum_collateralization_ratio, new_ratio);
-    assert_eq!(after_tuning.controller_proportional_gain, 7);
-    assert_eq!(after_tuning.controller_integral_gain, 11);
-    assert_eq!(
-        after_tuning.minimum_milliseconds_between_rate_updates,
-        1_000
-    );
-    assert_eq!(after_tuning.maximum_oracle_price_age_milliseconds, 2_000);
-
-    // Out-of-band values are refused by the same §8 bands bootstrap enforces.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            one_hour_later,
-            vec![Ids::admin(), params_pda],
-            vec![admin],
-            stablecoin_core::Instruction::SetMinimumCollateralizationRatio {
-                new_ratio: FIXED_POINT_ONE,
+    for vault in [own_vault, other_vault] {
+        let past_root = [token(&world, vault), token(&world, own_vault)];
+        let result = position_message(
+            &mut world,
+            &user,
+            &past_root,
+            &[],
+            &Message::DepositCollateral {
+                collateral_holding: vault,
+                amount: 100,
             },
-        ),
-        "new_minimum_collateralization_ratio below 1.1x",
-        "set_minimum_collateralization_ratio below the band",
-    );
+        );
 
-    // The freeze authority is the admin's to set, not its own.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            one_hour_later,
-            vec![Ids::freeze_authority(), params_pda],
-            vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
-            stablecoin_core::Instruction::SetFreezeAuthority {
-                new_freeze_authority_account_id: Ids::freeze_authority(),
-            },
-        ),
-        "Signer is not the protocol's admin",
-        "set_freeze_authority by the freeze authority",
-    );
+        // A vault is a stablecoin PDA: it cannot sign, and a deposit carries no vault seed.
+        assert_refused(&result, UNSIGNED_HOLDING);
+        assert_eq!(collateral(&world, &user), 1_500);
+        assert_eq!(collateral(&world, &other), 1_000);
+        assert_eq!(holding_balance(&world, own_vault), 1_500);
+        assert_eq!(holding_balance(&world, other_vault), 1_000);
+    }
+}
 
-    // Rotate the admin to the owner's handle, then confirm the old admin is out.
-    submit(
-        &mut state,
-        &mut block,
-        one_hour_later,
-        vec![Ids::admin(), params_pda],
-        vec![admin],
-        stablecoin_core::Instruction::SetAdmin {
-            new_admin_account_id: Ids::owner(),
-        },
-        "set_admin",
-    );
-    assert_eq!(read_parameters(&state).admin_account_id, Ids::owner());
+#[test]
+fn open_from_an_unsigned_holding_is_refused() {
+    let (mut world, user) = world_with_user(0);
+    let other = harness::user(&mut world, 40, 10_000);
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        token(&world, vault_id(&world, user.id())),
+        token(&world, world.collateral_definition),
+        token(&world, other.collateral_id()),
+    ];
 
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            one_hour_later,
-            vec![Ids::admin(), params_pda],
-            vec![admin],
-            stablecoin_core::Instruction::SetControllerGains {
-                new_proportional_gain: 0,
-                new_integral_gain: 0,
-            },
-        ),
-        "Signer is not the protocol's admin",
-        "the rotated-out admin",
-    );
-
-    // And the new admin can act immediately.
-    state.force_insert_account(
-        Ids::owner(),
-        Account {
-            program_owner: AccountId::new([7u8; 32]),
-            ..Account::default()
+    // The owner names someone else's collateral holding and signs alone.
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::OpenPosition {
+            collateral_holding: other.collateral_id(),
+            initial_collateral_amount: 500,
         },
     );
-    submit(
-        &mut state,
-        &mut block,
-        one_hour_later,
-        vec![Ids::owner(), params_pda],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::SetControllerGains {
+
+    assert_refused(&result, UNSIGNED_HOLDING);
+    assert_eq!(position(&world, user.id()), None);
+    assert_eq!(holding_balance(&world, other.collateral_id()), 10_000);
+}
+
+// ── Admin ────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn admin_retunes_parameters_then_rotates_the_role() {
+    let mut world = world();
+    initialize(&mut world);
+
+    admin(
+        &mut world,
+        &Message::SetMinimumCollateralizationRatio {
+            new_ratio: FIXED_POINT_ONE * 2,
+        },
+    )
+    .expect("the ratio changes");
+    admin(
+        &mut world,
+        &Message::SetControllerGains {
             new_proportional_gain: 3,
             new_integral_gain: 4,
         },
-        "set_controller_gains by the new admin",
-    );
-    assert_eq!(read_parameters(&state).controller_proportional_gain, 3);
-}
-
-/// Spec §16.2: the freeze authority halts the risk-increasing instructions.
-/// Everything that reduces risk — plus the permissionless pokes — keeps working.
-#[test]
-fn stablecoin_freeze_blocks_risky_ops() {
-    let start: u64 = 1_700_000_000_000;
-    let mut state = bootstrapped_owner_state(start);
-    let mut block = 1u64;
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
-    let owner = (&Keys::owner(), Ids::owner());
-    let user_holding = (&Keys::user_holding(), Ids::user_holding());
-    let freeze_authority = (&Keys::freeze_authority(), Ids::freeze_authority());
-
-    // Normal operation: open, then borrow so the frozen-path assertions below
-    // exercise a position that actually carries debt.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![owner, user_holding],
-        stablecoin_core::Instruction::OpenPosition {
-            position_nonce: Ids::position_nonce(),
-            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+    )
+    .expect("the gains change");
+    admin(
+        &mut world,
+        &Message::SetTimingParameters {
+            minimum_milliseconds_between_rate_updates: 2_000,
+            maximum_oracle_price_age_milliseconds: 20_000,
         },
-        "open_position",
-    );
-    let generate_debt_accounts = vec![
-        Ids::owner(),
-        Ids::position(),
-        Ids::stablecoin_definition_pda(),
-        Ids::user_stablecoin_holding(),
-        compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-        accumulator_pda,
-        redemption_pda,
-        params_pda,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    ];
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        generate_debt_accounts.clone(),
-        vec![owner],
-        stablecoin_core::Instruction::GenerateDebt {
-            amount: LIFECYCLE_BORROW,
+    )
+    .expect("the timings change");
+    let elsewhere = AccountId::new([0xC1; 32]);
+    let oracle = world.oracle;
+    admin(
+        &mut world,
+        &Message::SetMarketPriceOracle {
+            oracle_account_id: elsewhere,
+            oracle_program_id: oracle,
         },
-        "generate_debt before the freeze",
-    );
-
-    // Only the bound freeze authority may freeze — the admin is not it.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            vec![Ids::admin(), params_pda],
-            vec![(&Keys::admin(), Ids::admin())],
-            stablecoin_core::Instruction::Freeze,
-        ),
-        "Signer is not the protocol's freeze authority",
-        "freeze by the admin",
-    );
-
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params_pda],
-        vec![freeze_authority],
-        stablecoin_core::Instruction::Freeze,
-        "freeze",
-    );
-    assert!(read_parameters(&state).is_frozen);
-
-    // Blocked: the three risk-increasing instructions.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            generate_debt_accounts.clone(),
-            vec![owner],
-            stablecoin_core::Instruction::GenerateDebt { amount: 1 },
-        ),
-        "Protocol is frozen",
-        "generate_debt while frozen",
-    );
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            vec![
-                Ids::owner(),
-                Ids::position(),
-                Ids::vault(),
-                Ids::user_holding(),
-                accumulator_pda,
-                redemption_pda,
-                params_pda,
-                CLOCK_01_PROGRAM_ACCOUNT_ID,
-            ],
-            vec![owner],
-            stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
-        ),
-        "Protocol is frozen",
-        "withdraw_collateral while frozen",
-    );
-    let second_nonce = Ids::position_nonce() + 1;
-    let second_position =
-        compute_position_pda(Ids::stablecoin_program(), Ids::owner(), second_nonce);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            vec![
-                Ids::owner(),
-                second_position,
-                compute_position_vault_pda(Ids::stablecoin_program(), second_position),
-                Ids::user_holding(),
-                Ids::collateral_definition(),
-                params_pda,
-                CLOCK_01_PROGRAM_ACCOUNT_ID,
-            ],
-            vec![owner, user_holding],
-            stablecoin_core::Instruction::OpenPosition {
-                position_nonce: second_nonce,
-                initial_collateral_amount: 1,
-            },
-        ),
-        "Protocol is frozen",
-        "open_position while frozen",
-    );
-
-    // Still allowed: everything that reduces risk, and the pokes.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            params_pda,
-        ],
-        vec![owner, user_holding],
-        stablecoin_core::Instruction::DepositCollateral {
-            amount: LIFECYCLE_TOP_UP,
+    )
+    .expect("the oracle changes");
+    assert_eq!(engine(&world).parameters.market_price_oracle_id, elsewhere);
+    let price_account = price_account_id(&world);
+    admin(
+        &mut world,
+        &Message::SetMarketPriceOracle {
+            oracle_account_id: price_account,
+            oracle_program_id: oracle,
         },
-        "deposit_collateral while frozen",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            accumulator_pda,
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            owner,
-            (
-                &Keys::user_stablecoin_holding(),
-                Ids::user_stablecoin_holding(),
-            ),
-        ],
-        stablecoin_core::Instruction::RepayDebt {
-            amount: LIFECYCLE_BORROW / 2,
+    )
+    .expect("the oracle changes back");
+    admin(
+        &mut world,
+        &Message::SetDebtLimits {
+            minimum_debt_amount: 20,
+            debt_ceiling: 5_000,
         },
-        "repay_debt while frozen",
-    );
-    submit_poke(
-        &mut state,
-        start + 60_000,
-        block,
-        stablecoin_core::Instruction::AccrueStabilityFee,
-        vec![
-            params_pda,
-            accumulator_pda,
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
     )
-    .expect("accrue_stability_fee must work while frozen");
-    block += 1;
-
-    // Freezing twice is a successful no-op.
-    submit(
-        &mut state,
-        &mut block,
-        start + 60_000,
-        vec![Ids::freeze_authority(), params_pda],
-        vec![freeze_authority],
-        stablecoin_core::Instruction::Freeze,
-        "second freeze",
-    );
-    assert!(read_parameters(&state).is_frozen);
-    let position = read_position(&state);
-    assert_eq!(
-        position.collateral_amount,
-        LIFECYCLE_OPEN_COLLATERAL + LIFECYCLE_TOP_UP
-    );
-    assert_eq!(position.normalized_debt_amount, LIFECYCLE_BORROW / 2);
-}
-
-/// Open a real zero-debt position and freeze through the authorized public instruction.
-fn frozen_debt_free_owner_state(start: u64) -> (V03State, u64) {
-    let mut state = bootstrapped_owner_state(start);
-    let mut block = 1;
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (&Keys::user_holding(), Ids::user_holding()),
-        ],
-        stablecoin_core::Instruction::OpenPosition {
-            position_nonce: Ids::position_nonce(),
-            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+    .expect("the debt limits change");
+    tick(&mut world.state, T0 + 10_000);
+    admin(
+        &mut world,
+        &Message::SetStabilityFeePerMillisecond {
+            new_rate: FIXED_POINT_ONE,
         },
-        "open debt-free position",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params_pda],
-        vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
-        stablecoin_core::Instruction::Freeze,
-        "freeze debt-free position",
-    );
-    assert_position(&state, LIFECYCLE_OPEN_COLLATERAL);
-    assert!(read_parameters(&state).is_frozen);
-    (state, block)
-}
+    )
+    .expect("the fee changes");
+    tick(&mut world.state, T0 + 20_000);
+    admin(&mut world, &Message::ResetRedemptionRateController).expect("the controller is reset");
 
-fn frozen_withdraw_accounts() -> Vec<AccountId> {
-    vec![
-        Ids::owner(),
-        Ids::position(),
-        Ids::vault(),
-        Ids::user_holding(),
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        compute_redemption_price_state_pda(Ids::stablecoin_program()),
-        compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    ]
-}
-
-#[test]
-fn stablecoin_freeze_allows_debt_free_withdrawal_and_close_with_stale_oracle() {
-    let start = 1_700_000_000_000;
-    let (mut state, mut block) = frozen_debt_free_owner_state(start);
-    // Withdrawal has no oracle input. Even an observation older than the configured
-    // freshness bound cannot prevent an authenticated zero-debt owner from exiting.
-    let now = start + protocol_config::MAXIMUM_ORACLE_PRICE_AGE_MILLISECONDS + 1;
-    seed_clock(&mut state, now);
-    let read_only_ids = [
-        compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        compute_redemption_price_state_pda(Ids::stablecoin_program()),
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-        Ids::oracle(),
-    ];
-    let before_globals = read_only_ids.map(|id| state.get_account_by_id(id));
-    submit(
-        &mut state,
-        &mut block,
-        now,
-        frozen_withdraw_accounts(),
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::WithdrawCollateral {
-            amount: LIFECYCLE_OPEN_COLLATERAL,
-        },
-        "full debt-free withdrawal while frozen",
-    );
-    assert_position(&state, 0);
-    assert_fungible_balance(&state, Ids::vault(), 0);
-    assert_fungible_balance(&state, Ids::user_holding(), Balances::user_holding_init());
+    let engine_after = engine(&world);
+    let parameters = &engine_after.parameters;
     assert_eq!(
-        read_only_ids.map(|id| state.get_account_by_id(id)),
-        before_globals
+        parameters.minimum_collateralization_ratio,
+        FIXED_POINT_ONE * 2
     );
-    assert!(read_parameters(&state).is_frozen);
-
-    submit(
-        &mut state,
-        &mut block,
-        now,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-        ],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::ClosePosition,
-        "close debt-free position while frozen",
-    );
-    let closed = state.get_account_by_id(Ids::position());
-    assert_eq!(closed.data, Data::default());
-    assert_eq!(closed.program_owner, Ids::stablecoin_program());
-    assert_fungible_balance(&state, Ids::vault(), 0);
-    assert_fungible_balance(&state, Ids::user_holding(), Balances::user_holding_init());
+    assert_eq!(parameters.controller_proportional_gain, 3);
+    assert_eq!(parameters.controller_integral_gain, 4);
+    assert_eq!(parameters.minimum_milliseconds_between_rate_updates, 2_000);
+    assert_eq!(parameters.maximum_oracle_price_age_milliseconds, 20_000);
+    assert_eq!(parameters.market_price_oracle_id, price_account);
+    assert_eq!(parameters.minimum_debt_amount, 20);
+    assert_eq!(parameters.debt_ceiling, 5_000);
+    assert_eq!(parameters.stability_fee_per_millisecond, FIXED_POINT_ONE);
+    // The fee setter accrued at the old rate up to its own time.
+    assert_eq!(engine_after.fee.last_accrued_at, T0 + 10_000);
+    assert_eq!(engine_after.redemption.last_updated_at, T0 + 20_000);
     assert_eq!(
-        read_only_ids.map(|id| state.get_account_by_id(id)),
-        before_globals
+        engine_after.redemption.redemption_rate_per_millisecond,
+        FIXED_POINT_ONE
     );
-    assert!(read_parameters(&state).is_frozen);
-}
+    assert_eq!(engine_after.redemption.controller_integral_term, 0);
 
-#[test]
-fn stablecoin_freeze_debt_free_token_transfer_failure_is_atomic() {
-    let start = 1_700_000_000_000;
-    let (mut state, mut block) = frozen_debt_free_owner_state(start);
-    let vault = state.get_account_by_id(Ids::vault());
-    let destination = state.get_account_by_id(Ids::user_holding());
-    // Deliberately violate the collateral backing / token supply invariants to
-    // exercise downstream Token::Transfer failures. Ordinary program operations
-    // cannot produce either balance mismatch; these are rollback boundary tests.
-    for (corrupted_id, balance, expected_error) in [
-        (Ids::vault(), 0, "Insufficient balance"),
-        (Ids::user_holding(), u128::MAX, "Recipient balance overflow"),
-    ] {
-        state.force_insert_account(Ids::vault(), vault.clone());
-        state.force_insert_account(Ids::user_holding(), destination.clone());
-        let mut corrupted = state.get_account_by_id(corrupted_id);
-        corrupted.data = Data::from(&TokenHolding::Fungible {
-            definition_id: Ids::collateral_definition(),
-            balance,
-        });
-        state.force_insert_account(corrupted_id, corrupted);
-        let accounts = frozen_withdraw_accounts();
-        let before: Vec<_> = accounts
-            .iter()
-            .map(|id| state.get_account_by_id(*id))
-            .collect();
-        assert_rejected_with(
-            try_submit(
-                &mut state,
-                &mut block,
-                start,
-                accounts.clone(),
-                vec![(&Keys::owner(), Ids::owner())],
-                stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
-            ),
-            expected_error,
-            "frozen debt-free withdrawal with corrupted token balance",
-        );
-        let after: Vec<_> = accounts
-            .iter()
-            .map(|id| state.get_account_by_id(*id))
-            .collect();
-        assert_eq!(after, before, "failed chained transfer must be atomic");
-        assert_position(&state, LIFECYCLE_OPEN_COLLATERAL);
-        assert!(read_parameters(&state).is_frozen);
-    }
-}
-
-/// Spec §10.18: `unfreeze` restores the blocked instructions, and is idempotent.
-#[test]
-fn stablecoin_unfreeze_resumes_normal_operation() {
-    let start: u64 = 1_700_000_000_000;
-    let mut state = bootstrapped_owner_state(start);
-    let mut block = 1u64;
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let owner = (&Keys::owner(), Ids::owner());
-    let freeze_authority = (&Keys::freeze_authority(), Ids::freeze_authority());
-
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![owner, (&Keys::user_holding(), Ids::user_holding())],
-        stablecoin_core::Instruction::OpenPosition {
-            position_nonce: Ids::position_nonce(),
-            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
-        },
-        "open_position",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![owner],
-        stablecoin_core::Instruction::GenerateDebt {
-            amount: LIFECYCLE_BORROW,
-        },
-        "generate debt before freeze",
-    );
-    assert_eq!(
-        read_position(&state).normalized_debt_amount,
-        LIFECYCLE_BORROW
-    );
-    let withdraw_accounts = vec![
-        Ids::owner(),
-        Ids::position(),
-        Ids::vault(),
-        Ids::user_holding(),
-        compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-        compute_redemption_price_state_pda(Ids::stablecoin_program()),
-        params_pda,
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    ];
-
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params_pda],
-        vec![freeze_authority],
-        stablecoin_core::Instruction::Freeze,
-        "freeze",
-    );
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            withdraw_accounts.clone(),
-            vec![owner],
-            stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
-        ),
-        "Protocol is frozen",
-        "withdraw_collateral while frozen",
-    );
-
-    // The admin cannot lift a freeze either.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            vec![Ids::admin(), params_pda],
-            vec![(&Keys::admin(), Ids::admin())],
-            stablecoin_core::Instruction::Unfreeze,
-        ),
-        "Signer is not the protocol's freeze authority",
-        "unfreeze by the admin",
-    );
-
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params_pda],
-        vec![freeze_authority],
-        stablecoin_core::Instruction::Unfreeze,
-        "unfreeze",
-    );
-    assert!(!read_parameters(&state).is_frozen);
-
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        withdraw_accounts,
-        vec![owner],
-        stablecoin_core::Instruction::WithdrawCollateral { amount: 1 },
-        "withdraw_collateral after the unfreeze",
-    );
-    assert_eq!(
-        read_position(&state).collateral_amount,
-        LIFECYCLE_OPEN_COLLATERAL - 1
-    );
-    assert_eq!(
-        read_position(&state).normalized_debt_amount,
-        LIFECYCLE_BORROW
-    );
-
-    // Unfreezing twice is a successful no-op.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params_pda],
-        vec![freeze_authority],
-        stablecoin_core::Instruction::Unfreeze,
-        "second unfreeze",
-    );
-    assert!(!read_parameters(&state).is_frozen);
-}
-
-fn read_parameters(state: &V03State) -> stablecoin_core::ProtocolParameters {
-    stablecoin_core::ProtocolParameters::try_from(
-        &state
-            .get_account_by_id(compute_protocol_parameters_pda(Ids::stablecoin_program()))
-            .data,
-    )
-    .expect("valid ProtocolParameters")
-}
-
-fn read_position(state: &V03State) -> Position {
-    Position::try_from(&state.get_account_by_id(Ids::position()).data).expect("valid Position")
-}
-
-fn read_accumulator(state: &V03State) -> stablecoin_core::StabilityFeeAccumulator {
-    stablecoin_core::StabilityFeeAccumulator::try_from(
-        &state
-            .get_account_by_id(compute_stability_fee_accumulator_pda(
-                Ids::stablecoin_program(),
-            ))
-            .data,
-    )
-    .expect("valid StabilityFeeAccumulator")
-}
-
-fn read_redemption_price_state(state: &V03State) -> stablecoin_core::RedemptionPriceState {
-    stablecoin_core::RedemptionPriceState::try_from(
-        &state
-            .get_account_by_id(compute_redemption_price_state_pda(Ids::stablecoin_program()))
-            .data,
-    )
-    .expect("valid RedemptionPriceState")
-}
-
-#[test]
-fn stablecoin_initialize_program_creates_globals_and_stablecoin_definition() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let now: u64 = 1_700_000_000;
-    let state = initialize_protocol(now, 0);
-
-    // ProtocolParameters claimed with the expected handles.
-    let pp = stablecoin_core::ProtocolParameters::try_from(
-        &state
-            .get_account_by_id(compute_protocol_parameters_pda(Ids::stablecoin_program()))
-            .data,
-    )
-    .expect("valid ProtocolParameters");
-    assert_eq!(pp.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
-    assert_eq!(pp.minimum_debt_amount, 1);
-    assert_eq!(pp.debt_ceiling, 1_000_000_000);
-    assert_eq!(pp.admin_account_id, Ids::admin());
-    assert_eq!(pp.freeze_authority_account_id, Ids::freeze_authority());
-    assert_eq!(
-        pp.stablecoin_definition_id,
-        Ids::stablecoin_definition_pda()
-    );
-    assert_eq!(pp.collateral_definition_id, Ids::collateral_definition());
-    assert_eq!(pp.market_price_oracle_id, Ids::oracle());
-    assert!(!pp.is_frozen);
-
-    // Accumulator anchored at FIXED_POINT_ONE / now.
-    let acc = stablecoin_core::StabilityFeeAccumulator::try_from(
-        &state
-            .get_account_by_id(compute_stability_fee_accumulator_pda(
-                Ids::stablecoin_program(),
-            ))
-            .data,
-    )
-    .expect("valid StabilityFeeAccumulator");
-    assert_eq!(acc.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
-    assert_eq!(acc.total_normalized_debt, 0);
-    assert_eq!(acc.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
-    assert_eq!(acc.last_accrued_at, now);
-
-    // Redemption price anchored at the initial value / now.
-    let rp = stablecoin_core::RedemptionPriceState::try_from(
-        &state
-            .get_account_by_id(compute_redemption_price_state_pda(Ids::stablecoin_program()))
-            .data,
-    )
-    .expect("valid RedemptionPriceState");
-    assert_eq!(rp.redemption_price_at_last_update, FIXED_POINT_ONE / 2);
-    assert_eq!(rp.redemption_rate_per_millisecond, FIXED_POINT_ONE);
-    assert_eq!(rp.controller_integral_term, 0);
-    assert_eq!(rp.last_updated_at, now);
-
-    // Stablecoin definition created via the chained Token::NewFungibleDefinition.
-    let definition = TokenDefinition::try_from(
-        &state
-            .get_account_by_id(Ids::stablecoin_definition_pda())
-            .data,
-    )
-    .expect("valid TokenDefinition");
-    match definition {
-        TokenDefinition::Fungible {
-            name,
-            total_supply,
-            metadata_id,
-            authority,
-        } => {
-            assert_eq!(name, "test-stable");
-            assert_eq!(total_supply, 0);
-            assert_eq!(metadata_id, None);
-            // Self/PDA authority: the definition is its own mint authority, so later
-            // debt operations can mint/burn by presenting the definition PDA seed.
-            assert_eq!(authority, Some(Ids::stablecoin_definition_pda()));
-        }
-        TokenDefinition::NonFungible { .. } => panic!("expected Fungible definition"),
-    }
-
-    // Empty master holding created alongside the definition.
-    let master = TokenHolding::try_from(
-        &state
-            .get_account_by_id(compute_stablecoin_master_holding_pda(
-                Ids::stablecoin_program(),
-            ))
-            .data,
-    )
-    .expect("valid TokenHolding");
-    match master {
-        TokenHolding::Fungible {
-            definition_id,
-            balance,
-        } => {
-            assert_eq!(definition_id, Ids::stablecoin_definition_pda());
-            assert_eq!(balance, 0);
-        }
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("expected Fungible holding")
-        }
-    }
-}
-
-/// Checks only protocol state: rejected transactions may still charge fees or
-/// advance signer nonces under the runtime's settlement rules.
-fn assert_globals_uninitialized(state: &V03State, program_id: AccountId) {
-    for account_id in [
-        compute_protocol_parameters_pda(program_id),
-        compute_stability_fee_accumulator_pda(program_id),
-        compute_redemption_price_state_pda(program_id),
-        compute_stablecoin_definition_pda(program_id),
-        compute_stablecoin_master_holding_pda(program_id),
-    ] {
-        assert_eq!(state.get_account_by_id(account_id), Account::default());
-    }
-}
-
-#[test]
-fn stablecoin_initialize_requires_header_signature_and_remains_one_shot() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let now = OPEN_POSITION_NOW;
-    let mut block = 1;
-    let mut state = uninitialized_protocol(now, true);
-    let header_id = Ids::stablecoin_program();
-    let header_before = state.get_account_by_id(header_id);
-
-    // An unrelated account has a valid transaction signature and supplies valid
-    // PDAs, collateral and oracle. Its key still cannot bootstrap this header.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            now,
-            initialize_accounts(header_id, Ids::admin(), Ids::oracle()),
-            vec![(&Keys::admin(), Ids::admin())],
-            initialize_instruction(Ids::admin(), 0),
-        ),
-        "Deployment authority must be the executing program header",
-        "initialization by an unrelated signer",
-    );
-    assert_globals_uninitialized(&state, header_id);
-
-    // Naming the correct header while only the selected admin signs must fail
-    // the guest's signer constraint, before the host can initialize anything.
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            now,
-            initialize_accounts(header_id, header_id, Ids::oracle()),
-            vec![(&Keys::admin(), Ids::admin())],
-            initialize_instruction(Ids::admin(), 0),
-        ),
-        "Account 'deployment_authority' (index 0) must be a signer",
-        "unsigned header with a signed initial admin",
-    );
-    assert_globals_uninitialized(&state, header_id);
-
-    submit(
-        &mut state,
-        &mut block,
-        now,
-        initialize_accounts(header_id, header_id, Ids::oracle()),
-        vec![(&Keys::deployment_authority(), header_id)],
-        initialize_instruction(Ids::admin(), 0),
-        "legitimate initialization after rejected attempts",
-    );
-    assert_eq!(read_parameters(&state).admin_account_id, Ids::admin());
-    assert_eq!(
-        read_parameters(&state).freeze_authority_account_id,
-        Ids::freeze_authority()
-    );
-    let header_after = state.get_account_by_id(header_id);
-    assert_eq!(header_after.data, header_before.data);
-    assert_eq!(header_after.program_owner, header_before.program_owner);
-    assert_eq!(header_after.balance, header_before.balance);
-
-    let initialized_parameters = read_parameters(&state);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            now,
-            initialize_accounts(header_id, header_id, Ids::oracle()),
-            vec![(&Keys::deployment_authority(), header_id)],
-            initialize_instruction(header_id, 0),
-        ),
-        "AccountAlreadyInitialized { account_index: 1 }",
-        "reinitialization by the header controller",
-    );
-    assert_eq!(read_parameters(&state), initialized_parameters);
-
-    // Bootstrap authority does not confer a permanent second admin role.
-    let parameters_id = compute_protocol_parameters_pda(header_id);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            now,
-            vec![header_id, parameters_id],
-            vec![(&Keys::deployment_authority(), header_id)],
-            stablecoin_core::Instruction::SetMinimumCollateralizationRatio {
-                new_ratio: FIXED_POINT_ONE * 2,
+    // The freeze authority may not retune; the admin may not freeze.
+    let freeze_authority = world.freeze_authority.clone();
+    assert_refused(
+        &seat(
+            &mut world,
+            &freeze_authority,
+            &Message::SetControllerGains {
+                new_proportional_gain: 5,
+                new_integral_gain: 5,
             },
         ),
         "Signer is not the protocol's admin",
-        "header controller acting as admin",
     );
-    submit(
-        &mut state,
-        &mut block,
-        now,
-        vec![Ids::admin(), parameters_id],
-        vec![(&Keys::admin(), Ids::admin())],
-        stablecoin_core::Instruction::SetMinimumCollateralizationRatio {
-            new_ratio: FIXED_POINT_ONE * 2,
+    assert_refused(
+        &admin(&mut world, &Message::Freeze),
+        "Signer is not the protocol's freeze authority",
+    );
+
+    let new_freeze_authority = key(71);
+    admin(
+        &mut world,
+        &Message::SetFreezeAuthority {
+            new_freeze_authority_account_id: account(&new_freeze_authority),
         },
-        "selected admin setter",
-    );
-    assert_eq!(
-        read_parameters(&state).minimum_collateralization_ratio,
-        FIXED_POINT_ONE * 2
-    );
-}
-
-#[test]
-fn stablecoin_initialize_can_select_header_as_admin() {
-    let now = OPEN_POSITION_NOW;
-    let mut state = uninitialized_protocol(now, true);
-    let header_id = Ids::stablecoin_program();
-    let accounts = initialize_accounts(header_id, header_id, Ids::oracle());
-    assert_eq!(accounts.iter().filter(|id| **id == header_id).count(), 1);
-    submit(
-        &mut state,
-        &mut 1,
-        now,
-        accounts,
-        vec![(&Keys::deployment_authority(), header_id)],
-        initialize_instruction(header_id, 0),
-        "initialization with the header as initial admin",
-    );
-    assert_eq!(read_parameters(&state).admin_account_id, header_id);
-}
-
-#[test]
-fn stablecoin_same_bytecode_has_independent_header_authorities_and_globals() {
-    let now = OPEN_POSITION_NOW;
-    let mut block = 2;
-    let mut state = initialize_protocol(now, 0);
-    let first_header = Ids::stablecoin_program();
-    let second_header = Ids::second_stablecoin_program();
-    let second_oracle = AccountId::new([0x71; 32]);
-    let first_parameters = read_parameters(&state);
-
-    // Same loader header bytes and segment chain, separate controlled address.
-    let mut header = state.get_account_by_id(first_header);
-    header.nonce = Nonce(0);
-    state.force_insert_account(second_header, header);
-    assert_eq!(
-        state.get_program_image_id(first_header),
-        state.get_program_image_id(second_header)
-    );
-    state.force_insert_account(
-        second_oracle,
-        Accounts::oracle_init(
-            compute_stablecoin_definition_pda(second_header),
-            Ids::collateral_definition(),
-        ),
-    );
-
-    assert_rejected_with(
-        try_submit_to_program(
-            &mut state,
-            &mut block,
-            now,
-            second_header,
-            initialize_accounts(second_header, first_header, second_oracle),
-            vec![(&Keys::deployment_authority(), first_header)],
-            initialize_instruction(Ids::admin(), 0),
-        ),
-        "Deployment authority must be the executing program header",
-        "first header controller bootstrapping the second header",
-    );
-    assert_globals_uninitialized(&state, second_header);
-
-    try_submit_to_program(
-        &mut state,
-        &mut block,
-        now,
-        second_header,
-        initialize_accounts(second_header, second_header, second_oracle),
-        vec![(&Keys::second_deployment_authority(), second_header)],
-        initialize_instruction(Ids::owner(), 7),
     )
-    .expect("second header controller initializes its own instance");
-    let second_parameters = stablecoin_core::ProtocolParameters::try_from(
-        &state
-            .get_account_by_id(compute_protocol_parameters_pda(second_header))
-            .data,
-    )
-    .expect("valid second ProtocolParameters");
-    assert_eq!(second_parameters.admin_account_id, Ids::owner());
-    assert_eq!(second_parameters.controller_proportional_gain, 7);
-    assert_eq!(second_parameters.market_price_oracle_id, second_oracle);
-    assert_eq!(read_parameters(&state), first_parameters);
-
-    for derive in [
-        compute_protocol_parameters_pda,
-        compute_stability_fee_accumulator_pda,
-        compute_redemption_price_state_pda,
-        compute_stablecoin_definition_pda,
-        compute_stablecoin_master_holding_pda,
-    ] {
-        let first_id = derive(first_header);
-        let second_id = derive(second_header);
-        assert_ne!(first_id, second_id);
-        assert_ne!(state.get_account_by_id(first_id), Account::default());
-        assert_ne!(state.get_account_by_id(second_id), Account::default());
-    }
-}
-
-#[test]
-fn stablecoin_accrue_stability_fee_advances_accumulator() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let start: u64 = 1_700_000_000_000;
-    let mut state = initialize_protocol(start, 0);
-
-    let before = read_accumulator(&state);
-    assert_eq!(before.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
-    assert_eq!(before.last_accrued_at, start);
-
-    // Accrual has no throttle, so any positive delta works; one hour, in ms.
-    let now = start + 3_600_000;
-    submit_poke(
-        &mut state,
-        now,
-        2,
-        stablecoin_core::Instruction::AccrueStabilityFee,
-        vec![
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("accrue_stability_fee must succeed");
-
-    let after = read_accumulator(&state);
-    assert_eq!(
-        after.accumulated_rate_at_last_accrual,
-        stablecoin_core::math::compute_current_accumulated_rate(
-            FIXED_POINT_ONE,
-            protocol_config::STABILITY_FEE_PER_MILLISECOND,
-            start,
-            now,
-        ),
+    .expect("the freeze authority rotates");
+    assert_refused(
+        &seat(&mut world, &freeze_authority, &Message::Freeze),
+        "Signer is not the protocol's freeze authority",
     );
-    assert!(after.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
-    assert_eq!(after.last_accrued_at, now);
-}
+    seat(&mut world, &new_freeze_authority, &Message::Freeze)
+        .expect("the new freeze authority freezes");
+    assert!(engine(&world).parameters.is_frozen);
 
-#[test]
-fn stablecoin_update_redemption_rate_drifts_redemption_price() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let start: u64 = 1_700_000_000_000;
-    // A live proportional gain, otherwise the rate would stay pinned at 1.0.
-    let mut state = initialize_protocol(
-        start,
-        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
-    );
-
-    // Ten minutes later — past the 300_000 ms minimum interval.
-    let now = start + 600_000;
-
-    // A fresh observation well below the 0.5 redemption target, so
-    // error = redemption − market > 0.
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_with(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-            // 0.25 in the oracle's Q64.64 encoding.
-            1 << 62,
-            now,
-        ),
-    );
-
-    submit_poke(
-        &mut state,
-        now,
-        2,
-        stablecoin_core::Instruction::UpdateRedemptionRate,
-        vec![
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("update_redemption_rate must succeed");
-
-    let after = read_redemption_price_state(&state);
-    // Positive error with a positive Kp drives the rate ABOVE 1.0: the redemption
-    // price rises, pulling the market up toward it (negative feedback, no negation).
-    assert!(after.redemption_rate_per_millisecond > FIXED_POINT_ONE);
-    // The rate change is capped per update by RATE_DELTA_CLAMP.
-    assert_eq!(
-        after.redemption_rate_per_millisecond,
-        FIXED_POINT_ONE
-            + u128::try_from(stablecoin_core::RATE_DELTA_CLAMP)
-                .expect("RATE_DELTA_CLAMP is positive"),
-    );
-    // Re-anchored at the price projected from the OLD rate (exactly 1.0, so the
-    // anchor is unchanged) and stamped with now.
-    assert_eq!(
-        after.redemption_price_at_last_update,
-        protocol_config::INITIAL_REDEMPTION_PRICE
-    );
-    assert_eq!(after.last_updated_at, now);
-}
-
-/// RAI-style launch (spec §3.2): the admin binds the address of a market-price
-/// oracle that does not exist yet. Borrowing works from day one, fees accrue, and
-/// the controller simply waits; once the oracle exists, it starts running.
-#[test]
-fn stablecoin_launches_before_the_market_price_oracle_exists() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let start: u64 = 1_700_000_000_000;
-    let mut state = bootstrapped_owner_state_with_oracle(start, false);
-    assert_eq!(
-        state.get_account_by_id(Ids::oracle()),
-        Account::default(),
-        "the bound oracle does not exist yet"
-    );
-    let mut block = 1u64;
-    let params_pda = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let accumulator_pda = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let redemption_pda = compute_redemption_price_state_pda(Ids::stablecoin_program());
-    let master_holding = compute_stablecoin_master_holding_pda(Ids::stablecoin_program());
-
-    // Open and borrow: neither reads the market-price oracle.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            Ids::collateral_definition(),
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![
-            (&Keys::owner(), Ids::owner()),
-            (&Keys::user_holding(), Ids::user_holding()),
-        ],
-        stablecoin_core::Instruction::OpenPosition {
-            position_nonce: Ids::position_nonce(),
-            initial_collateral_amount: LIFECYCLE_OPEN_COLLATERAL,
+    let new_admin = key(70);
+    admin(
+        &mut world,
+        &Message::SetAdmin {
+            new_admin_account_id: account(&new_admin),
         },
-        "open_position",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            master_holding,
-            accumulator_pda,
-            redemption_pda,
-            params_pda,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![(&Keys::owner(), Ids::owner())],
-        stablecoin_core::Instruction::GenerateDebt {
-            amount: LIFECYCLE_BORROW,
-        },
-        "generate_debt before the oracle exists",
-    );
-    assert_fungible_balance_of(
-        &state,
-        Ids::user_stablecoin_holding(),
-        Ids::stablecoin_definition_pda(),
-        LIFECYCLE_STABLECOIN_BUFFER + LIFECYCLE_BORROW,
-    );
-
-    let refresh_accounts = vec![
-        params_pda,
-        accumulator_pda,
-        Ids::stablecoin_definition_pda(),
-        master_holding,
-        redemption_pda,
-        Ids::oracle(),
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    ];
-    let update_accounts = vec![
-        params_pda,
-        redemption_pda,
-        Ids::oracle(),
-        CLOCK_01_PROGRAM_ACCOUNT_ID,
-    ];
-
-    // Ten minutes on: refresh accrues fees but leaves the controller alone.
-    let later = start + 600_000;
-    submit_poke(
-        &mut state,
-        later,
-        block,
-        stablecoin_core::Instruction::RefreshGlobals,
-        refresh_accounts.clone(),
     )
-    .expect("refresh_globals must succeed without an oracle");
-    block += 1;
-    assert_eq!(read_accumulator(&state).last_accrued_at, later);
-    let waiting = read_redemption_price_state(&state);
-    assert_eq!(waiting.last_updated_at, start);
-    assert_eq!(waiting.redemption_rate_per_millisecond, FIXED_POINT_ONE);
-
-    // The strict poke reports the missing oracle, like RAI's updateRate reverting.
-    assert_rejected_with(
-        submit_poke(
-            &mut state,
-            later,
-            block,
-            stablecoin_core::Instruction::UpdateRedemptionRate,
-            update_accounts.clone(),
-        ),
-        "Market price oracle account must be initialized",
-        "update_redemption_rate before the oracle exists",
+    .expect("the admin rotates");
+    assert_eq!(
+        engine(&world).parameters.admin_account_id,
+        account(&new_admin)
     );
-
-    // The market forms and the oracle appears at the bound address.
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_with(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-            // 0.25 in the oracle's Q64.64 encoding.
-            1 << 62,
-            later,
-        ),
-    );
-    submit_poke(
-        &mut state,
-        later,
-        block,
-        stablecoin_core::Instruction::UpdateRedemptionRate,
-        update_accounts,
-    )
-    .expect("update_redemption_rate must run once the oracle exists");
-    assert_eq!(read_redemption_price_state(&state).last_updated_at, later);
-}
-
-/// A write that the runtime accepts at an empty bound address must not become
-/// an oracle observation unless its owner is the configured trusted producer.
-#[test]
-fn stablecoin_rejects_an_occupied_oracle_and_recovers_by_admin_rotation() {
-    use lee_core::{
-        account::BalanceDiff,
-        program::{post_state, validate_execution, AccountStateDiff},
+    let retune = Message::SetControllerGains {
+        new_proportional_gain: 6,
+        new_integral_gain: 7,
     };
-    use stablecoin_core::math::FIXED_POINT_ONE;
+    assert_refused(
+        &admin(&mut world, &retune),
+        "Signer is not the protocol's admin",
+    );
+    seat(&mut world, &new_admin, &retune).expect("the new admin retunes");
+    assert_eq!(engine(&world).parameters.controller_proportional_gain, 6);
+}
 
-    let start = 1_700_000_000_000;
-    let now = start + 600_000;
-    let mut state = initialize_protocol_with_oracle(
-        start,
-        i128::try_from(FIXED_POINT_ONE).expect("fixed-point one fits"),
-        false,
-    );
-    let parameters = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let accumulator = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let redemption = compute_redemption_price_state_pda(Ids::stablecoin_program());
-    let genuine = Accounts::oracle_with(
-        Ids::stablecoin_definition_pda(),
-        Ids::collateral_definition(),
-        1 << 62,
-        now,
-    );
-    let attacker = AccountId::new([99; 32]);
-    let diff = AccountStateDiff::new(
-        AccountWithMetadata::new(Account::default(), false, Ids::oracle()),
-        BalanceDiff::Add(0),
-        genuine.data.clone(),
-    );
-    validate_execution(std::slice::from_ref(&diff), attacker).expect("valid runtime write");
-    state.force_insert_account(
-        Ids::oracle(),
-        post_state(&diff, attacker).expect("attacker write"),
-    );
+// ── The oracle ───────────────────────────────────────────────────────────────────
 
-    assert_rejected_with(
-        submit_poke(
-            &mut state,
-            now,
-            1,
-            stablecoin_core::Instruction::UpdateRedemptionRate,
-            vec![
-                parameters,
-                redemption,
-                Ids::oracle(),
-                CLOCK_01_PROGRAM_ACCOUNT_ID,
-            ],
-        ),
-        "Market price oracle must be an OraclePriceAccount quoting the stablecoin in collateral",
-        "untrusted oracle owner",
-    );
-    submit_poke(
-        &mut state,
-        now,
-        2,
-        stablecoin_core::Instruction::RefreshGlobals,
-        vec![
-            parameters,
-            accumulator,
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            redemption,
-            Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("fees remain available");
-    assert_eq!(read_accumulator(&state).last_accrued_at, now);
-    assert_eq!(read_redemption_price_state(&state).last_updated_at, start);
-    assert_eq!(
-        read_redemption_price_state(&state).redemption_rate_per_millisecond,
-        FIXED_POINT_ONE
-    );
-
-    let replacement = AccountId::new([98; 32]);
-    let trusted_program = genuine.program_owner;
-    state.force_insert_account(replacement, genuine);
-    submit_poke(
-        &mut state,
-        now,
-        3,
-        stablecoin_core::Instruction::SetMarketPriceOracle {
-            new_oracle_program_id: trusted_program,
+#[test]
+fn update_redemption_rate_follows_the_oracle() {
+    let mut world = world();
+    initialize(&mut world);
+    admin(
+        &mut world,
+        &Message::SetControllerGains {
+            new_proportional_gain: 10_i128.pow(24),
+            new_integral_gain: 0,
         },
-        vec![parameters, replacement],
     )
-    .expect("admin can replace the occupied address");
-    submit_poke(
-        &mut state,
-        now,
-        4,
-        stablecoin_core::Instruction::UpdateRedemptionRate,
-        vec![
-            parameters,
-            redemption,
-            replacement,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("trusted replacement resumes the controller");
-    assert_eq!(read_redemption_price_state(&state).last_updated_at, now);
-    assert!(read_redemption_price_state(&state).redemption_rate_per_millisecond > FIXED_POINT_ONE);
-}
+    .expect("the gains change");
+    tick(&mut world.state, T0 + 2_000);
+    // The market trades the stablecoin at 2.0 collateral, above its redemption price of 1.0.
+    publish_price(&mut world, 2 * ORACLE_ONE);
+    assert_eq!(oracle_price(&world).timestamp, T0 + 2_000);
 
-#[test]
-fn stablecoin_reset_redemption_rate_controller_returns_the_controller_to_rest() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
+    let events = update_redemption_rate(&mut world).expect("the update succeeds");
 
-    let start: u64 = 1_700_000_000_000;
-    let mut state = initialize_protocol(
-        start,
-        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
-    );
-
-    // Drive the rate off 1.0 with a market price below the 0.5 target.
-    let now = start + 600_000;
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_with(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-            // 0.25 in the oracle's Q64.64 encoding.
-            1 << 62,
-            now,
-        ),
-    );
-    submit_poke(
-        &mut state,
-        now,
-        2,
-        stablecoin_core::Instruction::UpdateRedemptionRate,
-        vec![
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("update_redemption_rate must succeed");
-    let driven = read_redemption_price_state(&state);
-    assert!(driven.redemption_rate_per_millisecond > FIXED_POINT_ONE);
-
-    // An hour later the admin resets the controller.
-    let later = now + 3_600_000;
-    submit_poke(
-        &mut state,
-        later,
-        3,
-        stablecoin_core::Instruction::ResetRedemptionRateController,
-        vec![
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("reset_redemption_rate_controller must succeed");
-
-    let reset = read_redemption_price_state(&state);
-    // Re-anchored at the price the old rate projected to; no jump.
-    assert_eq!(
-        reset.redemption_price_at_last_update,
-        stablecoin_core::math::compute_current_redemption_price(
-            driven.redemption_price_at_last_update,
-            driven.redemption_rate_per_millisecond,
-            driven.last_updated_at,
-            later,
-        )
-    );
-    assert_eq!(reset.redemption_rate_per_millisecond, FIXED_POINT_ONE);
-    assert_eq!(reset.controller_integral_term, 0);
-    assert_eq!(reset.last_updated_at, later);
-}
-
-#[test]
-fn stablecoin_refresh_globals_advances_both_then_fee_only_when_oracle_stale() {
-    use stablecoin_core::math::FIXED_POINT_ONE;
-
-    let start: u64 = 1_700_000_000_000;
-    let mut state = initialize_protocol(
-        start,
-        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
-    );
-
-    let refresh_accounts = || {
-        vec![
-            compute_protocol_parameters_pda(Ids::stablecoin_program()),
-            compute_stability_fee_accumulator_pda(Ids::stablecoin_program()),
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            compute_redemption_price_state_pda(Ids::stablecoin_program()),
-            Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ]
-    };
-
-    // --- Pass 1: fresh oracle, interval due => BOTH halves run. ---
-    let first = start + 600_000;
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_with(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-            // 0.25 in the oracle's Q64.64 encoding.
-            1 << 62,
-            first,
-        ),
-    );
-
-    submit_poke(
-        &mut state,
-        first,
-        2,
-        stablecoin_core::Instruction::RefreshGlobals,
-        refresh_accounts(),
-    )
-    .expect("refresh_globals must advance both halves");
-
-    let accumulator_after_first = read_accumulator(&state);
-    let redemption_after_first = read_redemption_price_state(&state);
-    assert_eq!(accumulator_after_first.last_accrued_at, first);
-    assert!(accumulator_after_first.accumulated_rate_at_last_accrual > FIXED_POINT_ONE);
-    assert!(redemption_after_first.redemption_rate_per_millisecond > FIXED_POINT_ONE);
-    assert_eq!(redemption_after_first.last_updated_at, first);
-
-    // --- Pass 2: the oracle observation is left where it was and the clock jumps
-    // well past the max age => only the fee half runs, and the call still succeeds. ---
-    let second = first + 2_000_000; // > the 900_000 ms maximum oracle age
-    submit_poke(
-        &mut state,
-        second,
-        3,
-        stablecoin_core::Instruction::RefreshGlobals,
-        refresh_accounts(),
-    )
-    .expect("refresh_globals must still succeed with a stale oracle");
-
-    let accumulator_after_second = read_accumulator(&state);
-    let redemption_after_second = read_redemption_price_state(&state);
-    // Fee half ran again.
-    assert_eq!(accumulator_after_second.last_accrued_at, second);
+    let redemption = engine(&world).redemption;
+    assert_eq!(redemption.last_updated_at, T0 + 2_000);
     assert!(
-        accumulator_after_second.accumulated_rate_at_last_accrual
-            > accumulator_after_first.accumulated_rate_at_last_accrual
+        redemption.redemption_rate_per_millisecond < FIXED_POINT_ONE,
+        "the redemption rate falls toward the market: {redemption:?}"
     );
-    // Redemption half skipped without panicking — byte-identical to pass 1.
-    assert_eq!(redemption_after_second, redemption_after_first);
-}
-
-/// Run two independent borrowers against the same global counter. Every debt
-/// comes from the guest mint path; only the empty token holding is seeded.
-#[test]
-fn stablecoin_two_positions_enforce_debt_limits_and_preserve_atomic_accounting() {
-    use stablecoin_core::{math::FIXED_POINT_ONE, Instruction};
-
-    let start = 1_700_000_000_000;
-    let mut state = bootstrapped_owner_state(start);
-    let mut block = 2;
-    let second_owner_key = PrivateKey::try_new([48; 32]).expect("valid second owner key");
-    let second_owner = AccountId::from(&PublicKey::new_from_private_key(&second_owner_key));
-    let second_position = compute_position_pda(Ids::stablecoin_program(), second_owner, 0);
-    let second_vault = compute_position_vault_pda(Ids::stablecoin_program(), second_position);
-    state.force_insert_account(
-        second_owner,
-        Account {
-            program_owner: AccountId::new([7; 32]),
-            ..Account::default()
-        },
-    );
-    let params = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let accumulator = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let redemption = compute_redemption_price_state_pda(Ids::stablecoin_program());
-    let master = compute_stablecoin_master_holding_pda(Ids::stablecoin_program());
-    let owner_key = Keys::owner();
-    let admin_key = Keys::admin();
-    let holding_key = Keys::user_stablecoin_holding();
-    let owner = (&owner_key, Ids::owner());
-    let other = (&second_owner_key, second_owner);
-    let admin = (&admin_key, Ids::admin());
-    let holding = (&holding_key, Ids::user_stablecoin_holding());
-    let mint_accounts = |owner_id, position_id| {
-        vec![
-            owner_id,
-            position_id,
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-            master,
-            accumulator,
-            redemption,
-            params,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ]
-    };
-    let repay_accounts = |owner_id, position_id, holding_id| {
-        vec![
-            owner_id,
-            position_id,
-            Ids::stablecoin_definition_pda(),
-            holding_id,
-            master,
-            accumulator,
-            params,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ]
-    };
-    let total_matches_positions = |state: &V03State, expected| {
-        let first = read_position(state).normalized_debt_amount;
-        let second = Position::try_from(&state.get_account_by_id(second_position).data)
-            .expect("valid second Position")
-            .normalized_debt_amount;
-        assert_eq!(first.checked_add(second), Some(expected));
-        assert_eq!(read_accumulator(state).total_normalized_debt, expected);
-    };
-    let tracked_accounts = [
-        Ids::owner(),
-        second_owner,
-        Ids::position(),
-        second_position,
-        accumulator,
-        Ids::stablecoin_definition_pda(),
-        Ids::user_stablecoin_holding(),
-    ];
-    let snapshot =
-        |state: &V03State| tracked_accounts.map(|account_id| state.get_account_by_id(account_id));
-
-    // Hold A at Q so all boundary amounts below are exact atomic units.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::admin(),
-            params,
-            accumulator,
-            Ids::stablecoin_definition_pda(),
-            master,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![admin],
-        Instruction::SetStabilityFeePerMillisecond {
-            new_rate: FIXED_POINT_ONE,
-        },
-        "set unit stability fee",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::admin(), params],
-        vec![admin],
-        Instruction::SetDebtLimits {
-            minimum_debt_amount: 10,
-            debt_ceiling: 150,
-        },
-        "set explicit limits",
-    );
-    for (signer, position, vault) in [
-        (owner, Ids::position(), Ids::vault()),
-        (other, second_position, second_vault),
-    ] {
-        submit(
-            &mut state,
-            &mut block,
-            start,
-            vec![
-                signer.1,
-                position,
-                vault,
-                Ids::user_holding(),
-                Ids::collateral_definition(),
-                params,
-                CLOCK_01_PROGRAM_ACCOUNT_ID,
-            ],
-            vec![signer, (&Keys::user_holding(), Ids::user_holding())],
-            Instruction::OpenPosition {
-                position_nonce: 0,
-                initial_collateral_amount: 1_000,
-            },
-            "open debt-free position",
-        );
-        assert_eq!(read_accumulator(&state).total_normalized_debt, 0);
-    }
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        mint_accounts(Ids::owner(), Ids::position()),
-        vec![owner],
-        Instruction::GenerateDebt { amount: 100 },
-        "borrow first position",
-    );
-    total_matches_positions(&state, 100);
-    let before = snapshot(&state);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            mint_accounts(second_owner, second_position),
-            vec![other],
-            Instruction::GenerateDebt { amount: 9 },
-        ),
-        "Position debt is below minimum_debt_amount",
-        "borrow below floor",
-    );
-    assert_eq!(snapshot(&state), before);
-
-    // Both borrowers sign when T=100, where either 50-unit mint would fit.
-    // Their signer nonces are independent. Public execution must re-read the
-    // shared accumulator, so only the first admission succeeds at the ceiling.
-    let pending_mints: Vec<PublicTransaction> =
-        [(owner, Ids::position()), (other, second_position)]
-            .into_iter()
-            .map(|(signer, position)| {
-                let message = public_transaction::Message::try_new(
-                    Ids::stablecoin_program(),
-                    mint_accounts(signer.1, position),
-                    vec![current_nonce(&state, signer.1)],
-                    Instruction::GenerateDebt { amount: 50 },
-                )
-                .expect("valid independently signed mint");
-                let witnesses = public_transaction::WitnessSet::for_message(&message, &[signer.0]);
-                PublicTransaction::new(message, witnesses)
-            })
-            .collect();
-    let mut mints = pending_mints.into_iter();
-    let first_mint = mints.next().expect("first mint");
-    let second_mint = mints.next().expect("second mint");
-    state
-        .transition_from_public_transaction(&first_mint, block, start)
-        .expect("first competing mint reaches ceiling");
-    block += 1;
-    total_matches_positions(&state, 150);
-    let at_ceiling = snapshot(&state);
-    assert_rejected_with(
-        state
-            .transition_from_public_transaction(&second_mint, block, start)
-            .map(|_| ()),
-        "Global debt ceiling exceeded",
-        "second competing mint",
-    );
-    assert_eq!(snapshot(&state), at_ceiling);
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        repay_accounts(
-            Ids::owner(),
-            Ids::position(),
-            Ids::user_stablecoin_holding(),
-        ),
-        vec![owner, holding],
-        Instruction::RepayDebt { amount: 50 },
-        "repay frees capacity",
-    );
-    total_matches_positions(&state, 100);
-    state
-        .transition_from_public_transaction(&second_mint, block, start)
-        .expect("same pending mint succeeds after headroom is restored");
-    block += 1;
-    total_matches_positions(&state, 150);
-
-    let before = snapshot(&state);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            repay_accounts(
-                Ids::owner(),
-                Ids::position(),
-                Ids::user_stablecoin_holding(),
-            ),
-            vec![owner, holding],
-            Instruction::RepayDebt { amount: 91 },
-        ),
-        "Position debt is below minimum_debt_amount",
-        "partial repayment below floor",
-    );
-    assert_eq!(snapshot(&state), before);
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        repay_accounts(
-            Ids::owner(),
-            Ids::position(),
-            Ids::user_stablecoin_holding(),
-        ),
-        vec![owner, holding],
-        Instruction::RepayDebt { amount: 90 },
-        "repay to exact floor",
-    );
-    total_matches_positions(&state, 60);
-    assert_eq!(read_position(&state).normalized_debt_amount, 10);
-
-    // Deliberate downstream fault injection: this violates the self-mint
-    // authority established by initialize_program. It tests rollback only,
-    // not a state reachable through the stablecoin's public instructions.
-    let valid_definition = state.get_account_by_id(Ids::stablecoin_definition_pda());
-    let mut faulty_definition = valid_definition.clone();
-    let mut decoded_definition =
-        TokenDefinition::try_from(&faulty_definition.data).expect("valid TokenDefinition");
-    if let TokenDefinition::Fungible { authority, .. } = &mut decoded_definition {
-        *authority = None;
-    }
-    faulty_definition.data = Data::from(&decoded_definition);
-    state.force_insert_account(Ids::stablecoin_definition_pda(), faulty_definition);
-    let before = snapshot(&state);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            mint_accounts(Ids::owner(), Ids::position()),
-            vec![owner],
-            Instruction::GenerateDebt { amount: 90 },
-        ),
-        "Mint authority check failed: authority revoked, supply is fixed",
-        "chained mint rollback under injected authority fault",
-    );
-    assert_eq!(snapshot(&state), before);
-    state.force_insert_account(Ids::stablecoin_definition_pda(), valid_definition);
-
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        mint_accounts(Ids::owner(), Ids::position()),
-        vec![owner],
-        Instruction::GenerateDebt { amount: 90 },
-        "restore total to exact ceiling",
-    );
-    total_matches_positions(&state, 150);
-
-    // Burning tokens directly does not extinguish any position's debt or free
-    // borrowing capacity, even though circulating supply falls.
-    let supply_before = read_total_supply(&state, Ids::stablecoin_definition_pda());
-    let burn_message = public_transaction::Message::try_new(
-        Ids::token_program(),
-        vec![
-            Ids::stablecoin_definition_pda(),
-            Ids::user_stablecoin_holding(),
-        ],
-        vec![current_nonce(&state, Ids::user_stablecoin_holding())],
-        token_core::Instruction::Burn { amount_to_burn: 5 },
-    )
-    .expect("valid direct burn");
-    let burn_witnesses =
-        public_transaction::WitnessSet::for_message(&burn_message, &[&holding_key]);
-    state
-        .transition_from_public_transaction(
-            &PublicTransaction::new(burn_message, burn_witnesses),
-            block,
-            start,
-        )
-        .expect("ordinary token burn succeeds");
-    block += 1;
     assert_eq!(
-        read_total_supply(&state, Ids::stablecoin_definition_pda()),
-        supply_before - 5
+        events_of::<RedemptionRateUpdated>(&events),
+        vec![RedemptionRateUpdated {
+            redemption_price: redemption.redemption_price_at_last_update,
+            redemption_rate_per_millisecond: redemption.redemption_rate_per_millisecond,
+            now: T0 + 2_000,
+        }]
     );
-    total_matches_positions(&state, 150);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            mint_accounts(second_owner, second_position),
-            vec![other],
-            Instruction::GenerateDebt { amount: 1 },
-        ),
-        "Global debt ceiling exceeded",
-        "token burn creates no debt headroom",
-    );
-
-    // A valid empty holding reaches Token::Burn and fails there. Neither the
-    // proposed position reduction nor the aggregate reduction may commit.
-    let empty_key = PrivateKey::try_new([47; 32]).expect("valid empty holding key");
-    let empty_id = AccountId::from(&PublicKey::new_from_private_key(&empty_key));
-    state.force_insert_account(
-        empty_id,
-        Account {
-            program_owner: Ids::token_program(),
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: Ids::stablecoin_definition_pda(),
-                balance: 0,
-            }),
-            ..Account::default()
-        },
-    );
-    let before = snapshot(&state);
-    let empty_before = state.get_account_by_id(empty_id);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            repay_accounts(Ids::owner(), Ids::position(), empty_id),
-            vec![owner, (&empty_key, empty_id)],
-            Instruction::RepayDebt { amount: 10 },
-        ),
-        "Insufficient balance to burn",
-        "chained burn rollback",
-    );
-    assert_eq!(snapshot(&state), before);
-    assert_eq!(state.get_account_by_id(empty_id), empty_before);
-
-    // Raising the floor leaves existing positions unchanged. Zero operations
-    // stay valid; positive debt changes must reach the new floor or settle.
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::admin(), params],
-        vec![admin],
-        Instruction::SetDebtLimits {
-            minimum_debt_amount: 120,
-            debt_ceiling: 150,
-        },
-        "raise floor",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![
-            Ids::owner(),
-            Ids::position(),
-            Ids::vault(),
-            Ids::user_holding(),
-            params,
-        ],
-        vec![owner, (&Keys::user_holding(), Ids::user_holding())],
-        Instruction::DepositCollateral { amount: 1 },
-        "deposit below raised debt floor",
-    );
-    total_matches_positions(&state, 150);
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        mint_accounts(Ids::owner(), Ids::position()),
-        vec![owner],
-        Instruction::GenerateDebt { amount: 0 },
-        "zero mint below raised floor",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        repay_accounts(
-            Ids::owner(),
-            Ids::position(),
-            Ids::user_stablecoin_holding(),
-        ),
-        vec![owner, holding],
-        Instruction::RepayDebt { amount: 0 },
-        "zero repayment below raised floor",
-    );
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            start,
-            repay_accounts(
-                Ids::owner(),
-                Ids::position(),
-                Ids::user_stablecoin_holding(),
-            ),
-            vec![owner, holding],
-            Instruction::RepayDebt { amount: 1 },
-        ),
-        "Position debt is below minimum_debt_amount",
-        "raised floor restricts partial repayment",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params],
-        vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
-        Instruction::Freeze,
-        "freeze",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        repay_accounts(
-            Ids::owner(),
-            Ids::position(),
-            Ids::user_stablecoin_holding(),
-        ),
-        vec![owner, holding],
-        Instruction::RepayDebt { amount: 100 },
-        "settle below raised floor while frozen",
-    );
-    total_matches_positions(&state, 50);
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        vec![Ids::freeze_authority(), params],
-        vec![(&Keys::freeze_authority(), Ids::freeze_authority())],
-        Instruction::Unfreeze,
-        "unfreeze",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        start,
-        mint_accounts(second_owner, second_position),
-        vec![other],
-        Instruction::GenerateDebt { amount: 70 },
-        "borrow up to raised floor",
-    );
-    total_matches_positions(&state, 120);
-
-    // Fee growth may cross the admission ceiling without blocking accrual,
-    // refresh, rate changes, or repayments that satisfy the position floor.
-    // A 1.5x-per-millisecond fee is far above the setter's cap; write it directly
-    // so a single millisecond of accrual lifts the accumulator to exactly 1.5.
-    let mut growth = state.get_account_by_id(params);
-    let mut growth_parameters =
-        stablecoin_core::ProtocolParameters::try_from(&growth.data).expect("valid parameters");
-    growth_parameters.stability_fee_per_millisecond = FIXED_POINT_ONE * 3 / 2;
-    growth.data = Data::from(&growth_parameters);
-    state.force_insert_account(params, growth);
-    let later = start + 1;
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        vec![
-            Ids::admin(),
-            params,
-            accumulator,
-            Ids::stablecoin_definition_pda(),
-            master,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![admin],
-        Instruction::AccrueStabilityFee,
-        "accrue beyond debt ceiling",
-    );
-    total_matches_positions(&state, 120);
-    assert_eq!(
-        read_accumulator(&state).accumulated_rate_at_last_accrual,
-        FIXED_POINT_ONE * 3 / 2
-    );
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        vec![Ids::admin(), params],
-        vec![admin],
-        Instruction::SetDebtLimits {
-            minimum_debt_amount: 120,
-            debt_ceiling: 120,
-        },
-        "lower ceiling below current accrued debt",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        vec![
-            Ids::admin(),
-            params,
-            accumulator,
-            Ids::stablecoin_definition_pda(),
-            master,
-            redemption,
-            Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![admin],
-        Instruction::RefreshGlobals,
-        "refresh beyond debt ceiling",
-    );
-    total_matches_positions(&state, 120);
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        vec![
-            Ids::admin(),
-            params,
-            accumulator,
-            Ids::stablecoin_definition_pda(),
-            master,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![admin],
-        Instruction::SetStabilityFeePerMillisecond {
-            new_rate: FIXED_POINT_ONE,
-        },
-        "retune beyond debt ceiling",
-    );
-    total_matches_positions(&state, 120);
-    assert_rejected_with(
-        try_submit(
-            &mut state,
-            &mut block,
-            later,
-            mint_accounts(second_owner, second_position),
-            vec![other],
-            Instruction::GenerateDebt { amount: 1 },
-        ),
-        "Global debt ceiling exceeded",
-        "accrued debt blocks further borrowing",
-    );
-    for expected_total in [100, 80] {
-        submit(
-            &mut state,
-            &mut block,
-            later,
-            repay_accounts(
-                second_owner,
-                second_position,
-                Ids::user_stablecoin_holding(),
-            ),
-            vec![other, holding],
-            Instruction::RepayDebt { amount: 30 },
-            "repay above ceiling and then to floor",
-        );
-        total_matches_positions(&state, expected_total);
-    }
-    // A positive burn with floor(amount*Q/A)=0 keeps its existing semantics.
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        repay_accounts(
-            second_owner,
-            second_position,
-            Ids::user_stablecoin_holding(),
-        ),
-        vec![other, holding],
-        Instruction::RepayDebt { amount: 1 },
-        "zero normalized repayment delta",
-    );
-    total_matches_positions(&state, 80);
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        repay_accounts(
-            second_owner,
-            second_position,
-            Ids::user_stablecoin_holding(),
-        ),
-        vec![other, holding],
-        Instruction::RepayDebt { amount: 120 },
-        "settle accrued second position",
-    );
-    total_matches_positions(&state, 0);
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        vec![
-            second_owner,
-            second_position,
-            second_vault,
-            Ids::user_holding(),
-            accumulator,
-            redemption,
-            params,
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-        vec![other],
-        Instruction::WithdrawCollateral { amount: 1_000 },
-        "withdraw settled collateral",
-    );
-    submit(
-        &mut state,
-        &mut block,
-        later,
-        vec![second_owner, second_position, second_vault, params],
-        vec![other],
-        Instruction::ClosePosition,
-        "close settled second position",
-    );
-    assert_eq!(read_accumulator(&state).total_normalized_debt, 0);
 }
 
 #[test]
-fn stablecoin_future_oracle_rejects_strict_update_but_allows_fee_only_refresh() {
-    use stablecoin_core::math::{compute_current_accumulated_rate, FIXED_POINT_ONE};
+fn launches_before_the_market_price_oracle_exists() {
+    let mut world = world();
+    // The engine is bound to the price account's address before the account exists.
+    initialize(&mut world);
+    assert!(world
+        .state
+        .get_account_by_id(price_account_id(&world))
+        .data
+        .actor_state(world.oracle)
+        .is_empty());
+    let redemption_before = engine(&world).redemption;
+    tick(&mut world.state, T0 + 2_000);
 
-    let start = 1_700_000_000_000;
-    let now = start + 600_000;
-    let mut state = initialize_protocol(
-        start,
-        i128::try_from(FIXED_POINT_ONE).expect("FIXED_POINT_ONE fits i128"),
-    );
-    let redemption_id = compute_redemption_price_state_pda(Ids::stablecoin_program());
-    let accumulator_id = compute_stability_fee_accumulator_pda(Ids::stablecoin_program());
-    let parameters_id = compute_protocol_parameters_pda(Ids::stablecoin_program());
-    let redemption_before = state.get_account_by_id(redemption_id);
-    let accumulator_before = read_accumulator(&state);
+    refresh(&mut world, false).expect("a refresh without the oracle succeeds");
+    assert_eq!(engine(&world).fee.last_accrued_at, T0 + 2_000);
+    let result = update_redemption_rate(&mut world);
+    assert_price_account_missing(&world, &result);
+    let result = refresh(&mut world, true);
+    assert_price_account_missing(&world, &result);
+    assert_eq!(engine(&world).redemption, redemption_before);
 
-    // The initialized protocol deliberately trusts this alternative producer,
-    // whose owner is [9; 32]. This fixture models a misbehaving configured
-    // producer; the canonical TWAP does not normally emit future timestamps.
-    state.force_insert_account(
-        Ids::oracle(),
-        Accounts::oracle_with(
-            Ids::stablecoin_definition_pda(),
-            Ids::collateral_definition(),
-            1 << 62,
-            now + 1,
-        ),
-    );
+    publish_price(&mut world, 2 * ORACLE_ONE);
+    update_redemption_rate(&mut world).expect("the update succeeds");
+    assert_eq!(engine(&world).redemption.last_updated_at, T0 + 2_000);
+    tick(&mut world.state, T0 + 3_000);
+    refresh(&mut world, true).expect("the refresh succeeds");
+    let engine = engine(&world);
+    assert_eq!(engine.redemption.last_updated_at, T0 + 3_000);
+    assert_eq!(engine.fee.last_accrued_at, T0 + 3_000);
+}
 
-    assert_rejected_with(
-        submit_poke(
-            &mut state,
-            now,
-            2,
-            stablecoin_core::Instruction::UpdateRedemptionRate,
-            vec![
-                parameters_id,
-                redemption_id,
-                Ids::oracle(),
-                CLOCK_01_PROGRAM_ACCOUNT_ID,
-            ],
-        ),
-        "Market price oracle observation is dated in the future",
-        "strict controller update with a future observation",
-    );
-    assert_eq!(state.get_account_by_id(redemption_id), redemption_before);
-    assert_eq!(read_accumulator(&state), accumulator_before);
-
-    submit_poke(
-        &mut state,
-        now,
-        2,
-        stablecoin_core::Instruction::RefreshGlobals,
-        vec![
-            parameters_id,
-            accumulator_id,
-            Ids::stablecoin_definition_pda(),
-            compute_stablecoin_master_holding_pda(Ids::stablecoin_program()),
-            redemption_id,
-            Ids::oracle(),
-            CLOCK_01_PROGRAM_ACCOUNT_ID,
-        ],
-    )
-    .expect("combined refresh must accrue fees despite the future observation");
-    assert_eq!(state.get_account_by_id(redemption_id), redemption_before);
-    let accumulator_after = read_accumulator(&state);
-    assert_eq!(accumulator_after.last_accrued_at, now);
-    assert_eq!(
-        accumulator_after.accumulated_rate_at_last_accrual,
-        compute_current_accumulated_rate(
-            accumulator_before.accumulated_rate_at_last_accrual,
-            protocol_config::STABILITY_FEE_PER_MILLISECOND,
-            accumulator_before.last_accrued_at,
-            now,
-        )
-    );
+/// Panics unless `result` failed because the oracle's price account does not exist yet: LEZ
+/// does not admit a message to an empty public PDA actor nobody grants the seed for, so the
+/// oracle never runs and the whole transaction fails.
+fn assert_price_account_missing<T: std::fmt::Debug>(world: &World, result: &Result<T, LeeError>) {
     assert!(
-        accumulator_after.accumulated_rate_at_last_accrual
-            > accumulator_before.accumulated_rate_at_last_accrual
+        matches!(
+            result,
+            Err(LeeError::InvalidProgramBehavior(InvalidProgramBehaviorError::Execution(
+                ExecutionError::UnadmittedPublicActor { actor }
+            ))) if *actor == price_actor(world)
+        ),
+        "expected the price actor to be unadmitted, got {result:?}"
     );
+}
+
+/// A world whose oracle published at `T0 + 2_000`, the clock just past the price's maximum age.
+fn world_with_a_stale_price() -> World {
+    let mut world = world();
+    initialize(&mut world);
+    tick(&mut world.state, T0 + 2_000);
+    publish_price(&mut world, 2 * ORACLE_ONE);
+    tick(&mut world.state, T0 + 2_000 + 10_001);
+    world
+}
+
+#[test]
+fn refresh_skips_a_stale_price() {
+    let mut world = world_with_a_stale_price();
+    let redemption_before = engine(&world).redemption;
+
+    refresh(&mut world, true).expect("a refresh with a stale price succeeds");
+
+    let engine = engine(&world);
+    assert_eq!(engine.redemption, redemption_before);
+    assert_eq!(engine.fee.last_accrued_at, T0 + 12_001);
+}
+
+#[test]
+fn update_refuses_a_stale_price() {
+    let mut world = world_with_a_stale_price();
+    let redemption_before = engine(&world).redemption;
+
+    let result = update_redemption_rate(&mut world);
+
+    assert_refused(&result, "Market price oracle observation is stale");
+    assert_eq!(engine(&world).redemption, redemption_before);
+}
+
+/// An oracle whose program accepts `ReadPrice` and never replies (the price source stores what
+/// another actor sends it and sends nothing back) must fail the transaction, not leave the engine
+/// waiting for a reply that never comes.
+#[test]
+fn an_oracle_that_does_not_reply_fails_the_transaction() {
+    let mut world = world();
+    initialize(&mut world);
+    make_silent_oracle(&mut world);
+    admin(
+        &mut world,
+        &Message::SetMarketPriceOracle {
+            oracle_account_id: source_actor().account_id,
+            oracle_program_id: source_actor().program_account_id,
+        },
+    )
+    .expect("the admin binds the silent oracle");
+    tick(&mut world.state, T0 + 2_000);
+
+    // A refused transaction is rolled back: the engine is stored exactly as before it.
+    let before = engine_bytes(&world);
+    let result = poke(
+        &mut world,
+        &[clock_actor(), source_actor()],
+        &Message::UpdateRedemptionRate,
+    );
+    assert_refused(&result, "the market price oracle did not reply");
+    assert_eq!(engine_bytes(&world), before);
+
+    let before = engine_bytes(&world);
+    let mut past_root = poke_actors(&world);
+    past_root.push(source_actor());
+    let result = poke(
+        &mut world,
+        &past_root,
+        &Message::RefreshGlobals {
+            consult_oracle: true,
+        },
+    );
+    assert_refused(&result, "the market price oracle did not reply");
+    // Not even the fee accrual the refresh did before asking the oracle is kept.
+    assert_eq!(engine_bytes(&world), before);
+
+    accrue(&mut world).expect("the engine still serves the next poke");
+    assert_eq!(engine(&world).fee.last_accrued_at, T0 + 2_000);
+}
+
+// ── Every transaction leaves the engine idle ─────────────────────────────────────
+
+/// `send` asserts this after every transaction of every test; this one walks the refusals that
+/// happen while the engine is parked, at each kind of reply.
+#[test]
+fn the_engine_is_never_left_waiting() {
+    let (mut world, user) = world_with_user(10_000);
+    open_position(&mut world, &user, 1_500).expect("the position opens");
+
+    // Refused on the clock's reply.
+    assert_refused(
+        &generate(&mut world, &user, 1_001),
+        "Position is undercollateralized",
+    );
+    assert_eq!(engine(&world).pending, None);
+    generate(&mut world, &user, 1_000).expect("the debt is generated");
+    assert_refused(
+        &withdraw(&mut world, &user, 1),
+        "Position is undercollateralized",
+    );
+    assert_eq!(engine(&world).pending, None);
+    assert_refused(
+        &update_redemption_rate(&mut world),
+        "update_redemption_rate called too soon since last update",
+    );
+    assert_eq!(engine(&world).pending, None);
+
+    // The engine parks and asks the oracle, but LEZ rejects the delivery to the price account,
+    // which does not exist yet: the oracle never runs and the whole transaction is rejected.
+    tick(&mut world.state, T0 + 2_000);
+    let result = update_redemption_rate(&mut world);
+    assert_price_account_missing(&world, &result);
+    assert_eq!(engine(&world).pending, None);
+
+    // The engine still serves the next conversation.
+    accrue(&mut world).expect("the poke succeeds");
+    assert_eq!(engine(&world).fee.last_accrued_at, T0 + 2_000);
 }

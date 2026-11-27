@@ -1,21 +1,41 @@
-//! Core data structures and utilities for the Stablecoin Program.
+//! Core types for the stablecoin program: actor state, messages, addresses and events.
+//!
+//! Two actors carry state: the engine (global parameters, fee accumulator and redemption
+//! price, on one PDA) and a position (on its owner's own account).
+//!
+//! State and messages outlive code (state stays on accounts, async messages in mailboxes),
+//! and Borsh encodes an enum variant as a leading tag byte. Every enum here is therefore
+//! append-only: a changed layout is a new variant, never an edit of an existing one.
 
-pub mod controller;
-
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "pure fixed-point math predating the workspace lints; see its tests"
+)]
 pub mod collateralization;
-
-pub mod math;
-
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    reason = "pure fixed-point math predating the workspace lints; see its tests"
+)]
+pub mod controller;
 /// Exact debt admission comparisons shared by runtime and clients.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "pure fixed-point math predating the workspace lints; see its tests"
+)]
 pub mod debt_limits;
-
-/// Global account layout used by fresh deployments; legacy layouts are unsupported.
-pub const GLOBAL_SCHEMA_VERSION: u8 = 2;
-
+mod engine;
+pub mod event;
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "pure fixed-point math predating the workspace lints; see its tests"
+)]
+pub mod math;
+mod position;
 pub mod protocol_parameters;
-
 pub mod redemption_price_state;
-
 pub mod stability_fee_accumulator;
 
 use borsh::{BorshDeserialize, BorshSerialize};
@@ -23,870 +43,635 @@ pub use controller::{
     bound_redemption_price, run_controller_tick, ControllerOutput, INTEGRAL_CLAMP,
     MAXIMUM_REDEMPTION_PRICE, MINIMUM_REDEMPTION_PRICE, RATE_DELTA_CLAMP,
 };
-use lee_core::{
-    account::{AccountId, AccountWithMetadata, Data},
-    program::PdaSeed,
-};
+pub use engine::{Engine, Pending};
+use lee_core::{account::AccountId, program::PdaSeed};
+pub use math::FIXED_POINT_ONE;
+pub use position::Position;
 pub use protocol_parameters::{
-    compute_protocol_parameters_pda, compute_protocol_parameters_pda_seed, ProtocolParameters,
+    ProtocolParameters, MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
+    MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
 };
-pub use redemption_price_state::{
-    compute_redemption_price_state_pda, compute_redemption_price_state_pda_seed,
-    RedemptionPriceState,
-};
+pub use redemption_price_state::RedemptionPriceState;
+use risc0_zkvm::sha::{Impl, Sha256 as _};
 use serde::{Deserialize, Serialize};
-use spel_framework_macros::account_type;
-pub use stability_fee_accumulator::{
-    compute_stability_fee_accumulator_pda, compute_stability_fee_accumulator_pda_seed,
-    StabilityFeeAccumulator,
-};
+pub use stability_fee_accumulator::StabilityFeeAccumulator;
 
-// Stable domain-separation tags for the position PDAs; these must stay unchanged for address
-// compatibility.
-const POSITION_PDA_DOMAIN: &[u8] = b"POSITION";
-const POSITION_VAULT_PDA_DOMAIN: &[u8] = b"POSITION_VAULT";
+/// Longest accepted stablecoin name, in bytes.
+pub const MAX_NAME_LEN: usize = 64;
+
+// Domain-separation tags of the PDA seeds. They must stay unchanged for address stability.
+const ENGINE_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__PROTOCOL_PARAMS_____";
 const STABLECOIN_DEFINITION_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__DEFINITION__________";
-const STABLECOIN_MASTER_HOLDING_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__MASTER_HOLDING______";
+const SURPLUS_HOLDING_PDA_DOMAIN: [u8; 32] = *b"STABLECOIN__MASTER_HOLDING______";
+const POSITION_VAULT_PDA_DOMAIN: &[u8] = b"POSITION_VAULT";
 
-/// Stablecoin Program Instruction.
+// ──────────────────────────────────────────────────────────────────────────────
+// State
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The stablecoin's state on one account.
 ///
-/// Borsh is the instruction wire format LEZ reads, and deliberately the *only* encoding
-/// this type derives.
-///
-/// `#[lez_program]` generates its guest-side counterpart with serde derives alongside
-/// Borsh, "for IDL/tooling". Nothing uses them: `idl-gen` parses the guest source, the
-/// framework's runtime IDL path deserializes its own types, and `spel-cli` encodes Borsh
-/// straight from the IDL. Carrying them here would only mean a type that accepts either
-/// encoder, which is how the v0.2.5 port silently rotted every instruction-encoding site in
-/// `modules/*/ffi` -- `risc0_zkvm::serde::to_vec` kept compiling and kept producing bytes
-/// the runtime rejects. Without a serde impl that is a compile error instead.
-///
-/// Account-data types below keep serde; the FFI renders them as JSON. This applies to the
-/// instruction enum alone.
-///
-/// Borsh encodes the variant as a leading tag byte, so variants are append-only:
-/// inserting one shifts the encoding of every variant after it.
-#[derive(Debug, BorshSerialize, BorshDeserialize)]
-#[allow(
+/// An empty actor state means "nothing here yet" and is not a `StablecoinState`.
+#[spel_attrs::state]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[expect(
     clippy::large_enum_variant,
-    reason = "decoded once per transaction; boxing would change the guest ABI surface"
+    reason = "decoded once per call; the engine is the common large state and boxing would add an indirection to every read"
 )]
-pub enum Instruction {
-    /// Bootstrap the protocol. One-shot — fails if any of the five global PDAs
-    /// is already initialized.
+pub enum StablecoinState {
+    Engine(Engine),
+    Position(Position),
+}
+
+impl StablecoinState {
+    /// Decodes an actor state; `None` for an empty one.
     ///
-    /// Required accounts (9), in order:
-    /// 1. `deployment_authority` — authorized; must be the executing deployed header account.
-    /// 2. `protocol_parameters` — uninitialized, PDA at
-    ///    `compute_protocol_parameters_pda(self_program_id)`.
-    /// 3. `stability_fee_accumulator` — uninitialized, PDA at
-    ///    `compute_stability_fee_accumulator_pda(self_program_id)`.
-    /// 4. `redemption_price_state` — uninitialized, PDA at
-    ///    `compute_redemption_price_state_pda(self_program_id)`.
-    /// 5. `stablecoin_definition` — uninitialized, PDA at
-    ///    `compute_stablecoin_definition_pda(self_program_id)`; claimed via the chained
-    ///    `Token::NewFungibleDefinition`.
-    /// 6. `stablecoin_master_holding` — uninitialized, PDA at
-    ///    `compute_stablecoin_master_holding_pda(self_program_id)`; also claimed via the chained
-    ///    call (Token-Program API artifact — receives `total_supply = 0`).
-    /// 7. `collateral_definition` — initialized; validated as `TokenDefinition::Fungible` and
-    ///    recorded into `ProtocolParameters.collateral_definition_id` (immutable thereafter).
-    /// 8. `market_price_oracle` — initialized; validated as an `OraclePriceAccount` with
-    ///    `base_asset` = stablecoin definition, `quote_asset` = collateral definition.
-    /// 9. `clock` — the system `CLOCK_01` account; read-only. Its timestamp anchors the
-    ///    accumulator and redemption-price state. (The pinned spel-framework exposes no
-    ///    `ProgramContext` clock, so wall-clock time is read from this account.)
-    InitializeProgram {
-        /// Designated freeze authority. Held in `ProtocolParameters`; can be
-        /// rotated post-init via `set_freeze_authority`.
-        freeze_authority_account_id: AccountId,
-        /// Per-millisecond stability fee multiplier in fixed-point. Bound:
-        /// `FIXED_POINT_ONE <= x <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about
-        /// 100% a year; see spec §8).
-        initial_stability_fee_per_millisecond: u128,
-        /// PI controller `Kp`. Bound: `0 <= x <= MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN`.
-        initial_controller_proportional_gain: i128,
-        /// PI controller `Ki`. Bound: `0 <= x <= MAXIMUM_CONTROLLER_INTEGRAL_GAIN`.
-        initial_controller_integral_gain: i128,
-        /// Minimum collateralization ratio in fixed-point. Bound:
-        /// `FIXED_POINT_ONE * 1.1 <= x <= FIXED_POINT_ONE * 10`.
-        initial_minimum_collateralization_ratio: u128,
-        /// Min milliseconds between `update_redemption_rate` calls. Bound: 1..=86_400_000.
-        minimum_milliseconds_between_rate_updates: u64,
-        /// Max accepted oracle observation age, in milliseconds. Bound: 1..=86_400_000.
-        maximum_oracle_price_age_milliseconds: u64,
-        /// Initial redemption price in fixed-point (collateral-per-stablecoin).
-        /// Must be > 0; chosen by the deployer to reflect the launch target.
-        initial_redemption_price: u128,
-        /// Name baked into the stablecoin's `TokenDefinition::Fungible`.
-        stablecoin_name: String,
-        /// Initial admin selected by the deployment authority; need not sign bootstrap.
+    /// # Panics
+    /// If the bytes are not a `StablecoinState`. Only stablecoin code writes stablecoin
+    /// actor state.
+    #[must_use]
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.is_empty() {
+            return None;
+        }
+        Some(borsh::from_slice(bytes).expect("stablecoin state must decode"))
+    }
+
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        borsh::to_vec(self).expect("borsh serialization is infallible")
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Messages
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Messages anyone may send: a transaction author or another program.
+#[spel_attrs::message]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "decoded once per transaction; boxing `InitializeArgs` would not change the wire format but adds noise"
+)]
+pub enum Message {
+    // At the program account, signed by it, root only.
+    Initialize {
         initial_admin_account_id: AccountId,
-        /// Minimum positive position debt, in raw stablecoin atomic units.
-        minimum_debt_amount: u128,
-        /// New-borrowing ceiling on accrued aggregate debt, in raw atomic units.
-        debt_ceiling: u128,
-        /// Expected program owner of the market price oracle.
+        freeze_authority_account_id: AccountId,
+        token_program_id: AccountId,
+        collateral_definition_id: AccountId,
+        market_price_oracle_id: AccountId,
         market_price_oracle_program_id: AccountId,
+        initial_stability_fee_per_millisecond: u128,
+        initial_controller_proportional_gain: i128,
+        initial_controller_integral_gain: i128,
+        initial_minimum_collateralization_ratio: u128,
+        minimum_milliseconds_between_rate_updates: u64,
+        maximum_oracle_price_age_milliseconds: u64,
+        initial_redemption_price: u128,
+        stablecoin_name: String,
+        minimum_debt_amount: u128,
+        debt_ceiling: u128,
     },
-    /// Advance the stability-fee accumulator to the clock's timestamp.
-    /// Permissionless and idempotent — there is no minimum-interval throttle;
-    /// redundant calls are harmless no-ops, since the read-side projection keeps
-    /// every position current regardless of cadence. Allowed while frozen.
-    ///
-    /// Required accounts (4), in order:
-    /// 1. `caller` — authorized; not retained anywhere.
-    /// 2. `protocol_parameters` — initialized, read-only.
-    /// 3. `stability_fee_accumulator` — initialized, writable.
-    /// 4. `clock` — the system `CLOCK_01` account; read-only.
+
+    // At the engine, anyone, no signature.
     AccrueStabilityFee,
-    /// Run one tick of the redemption-rate controller and re-anchor the
-    /// redemption price. Permissionless, but strict: panics if called within
-    /// `minimum_milliseconds_between_rate_updates` of the last update, or if the
-    /// market-price oracle is future-dated, stale, or reports a zero price.
-    /// Allowed while frozen.
-    ///
-    /// Required accounts (5), in order:
-    /// 1. `caller` — authorized; not retained anywhere.
-    /// 2. `protocol_parameters` — initialized, read-only.
-    /// 3. `redemption_price_state` — initialized, writable.
-    /// 4. `market_price_oracle` — initialized, read-only; must equal
-    ///    `protocol_parameters.market_price_oracle_id`.
-    /// 5. `clock` — the system `CLOCK_01` account; read-only.
     UpdateRedemptionRate,
-    /// Best-effort combined poke that advances BOTH globals in one transaction.
-    /// A LEZ transaction carries exactly one instruction, so this is the only way
-    /// to refresh the fee accumulator and the redemption rate at once.
-    ///
-    /// ALWAYS performs the fee accrual (like [`Instruction::AccrueStabilityFee`]).
-    /// Performs the redemption update (like [`Instruction::UpdateRedemptionRate`])
-    /// ONLY if its interval is due AND the oracle is not future-dated and is fresh
-    /// AND the oracle price is non-zero; otherwise it SKIPS that half without panicking. Allowed
-    /// while frozen, like the individual pokes.
-    ///
-    /// Panics ONLY on: `caller` not authorized; any of `protocol_parameters` /
-    /// `stability_fee_accumulator` / `redemption_price_state` uninitialized, wrong
-    /// owner, or at the wrong PDA; oracle id mismatch; wrong clock account. It does
-    /// NOT panic on a not-yet-due interval or a future-dated / stale / zero oracle.
-    ///
-    /// Required accounts (6), in order — the union of the two standalone pokes:
-    /// 1. `caller` — authorized; not retained anywhere.
-    /// 2. `protocol_parameters` — initialized, read-only.
-    /// 3. `stability_fee_accumulator` — initialized, writable.
-    /// 4. `redemption_price_state` — initialized, writable.
-    /// 5. `market_price_oracle` — initialized, read-only; must equal
-    ///    `protocol_parameters.market_price_oracle_id`.
-    /// 6. `clock` — the system `CLOCK_01` account; read-only.
-    RefreshGlobals,
-    /// Open a new collateral-only [`Position`] for the calling owner.
-    ///
-    /// The position starts with no debt — spec §10.4 deliberately omits an
-    /// initial-debt parameter; borrowing is a separate `GenerateDebt`. Blocked
-    /// while the protocol is frozen.
-    ///
-    /// Required accounts (7), in order:
-    /// 1. `owner` — authorized.
-    /// 2. `position` — uninitialized; address must match `compute_position_pda(self_program_id,
-    ///    owner, position_nonce)`.
-    /// 3. `vault` — uninitialized position vault token holding; address must match
-    ///    `compute_position_vault_pda(self_program_id, position_id)`.
-    /// 4. `user_collateral_holding` — authorized, initialized; the owner's source holding for the
-    ///    collateral.
-    /// 5. `collateral_definition` — initialized; must equal
-    ///    `protocol_parameters.collateral_definition_id`. Its `program_owner` determines the Token
-    ///    Program used by the chained `InitializeAccount` and `Transfer` calls.
-    /// 6. `protocol_parameters` — initialized, read-only; must sit at
-    ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the single global
-    ///    collateral definition id and the freeze flag.
-    /// 7. `clock` — the system `CLOCK_01` account; read-only. Stamps `opened_at`.
+    RefreshGlobals {
+        consult_oracle: bool,
+    },
+
+    // At the owner's account, signed by the owner, root only.
     OpenPosition {
-        /// Caller-chosen nonce that, with the owner's account id, forms the
-        /// position PDA's seed pre-image. Lets one owner hold many positions.
-        position_nonce: u64,
-        /// Collateral tokens to move into the position vault at open time.
+        collateral_holding: AccountId,
         initial_collateral_amount: u128,
     },
-    /// Deposit additional collateral into an existing position.
-    ///
-    /// Allowed while the protocol is frozen — a deposit can only improve the
-    /// position's collateralization, so §7 keeps it available in emergencies.
-    /// No collateralization check for the same reason.
-    ///
-    /// The position's collateral is set to the vault balance plus `amount`, not
-    /// incremented, so a balance donated directly into the vault is absorbed
-    /// rather than stranded. `amount = 0` is the recovery path for that case.
-    ///
-    /// Required accounts (5), in order:
-    /// 1. `owner` — authorized; must match `Position.owner_account_id`.
-    /// 2. `position` — initialized, writable, owned by this program; address must match
-    ///    `compute_position_pda(self_program_id, owner, position_nonce)`.
-    /// 3. `vault` — initialized, writable; must equal `Position.vault_account_id`.
-    /// 4. `user_collateral_holding` — authorized, initialized; owned by the same Token Program as
-    ///    the vault, with `TokenHolding.definition_id` equal to
-    ///    `ProtocolParameters.collateral_definition_id`.
-    /// 5. `protocol_parameters` — initialized, read-only; must sit at
-    ///    `compute_protocol_parameters_pda(self_program_id)`. Supplies the collateral definition
-    ///    id. `is_frozen` is deliberately not read.
     DepositCollateral {
-        /// Collateral tokens to move from the user's holding into the vault.
+        collateral_holding: AccountId,
         amount: u128,
     },
-    /// Mint stablecoins against an existing position, increasing its debt.
-    ///
-    /// Blocked while frozen. The §6.2 collateralization invariant is checked
-    /// after the mint, and the normalized-debt delta is rounded **up** (§6.3).
-    ///
-    /// Required accounts (9), in order:
-    /// 1. `owner` — authorized.
-    /// 2. `position` — initialized, writable, owned by `self_program_id`; at its `(owner,
-    ///    position_nonce)` PDA.
-    /// 3. `stablecoin_definition` — initialized, writable via the chained `Token::Mint`; must
-    ///    equal `protocol_parameters.stablecoin_definition_id`.
-    /// 4. `user_stablecoin_holding` — initialized mint destination; NOT required to be authorized.
-    ///    Same Token Program and definition as `stablecoin_definition`.
-    /// 5. `stability_fee_accumulator` — initialized, writable; at its canonical PDA.
-    /// 6. `redemption_price_state` — initialized, read-only; at its canonical PDA.
-    /// 7. `market_price_oracle` — initialized, read-only; must equal
-    ///    `protocol_parameters.market_price_oracle_id`. Liveness gate only — its price is not
-    ///    consumed.
-    /// 8. `protocol_parameters` — initialized, read-only; at its canonical PDA.
-    /// 9. `clock` — the system `CLOCK_01` account; read-only.
+    WithdrawCollateral {
+        to: AccountId,
+        amount: u128,
+    },
     GenerateDebt {
-        /// Stablecoin atomic units to mint to `user_stablecoin_holding`.
+        to: AccountId,
         amount: u128,
     },
-    /// Clear a fully-settled position's data.
-    ///
-    /// The PDA is **not** released: LEE forbids a program from changing an
-    /// account's `program_owner` or `nonce`, so the account lingers owned by this
-    /// program with empty data, and its `(owner, position_nonce)` pair cannot be
-    /// reused. Allowed while frozen. The vault is **not** closed either — the
-    /// Token Program has no `CloseHolding`, so it too lingers at `balance = 0` (§12).
-    ///
-    /// Required accounts (4), in order:
-    /// 1. `owner` — authorized.
-    /// 2. `position` — initialized, owned by `self_program_id`, at its `(owner, position_nonce)`
-    ///    PDA. Its data is cleared; ownership and nonce remain unchanged.
-    /// 3. `vault` — initialized, read-only; must equal `Position.vault_account_id` and hold a zero
-    ///    balance.
-    /// 4. `protocol_parameters` — initialized, read-only; at its canonical PDA.
+    RepayDebt {
+        stablecoin_holding: AccountId,
+        maximum_amount: u128,
+    },
     ClosePosition,
-    /// Retune the minimum collateralization ratio (spec §10.11).
-    ///
-    /// Tightening leaves existing positions retroactively under-collateralized:
-    /// they can still deposit or repay to recover, but cannot withdraw or borrow
-    /// until back above the ratio.
-    ///
-    /// Required accounts (2): `admin` (authorized, must equal
-    /// `ProtocolParameters.admin_account_id`) and `protocol_parameters`
-    /// (initialized, writable, at its canonical PDA).
+
+    // At the signer's own account (seat), signed, root only; forwarded to the engine.
     SetMinimumCollateralizationRatio {
-        /// §8 band: `1.1 * FIXED_POINT_ONE ..= 10 * FIXED_POINT_ONE`.
         new_ratio: u128,
     },
-    /// Retune both PI controller gains (spec §10.12). Bundled, and deliberately
-    /// does not reset the controller's integral term.
-    ///
-    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
     SetControllerGains {
-        /// §8 magnitude cap: `|x| <= 10^3 * FIXED_POINT_ONE`.
         new_proportional_gain: i128,
-        /// §8 magnitude cap: `|x| <= FIXED_POINT_ONE`.
         new_integral_gain: i128,
     },
-    /// Rotate the market-price oracle (spec §10.13).
-    ///
-    /// Binds the replacement address and expected producer together. An existing
-    /// oracle must have that owner and quote the definitions bound at bootstrap.
-    ///
-    /// Required accounts (3), in order: `admin`, `protocol_parameters` (writable),
-    /// and `new_oracle` (read-only; may not exist yet).
     SetMarketPriceOracle {
-        /// Expected program owner, including when the oracle does not exist yet.
-        new_oracle_program_id: AccountId,
+        oracle_account_id: AccountId,
+        oracle_program_id: AccountId,
     },
-    /// Retune both timing parameters (spec §10.14). Bundled.
-    ///
-    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
     SetTimingParameters {
-        /// §8 band: `1 ..= 86_400_000` milliseconds.
-        new_minimum_milliseconds_between_rate_updates: u64,
-        /// §8 band: `1 ..= 86_400_000` milliseconds.
-        new_maximum_oracle_price_age_milliseconds: u64,
+        minimum_milliseconds_between_rate_updates: u64,
+        maximum_oracle_price_age_milliseconds: u64,
     },
-    /// Rotate the admin handle (spec §10.15).
-    ///
-    /// One-step and effective immediately, since every admin check reads the
-    /// stored handle. A wrong id locks the admin out permanently.
-    ///
-    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
     SetAdmin {
-        /// The account that will hold admin rights from this instruction onward.
         new_admin_account_id: AccountId,
     },
-    /// Rotate the freeze-authority handle (spec §10.16).
-    ///
-    /// Set by the **admin**, not by the freeze authority, so a compromised freeze
-    /// authority cannot entrench itself.
-    ///
-    /// Required accounts (2): as [`Instruction::SetMinimumCollateralizationRatio`].
     SetFreezeAuthority {
-        /// The account that will hold freeze rights from this instruction onward.
         new_freeze_authority_account_id: AccountId,
     },
-    /// Retune the stability fee (spec §10.10).
-    ///
-    /// Accrues the fee accumulator forward at the **old** rate first, so the new
-    /// rate applies only from `now` onward and never retroactively to the elapsed
-    /// gap. That is why this is the only setter taking the accumulator and clock.
-    ///
-    /// Required accounts (4), in order:
-    /// 1. `admin` — authorized; must equal `ProtocolParameters.admin_account_id`.
-    /// 2. `protocol_parameters` — initialized, writable; at its canonical PDA.
-    /// 3. `stability_fee_accumulator` — initialized, writable; at its canonical PDA.
-    /// 4. `clock` — the system `CLOCK_01` account; read-only.
     SetStabilityFeePerMillisecond {
-        /// New per-millisecond fee multiplier. Must sit in the §8 band
-        /// `FIXED_POINT_ONE ..= 2 * FIXED_POINT_ONE`.
         new_rate: u128,
     },
-    /// Emergency kill switch: halt the risk-increasing instructions (spec §10.17).
-    ///
-    /// Sets `ProtocolParameters.is_frozen`. While frozen, `OpenPosition` and
-    /// `GenerateDebt` panic; `WithdrawCollateral` is allowed only when the validated
-    /// position has exactly zero normalized debt. `DepositCollateral`, `RepayDebt`,
-    /// `ClosePosition` and the permissionless pokes keep working (§7). A freeze
-    /// therefore does not stop debt-free collateral outflows. Idempotent.
-    ///
-    /// Required accounts (2), in order:
-    /// 1. `freeze_authority` — authorized; must equal
-    ///    `ProtocolParameters.freeze_authority_account_id`.
-    /// 2. `protocol_parameters` — initialized, writable; at its canonical PDA.
     Freeze,
-    /// Resume normal operation (spec §10.18): clears `ProtocolParameters.is_frozen`.
-    /// Idempotent. Same accounts and preconditions as [`Instruction::Freeze`].
     Unfreeze,
-    /// Withdraw `amount` collateral tokens from a position back to a user-controlled holding.
-    ///
-    /// While frozen, allowed only when the validated position has exactly zero
-    /// normalized debt, including for a zero amount. The §6.2 collateralization
-    /// invariant is checked *after* the decrement, against debt and redemption
-    /// price both projected forward to the clock timestamp (§5.3). Zero amounts
-    /// and zero-debt positions skip these projections, while retaining all account
-    /// validation. Malformed globals, clock or position can fail before the frozen error.
-    ///
-    /// Required accounts (8), in order:
-    /// 1. `owner` — authorized.
-    /// 2. `position` — initialized, writable, owned by `self_program_id`; address must match
-    ///    `compute_position_pda(self_program_id, owner, position_nonce)`.
-    /// 3. `vault` — initialized, writable; must equal `Position.vault_account_id`. Authorized in
-    ///    the chained call via its PDA seed.
-    /// 4. `user_collateral_holding` — initialized destination; NOT required to be authorized. Same
-    ///    Token Program and definition as the vault holding.
-    /// 5. `stability_fee_accumulator` — initialized, read-only; at its canonical PDA. Projected to
-    ///    `now` for the position's nominal debt.
-    /// 6. `redemption_price_state` — initialized, read-only; at its canonical PDA. Projected to
-    ///    `now` for the current redemption price.
-    /// 7. `protocol_parameters` — initialized, read-only; at its canonical PDA. Supplies the
-    ///    minimum collateralization ratio and the freeze flag.
-    /// 8. `clock` — the system `CLOCK_01` account; read-only.
-    ///
-    /// `token_program_id` is derived from `vault.account.program_owner`;
-    /// the collateral definition is read from the PDA-verified vault holding.
-    WithdrawCollateral {
-        /// Amount of collateral tokens to move from the vault back to
-        /// `user_collateral_holding`.
-        amount: u128,
-    },
-    /// Repay outstanding debt, burning at most the signed `amount` of stablecoins.
-    ///
-    /// Allowed while frozen — repaying only improves the protocol's position (§7).
-    /// Full repayment burns the ceiling of current debt and retains any unused
-    /// buffer. Partial repayment burns `amount` and rounds the normalized-debt
-    /// decrement **down** (§6.3). Read confirmed state to determine the actual burn
-    /// and whether execution-time debt was fully cleared.
-    ///
-    /// Required accounts (7), in order:
-    /// 1. `owner` — authorized; bound to the position via PDA re-derivation.
-    /// 2. `position` — initialized, writable, owned by `self_program_id`.
-    /// 3. `stablecoin_definition` — initialized, writable via the chained `Token::Burn`; must
-    ///    equal `protocol_parameters.stablecoin_definition_id`.
-    /// 4. `user_stablecoin_holding` — authorized, initialized; same Token Program and definition
-    ///    as `stablecoin_definition`.
-    /// 5. `stability_fee_accumulator` — initialized, writable; at its canonical PDA.
-    /// 6. `protocol_parameters` — initialized, read-only; at its canonical PDA.
-    /// 7. `clock` — the system `CLOCK_01` account; read-only.
-    ///
-    /// `token_program_id` is derived from `user_stablecoin_holding.account.program_owner`.
-    /// `position_nonce` (for position PDA verification) is read from the decoded [`Position`].
-    RepayDebt {
-        /// Maximum stablecoin burn authorized; execution caps this at current debt.
-        amount: u128,
-    },
-    /// Return the redemption-rate controller to rest (spec §10.19).
-    ///
-    /// Re-anchors the redemption price at its current projection (clamped into
-    /// the §8 price bounds), sets the rate to exactly `FIXED_POINT_ONE` and the
-    /// integral term to `0`. The price does not jump, so no position's
-    /// collateralization changes. The recovery path for a wound-up or runaway
-    /// controller. Allowed while frozen. Idempotent.
-    ///
-    /// Declared after the existing variants so their Borsh tags do not shift.
-    ///
-    /// Required accounts (4), in order:
-    /// 1. `authority` — authorized; must equal `ProtocolParameters.admin_account_id` or
-    ///    `ProtocolParameters.freeze_authority_account_id`.
-    /// 2. `protocol_parameters` — initialized, read-only; at its canonical PDA.
-    /// 3. `redemption_price_state` — initialized, writable; at its canonical PDA.
-    /// 4. `clock` — the system `CLOCK_01` account; read-only.
     ResetRedemptionRateController,
-    /// Atomically update both debt limits. Requires the authorized admin and writable
-    /// canonical protocol parameters, in that order. Both amounts are raw atomic units.
-    ///
-    /// Declared after `ResetRedemptionRateController` so earlier Borsh tags do not shift.
     SetDebtLimits {
-        /// Positive minimum for any changed nonzero position debt.
         minimum_debt_amount: u128,
-        /// Positive borrowing ceiling, at least the minimum debt.
         debt_ceiling: u128,
     },
 }
 
-/// Persistent state held by a Stablecoin [`Position`] account.
-///
-/// See spec §4.4. `normalized_debt_amount` is the RAI-style "shares in a debt
-/// pool whose value per share is the stability-fee accumulator" — multiply by
-/// the current accumulator to get the position's nominal debt at any moment.
-#[account_type]
-#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
-pub struct Position {
-    /// Owner of the position. Must be `is_authorized` for every position op.
-    /// Stored for client discovery (PDA seed isn't reversible).
-    pub owner_account_id: AccountId,
-    /// Caller-chosen nonce; together with `owner_account_id` forms the PDA
-    /// seed for this position.
-    pub position_nonce: u64,
-    /// Collateral vault PDA (= `compute_position_vault_pda(program, position_id)`).
-    /// Stored explicitly for op-time efficiency.
-    pub vault_account_id: AccountId,
-    /// Collateral tokens currently held in the vault. Invariant:
-    /// equals `vault_holding.balance` after every modifying op.
-    pub collateral_amount: u128,
-    /// Stablecoin atomic units divided by the accumulator at mint time.
-    /// Nominal debt at time T = `normalized_debt_amount * accumulated_rate(T) / FIXED_POINT_ONE`.
-    pub normalized_debt_amount: u128,
-    /// Unix milliseconds when the position was first opened. UX/analytics only;
-    /// not used in protocol logic.
-    pub opened_at: u64,
+/// Everything `Initialize` sets up: the fields of `Message::Initialize`.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct InitializeArgs {
+    pub initial_admin_account_id: AccountId,
+    pub freeze_authority_account_id: AccountId,
+    pub token_program_id: AccountId,
+    pub collateral_definition_id: AccountId,
+    pub market_price_oracle_id: AccountId,
+    pub market_price_oracle_program_id: AccountId,
+    pub initial_stability_fee_per_millisecond: u128,
+    pub initial_controller_proportional_gain: i128,
+    pub initial_controller_integral_gain: i128,
+    pub initial_minimum_collateralization_ratio: u128,
+    pub minimum_milliseconds_between_rate_updates: u64,
+    pub maximum_oracle_price_age_milliseconds: u64,
+    pub initial_redemption_price: u128,
+    pub stablecoin_name: String,
+    pub minimum_debt_amount: u128,
+    pub debt_ceiling: u128,
 }
 
-impl TryFrom<&Data> for Position {
-    type Error = std::io::Error;
-
-    fn try_from(data: &Data) -> Result<Self, Self::Error> {
-        Self::try_from_slice(data.as_ref())
+impl From<InitializeArgs> for Message {
+    fn from(args: InitializeArgs) -> Self {
+        let InitializeArgs {
+            initial_admin_account_id,
+            freeze_authority_account_id,
+            token_program_id,
+            collateral_definition_id,
+            market_price_oracle_id,
+            market_price_oracle_program_id,
+            initial_stability_fee_per_millisecond,
+            initial_controller_proportional_gain,
+            initial_controller_integral_gain,
+            initial_minimum_collateralization_ratio,
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+            initial_redemption_price,
+            stablecoin_name,
+            minimum_debt_amount,
+            debt_ceiling,
+        } = args;
+        Self::Initialize {
+            initial_admin_account_id,
+            freeze_authority_account_id,
+            token_program_id,
+            collateral_definition_id,
+            market_price_oracle_id,
+            market_price_oracle_program_id,
+            initial_stability_fee_per_millisecond,
+            initial_controller_proportional_gain,
+            initial_controller_integral_gain,
+            initial_minimum_collateralization_ratio,
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+            initial_redemption_price,
+            stablecoin_name,
+            minimum_debt_amount,
+            debt_ceiling,
+        }
     }
 }
 
-impl From<&Position> for Data {
-    fn from(position: &Position) -> Self {
-        let len = borsh::object_length(position).expect("Position length must be known");
-        let mut buf = Vec::with_capacity(len);
-        BorshSerialize::serialize(position, &mut buf)
-            .expect("Position serialization should not fail");
-        Self::try_from(buf).expect("Position encoded data should fit into Data")
-    }
+/// The eleven seat-forwarded actions, with the fields of the `Message` variants they come
+/// from.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum AdminAction {
+    SetMinimumCollateralizationRatio {
+        new_ratio: u128,
+    },
+    SetControllerGains {
+        new_proportional_gain: i128,
+        new_integral_gain: i128,
+    },
+    SetMarketPriceOracle {
+        oracle_account_id: AccountId,
+        oracle_program_id: AccountId,
+    },
+    SetTimingParameters {
+        minimum_milliseconds_between_rate_updates: u64,
+        maximum_oracle_price_age_milliseconds: u64,
+    },
+    SetAdmin {
+        new_admin_account_id: AccountId,
+    },
+    SetFreezeAuthority {
+        new_freeze_authority_account_id: AccountId,
+    },
+    SetStabilityFeePerMillisecond {
+        new_rate: u128,
+    },
+    Freeze,
+    Unfreeze,
+    ResetRedemptionRateController,
+    SetDebtLimits {
+        minimum_debt_amount: u128,
+        debt_ceiling: u128,
+    },
 }
 
-/// PDA seed for the [`Position`] account at `(owner_id, position_nonce)`.
-///
-/// The single-instance protocol has only one collateral definition globally
-/// (stored on `ProtocolParameters`), so it no longer factors into the seed.
-/// The 64-bit `position_nonce` is caller-chosen and lets one owner hold
-/// many positions (spec §3.2).
+/// Messages only stablecoin actors send each other. The guest decodes these only when the
+/// sender is the stablecoin program itself, so each is trusted because only stablecoin code
+/// can have produced it.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "decoded once per message; boxing `InitializeArgs` would not change the wire format but adds noise"
+)]
+pub enum Internal {
+    // Program account to surplus relay, which creates the token definition.
+    CreateStablecoinToken {
+        name: String,
+        token_program_id: AccountId,
+    },
+    // Program account to engine.
+    InitializeEngine(InitializeArgs),
+    // Seat to engine.
+    Admin(AdminAction),
+    // Position to engine.
+    OpenRequest {
+        collateral_holding: AccountId,
+        initial_collateral_amount: u128,
+    },
+    GenerateDebtRequest {
+        amount: u128,
+        to: AccountId,
+        collateral_amount: u128,
+        normalized_debt_amount: u128,
+    },
+    RepayDebtRequest {
+        maximum_amount: u128,
+        from_holding: AccountId,
+        normalized_debt_amount: u128,
+    },
+    WithdrawRequest {
+        amount: u128,
+        to: AccountId,
+        collateral_after: u128,
+        normalized_debt_amount: u128,
+    },
+    // Engine to position.
+    OpenApproved {
+        token_program_id: AccountId,
+        collateral_definition_id: AccountId,
+        collateral_holding: AccountId,
+        initial_collateral_amount: u128,
+    },
+    DebtGenerated {
+        normalized_debt_delta: u128,
+    },
+    DebtRepaid {
+        normalized_debt_delta: u128,
+    },
+    WithdrawApproved {
+        amount: u128,
+        to: AccountId,
+    },
+    // Engine to itself, right after it asks the oracle for the price: the oracle's reply, which
+    // runs before this message, must have cleared `pending`.
+    AssertOracleReplied,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Addresses
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// The engine's PDA seed: `sha256("STABLECOIN__PROTOCOL_PARAMS_____")`.
 #[must_use]
-pub fn compute_position_pda_seed(owner_id: AccountId, position_nonce: u64) -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256 as _};
-
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&owner_id.to_bytes());
-    bytes.extend_from_slice(&position_nonce.to_le_bytes());
-    bytes.extend_from_slice(POSITION_PDA_DOMAIN);
-
-    let mut out = [0u8; 32];
-    out.copy_from_slice(Impl::hash_bytes(&bytes).as_bytes());
-    PdaSeed::new(out)
+pub fn compute_engine_pda_seed() -> PdaSeed {
+    hash_seed(&[&ENGINE_PDA_DOMAIN])
 }
 
-/// Account id of the [`Position`] PDA for `(owner_id, position_nonce)` under
-/// `stablecoin_program_id`.
+/// The engine's account.
 #[must_use]
-pub fn compute_position_pda(
-    stablecoin_program_id: AccountId,
-    owner_id: AccountId,
-    position_nonce: u64,
-) -> AccountId {
-    AccountId::for_public_pda(
-        &stablecoin_program_id,
-        &compute_position_pda_seed(owner_id, position_nonce),
-    )
+pub fn compute_engine_pda(program_id: AccountId) -> AccountId {
+    AccountId::for_public_pda(&program_id, &compute_engine_pda_seed())
 }
 
-/// PDA seed for the collateral vault token holding bound to a [`Position`].
-///
-/// Derived from the position's address with a distinct domain-separation tag so the vault
-/// id cannot collide with the position id even though both PDAs share the same program.
-pub fn compute_position_vault_pda_seed(position_id: AccountId) -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256 as _};
-
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(&position_id.to_bytes());
-    bytes.extend_from_slice(POSITION_VAULT_PDA_DOMAIN);
-
-    let mut out = [0u8; 32];
-    out.copy_from_slice(Impl::hash_bytes(&bytes).as_bytes());
-    PdaSeed::new(out)
-}
-
-/// Account id of the collateral vault PDA for `position_id` under `stablecoin_program_id`.
-pub fn compute_position_vault_pda(
-    stablecoin_program_id: AccountId,
-    position_id: AccountId,
-) -> AccountId {
-    AccountId::for_public_pda(
-        &stablecoin_program_id,
-        &compute_position_vault_pda_seed(position_id),
-    )
-}
-
-/// Verify the position account's address matches `(stablecoin_program_id,
-/// owner, position_nonce)` and return the [`PdaSeed`] for use in post-state
-/// claims.
-///
-/// # Panics
-/// If `position.account_id` does not match the derived PDA.
-pub fn verify_position_and_get_seed(
-    position: &AccountWithMetadata,
-    owner: &AccountWithMetadata,
-    position_nonce: u64,
-    stablecoin_program_id: AccountId,
-) -> PdaSeed {
-    let seed = compute_position_pda_seed(owner.account_id, position_nonce);
-    let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
-    assert_eq!(
-        position.account_id, expected_id,
-        "Position account ID does not match expected derivation"
-    );
-    seed
-}
-
-/// Verify the vault account's address matches `(stablecoin_program_id, position)` and
-/// return the [`PdaSeed`] for use in chained calls.
-///
-/// # Panics
-/// If `vault.account_id` does not match the address derived from `position_id` and
-/// `stablecoin_program_id`.
-pub fn verify_position_vault_and_get_seed(
-    vault: &AccountWithMetadata,
-    position_id: AccountId,
-    stablecoin_program_id: AccountId,
-) -> PdaSeed {
-    let seed = compute_position_vault_pda_seed(position_id);
-    let expected_id = AccountId::for_public_pda(&stablecoin_program_id, &seed);
-    assert_eq!(
-        vault.account_id, expected_id,
-        "Position vault account ID does not match expected derivation"
-    );
-    seed
-}
-
-/// PDA seed for the stablecoin's Token Program-owned `TokenDefinition`
-/// account, derived under the stablecoin program id so the stablecoin
-/// program's PDA seed authorizes every chained `Token::Mint` / `Token::Burn`.
+/// The seed of the stablecoin's token definition, its own mint authority.
 #[must_use]
 pub fn compute_stablecoin_definition_pda_seed() -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256 as _};
-
-    let mut out = [0u8; 32];
-    out.copy_from_slice(Impl::hash_bytes(&STABLECOIN_DEFINITION_PDA_DOMAIN).as_bytes());
-    PdaSeed::new(out)
+    hash_seed(&[&STABLECOIN_DEFINITION_PDA_DOMAIN])
 }
 
 #[must_use]
-pub fn compute_stablecoin_definition_pda(stablecoin_program_id: AccountId) -> AccountId {
+pub fn compute_stablecoin_definition_pda(program_id: AccountId) -> AccountId {
+    AccountId::for_public_pda(&program_id, &compute_stablecoin_definition_pda_seed())
+}
+
+/// The seed of the surplus holding (the old "master holding"), which receives accrued fees.
+#[must_use]
+pub fn compute_surplus_holding_pda_seed() -> PdaSeed {
+    hash_seed(&[&SURPLUS_HOLDING_PDA_DOMAIN])
+}
+
+#[must_use]
+pub fn compute_surplus_holding_pda(program_id: AccountId) -> AccountId {
+    AccountId::for_public_pda(&program_id, &compute_surplus_holding_pda_seed())
+}
+
+/// The seed of an owner's collateral vault.
+///
+/// Hash input: `owner_account_id (32 bytes) || POSITION_VAULT`.
+#[must_use]
+pub fn compute_position_vault_pda_seed(owner_account_id: AccountId) -> PdaSeed {
+    hash_seed(&[&owner_account_id.to_bytes(), POSITION_VAULT_PDA_DOMAIN])
+}
+
+/// The account of an owner's collateral vault.
+#[must_use]
+pub fn compute_position_vault_pda(program_id: AccountId, owner_account_id: AccountId) -> AccountId {
     AccountId::for_public_pda(
-        &stablecoin_program_id,
-        &compute_stablecoin_definition_pda_seed(),
+        &program_id,
+        &compute_position_vault_pda_seed(owner_account_id),
     )
 }
 
-/// PDA seed for the empty `TokenHolding` paired with the stablecoin definition
-/// at `Token::NewFungibleDefinition` time. The protocol passes `total_supply = 0`
-/// so this holding stays empty forever; the PDA contains the artifact at a
-/// deterministic address. See spec §3.1 / §10.1 for the full rationale.
-#[must_use]
-pub fn compute_stablecoin_master_holding_pda_seed() -> PdaSeed {
-    use risc0_zkvm::sha::{Impl, Sha256 as _};
-
-    let mut out = [0u8; 32];
-    out.copy_from_slice(Impl::hash_bytes(&STABLECOIN_MASTER_HOLDING_PDA_DOMAIN).as_bytes());
-    PdaSeed::new(out)
-}
-
-#[must_use]
-pub fn compute_stablecoin_master_holding_pda(stablecoin_program_id: AccountId) -> AccountId {
-    AccountId::for_public_pda(
-        &stablecoin_program_id,
-        &compute_stablecoin_master_holding_pda_seed(),
+fn hash_seed(parts: &[&[u8]]) -> PdaSeed {
+    let bytes = parts.concat();
+    PdaSeed::new(
+        *Impl::hash_bytes(&bytes)
+            .as_bytes()
+            .first_chunk::<32>()
+            .expect("a sha256 digest has 32 bytes"),
     )
 }
 
 #[cfg(test)]
-mod global_pda_tests {
+mod tests {
     use super::*;
 
-    #[test]
-    fn stablecoin_definition_and_master_holding_pdas_are_distinct() {
-        let program_id = AccountId::new([11u8; 32]);
-        let def = compute_stablecoin_definition_pda(program_id);
-        let master = compute_stablecoin_master_holding_pda(program_id);
-        assert_ne!(def, master);
-        assert_ne!(def, compute_protocol_parameters_pda(program_id));
-        assert_ne!(master, compute_stability_fee_accumulator_pda(program_id));
-    }
-}
-
-/// Round-trips through Borsh -- the encoding LEZ actually decodes. These used to go
-/// through `serde_json`, which stopped being the instruction wire format in v0.2.5; testing
-/// it would have asserted an encoding nothing reads.
-#[cfg(test)]
-mod instruction_tests {
-    use super::*;
-    use crate::math::FIXED_POINT_ONE;
-
-    #[test]
-    fn accrue_stability_fee_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::AccrueStabilityFee).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::AccrueStabilityFee));
+    fn seed_hex(seed: &PdaSeed) -> String {
+        seed.as_bytes().iter().map(|b| format!("{b:02x}")).collect()
     }
 
     #[test]
-    fn update_redemption_rate_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::UpdateRedemptionRate).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::UpdateRedemptionRate));
-    }
-
-    #[test]
-    fn admin_setter_borsh_roundtrips() {
-        for instruction in [
-            Instruction::SetMinimumCollateralizationRatio { new_ratio: 3 },
-            Instruction::SetControllerGains {
-                new_proportional_gain: -1,
-                new_integral_gain: 2,
-            },
-            Instruction::SetMarketPriceOracle {
-                new_oracle_program_id: AccountId::new([4; 32]),
-            },
-            Instruction::SetTimingParameters {
-                new_minimum_milliseconds_between_rate_updates: 4,
-                new_maximum_oracle_price_age_milliseconds: 5,
-            },
-            Instruction::SetAdmin {
-                new_admin_account_id: AccountId::new([1u8; 32]),
-            },
-            Instruction::SetFreezeAuthority {
-                new_freeze_authority_account_id: AccountId::new([2u8; 32]),
-            },
-        ] {
-            let encoded = borsh::to_vec(&instruction).expect("serialize");
-            let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-            assert_eq!(
-                borsh::to_vec(&decoded).expect("re-serialize"),
-                encoded,
-                "round-trip must preserve the instruction"
-            );
-        }
-    }
-
-    #[test]
-    fn set_stability_fee_per_millisecond_borsh_roundtrip() {
-        let instruction = Instruction::SetStabilityFeePerMillisecond { new_rate: 7 };
-        let encoded = borsh::to_vec(&instruction).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(
-            decoded,
-            Instruction::SetStabilityFeePerMillisecond { new_rate: 7 }
-        ));
-    }
-
-    #[test]
-    fn freeze_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::Freeze).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::Freeze));
-    }
-
-    #[test]
-    fn unfreeze_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::Unfreeze).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::Unfreeze));
-    }
-
-    #[test]
-    fn reset_redemption_rate_controller_borsh_roundtrip_with_the_last_tag() {
-        let encoded =
-            borsh::to_vec(&Instruction::ResetRedemptionRateController).expect("serialize");
-        // Appended after RepayDebt (tag 18) so no existing tag moves.
-        assert_eq!(encoded, vec![19]);
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(
-            decoded,
-            Instruction::ResetRedemptionRateController
-        ));
-    }
-
-    #[test]
-    fn refresh_globals_borsh_roundtrip() {
-        let encoded = borsh::to_vec(&Instruction::RefreshGlobals).expect("serialize");
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        assert!(matches!(decoded, Instruction::RefreshGlobals));
-    }
-
-    #[test]
-    fn initialize_program_borsh_roundtrip() {
-        let original = Instruction::InitializeProgram {
-            freeze_authority_account_id: AccountId::new([0xFF; 32]),
-            initial_stability_fee_per_millisecond: FIXED_POINT_ONE + 1_500_000_000_000_000,
-            initial_controller_proportional_gain: -42,
-            initial_controller_integral_gain: 123_456,
-            initial_minimum_collateralization_ratio: FIXED_POINT_ONE * 3 / 2,
-            minimum_milliseconds_between_rate_updates: 300_000,
-            maximum_oracle_price_age_milliseconds: 900_000,
-            initial_redemption_price: FIXED_POINT_ONE / 2,
-            stablecoin_name: "test-stable".to_owned(),
-            initial_admin_account_id: AccountId::new([0xA0; 32]),
-            minimum_debt_amount: 10,
-            debt_ceiling: 1_000_000,
-            market_price_oracle_program_id: AccountId::new([4; 32]),
+    fn initialize_message_encodes_like_its_args_after_the_tag() {
+        let id = |n: u8| AccountId::new([n; 32]);
+        let args = InitializeArgs {
+            initial_admin_account_id: id(1),
+            freeze_authority_account_id: id(2),
+            token_program_id: id(3),
+            collateral_definition_id: id(4),
+            market_price_oracle_id: id(5),
+            market_price_oracle_program_id: id(6),
+            initial_stability_fee_per_millisecond: 7,
+            initial_controller_proportional_gain: -8,
+            initial_controller_integral_gain: 9,
+            initial_minimum_collateralization_ratio: 10,
+            minimum_milliseconds_between_rate_updates: 11,
+            maximum_oracle_price_age_milliseconds: 12,
+            initial_redemption_price: 13,
+            stablecoin_name: "Stable".to_owned(),
+            minimum_debt_amount: 14,
+            debt_ceiling: 15,
         };
-        let encoded = borsh::to_vec(&original).expect("serialize");
-        assert_eq!(encoded.first(), Some(&0), "initialization keeps tag zero");
-        let oracle_program_offset = encoded.len() - 32;
-        assert_eq!(
-            &encoded[oracle_program_offset..],
-            &[4; 32],
-            "the trusted oracle program is appended last"
-        );
-        assert!(
-            borsh::from_slice::<Instruction>(&encoded[..oracle_program_offset]).is_err(),
-            "initialization without the trusted oracle program must not decode"
-        );
-        let limits_offset = oracle_program_offset - 32;
-        let admin_offset = limits_offset - 32;
-        assert_eq!(
-            &encoded[admin_offset..limits_offset],
-            &[0xA0; 32],
-            "initial admin precedes the appended debt limits"
-        );
-        assert!(
-            borsh::from_slice::<Instruction>(&encoded[..limits_offset]).is_err(),
-            "initialization without debt limits must not decode"
-        );
-        assert!(
-            borsh::from_slice::<Instruction>(&encoded[..admin_offset]).is_err(),
-            "the pre-admin initialization ABI must not decode"
-        );
-        let decoded: Instruction = borsh::from_slice(&encoded).expect("deserialize");
-        match decoded {
-            Instruction::InitializeProgram {
-                freeze_authority_account_id,
-                initial_stability_fee_per_millisecond,
-                initial_controller_proportional_gain,
-                initial_controller_integral_gain,
-                initial_minimum_collateralization_ratio,
-                minimum_milliseconds_between_rate_updates,
-                maximum_oracle_price_age_milliseconds,
-                initial_redemption_price,
-                stablecoin_name,
-                initial_admin_account_id,
-                minimum_debt_amount,
-                debt_ceiling,
-                market_price_oracle_program_id,
-            } => {
-                assert_eq!(minimum_debt_amount, 10);
-                assert_eq!(debt_ceiling, 1_000_000);
-                assert_eq!(freeze_authority_account_id, AccountId::new([0xFF; 32]));
-                assert_eq!(
-                    initial_stability_fee_per_millisecond,
-                    FIXED_POINT_ONE + 1_500_000_000_000_000
-                );
-                assert_eq!(initial_controller_proportional_gain, -42);
-                assert_eq!(initial_controller_integral_gain, 123_456);
-                assert_eq!(
-                    initial_minimum_collateralization_ratio,
-                    FIXED_POINT_ONE * 3 / 2
-                );
-                assert_eq!(minimum_milliseconds_between_rate_updates, 300_000);
-                assert_eq!(maximum_oracle_price_age_milliseconds, 900_000);
-                assert_eq!(initial_redemption_price, FIXED_POINT_ONE / 2);
-                assert_eq!(stablecoin_name, "test-stable");
-                assert_eq!(initial_admin_account_id, AccountId::new([0xA0; 32]));
-                assert_eq!(market_price_oracle_program_id, AccountId::new([4; 32]));
-            }
-            _ => panic!("decoded into wrong variant"),
+        let mut expected = vec![0_u8];
+        expected.extend(borsh::to_vec(&args).expect("args encode"));
+        let message = Message::from(args);
+        assert_eq!(borsh::to_vec(&message).expect("message encodes"), expected);
+    }
+
+    #[test]
+    fn empty_bytes_decode_as_no_state() {
+        assert_eq!(StablecoinState::decode(&[]), None);
+    }
+
+    #[test]
+    fn a_position_round_trips() {
+        let state = StablecoinState::Position(Position {
+            token_program_id: AccountId::new([7; 32]),
+            collateral_definition_id: AccountId::new([8; 32]),
+            collateral_amount: 500,
+            normalized_debt_amount: 20,
+        });
+        assert_eq!(StablecoinState::decode(&state.encode()), Some(state));
+    }
+
+    /// Distinct values for every `ProtocolParameters` field.
+    fn distinct_parameters() -> ProtocolParameters {
+        let id = |n: u8| AccountId::new([n; 32]);
+        ProtocolParameters {
+            admin_account_id: id(1),
+            freeze_authority_account_id: id(2),
+            token_program_id: id(3),
+            stablecoin_definition_id: id(4),
+            collateral_definition_id: id(5),
+            market_price_oracle_id: id(6),
+            market_price_oracle_program_id: id(7),
+            stability_fee_per_millisecond: 8,
+            controller_proportional_gain: -9,
+            controller_integral_gain: 10,
+            minimum_collateralization_ratio: 11,
+            minimum_milliseconds_between_rate_updates: 12,
+            maximum_oracle_price_age_milliseconds: 13,
+            is_frozen: true,
+            minimum_debt_amount: 14,
+            debt_ceiling: 15,
         }
     }
-    #[test]
-    fn instruction_tags_remain_append_only() {
-        let instructions = [
-            Instruction::AccrueStabilityFee,
-            Instruction::UpdateRedemptionRate,
-            Instruction::RefreshGlobals,
-            Instruction::OpenPosition {
-                initial_collateral_amount: 1,
-                position_nonce: 0,
+
+    fn distinct_engine(pending: Option<Pending>) -> Engine {
+        Engine {
+            parameters: distinct_parameters(),
+            fee: StabilityFeeAccumulator {
+                accumulated_rate_at_last_accrual: 16,
+                last_accrued_at: 17,
+                total_normalized_debt: 18,
             },
-            Instruction::DepositCollateral { amount: 1 },
-            Instruction::GenerateDebt { amount: 1 },
-            Instruction::ClosePosition,
-            Instruction::SetMinimumCollateralizationRatio { new_ratio: 1 },
-            Instruction::SetControllerGains {
-                new_proportional_gain: 0,
-                new_integral_gain: 0,
+            redemption: RedemptionPriceState {
+                redemption_price_at_last_update: 19,
+                redemption_rate_per_millisecond: 20,
+                controller_integral_term: -21,
+                last_updated_at: 22,
             },
-            Instruction::SetMarketPriceOracle {
-                new_oracle_program_id: AccountId::new([4; 32]),
-            },
-            Instruction::SetTimingParameters {
-                new_minimum_milliseconds_between_rate_updates: 1,
-                new_maximum_oracle_price_age_milliseconds: 1,
-            },
-            Instruction::SetAdmin {
-                new_admin_account_id: AccountId::new([1; 32]),
-            },
-            Instruction::SetFreezeAuthority {
-                new_freeze_authority_account_id: AccountId::new([2; 32]),
-            },
-            Instruction::SetStabilityFeePerMillisecond {
-                new_rate: FIXED_POINT_ONE,
-            },
-            Instruction::Freeze,
-            Instruction::Unfreeze,
-            Instruction::WithdrawCollateral { amount: 1 },
-            Instruction::RepayDebt { amount: 1 },
-            Instruction::ResetRedemptionRateController,
-            Instruction::SetDebtLimits {
-                minimum_debt_amount: 10,
-                debt_ceiling: 1_000,
-            },
-        ];
-        for (tag, instruction) in (1_u8..).zip(instructions) {
-            let bytes = borsh::to_vec(&instruction).expect("encode");
-            assert_eq!(bytes.first(), Some(&tag));
-            assert!(Instruction::try_from_slice(&bytes).is_ok());
+            pending,
         }
+    }
+
+    #[test]
+    fn a_position_is_stored_as_tag_one_then_its_fields_in_order() {
+        let state = StablecoinState::Position(Position {
+            token_program_id: AccountId::new([1; 32]),
+            collateral_definition_id: AccountId::new([2; 32]),
+            collateral_amount: 3,
+            normalized_debt_amount: 4,
+        });
+        let mut expected = vec![1_u8];
+        expected.extend([1_u8; 32]);
+        expected.extend([2_u8; 32]);
+        expected.extend(3_u128.to_le_bytes());
+        expected.extend(4_u128.to_le_bytes());
+        assert_eq!(state.encode(), expected);
+    }
+
+    #[test]
+    fn an_engine_is_stored_as_tag_zero_then_the_parameters_in_order() {
+        let state = StablecoinState::Engine(distinct_engine(None));
+        let mut expected = vec![0_u8];
+        for n in 1_u8..=7 {
+            expected.extend([n; 32]);
+        }
+        expected.extend(8_u128.to_le_bytes());
+        expected.extend((-9_i128).to_le_bytes());
+        expected.extend(10_i128.to_le_bytes());
+        expected.extend(11_u128.to_le_bytes());
+        expected.extend(12_u64.to_le_bytes());
+        expected.extend(13_u64.to_le_bytes());
+        expected.push(1);
+        expected.extend(14_u128.to_le_bytes());
+        expected.extend(15_u128.to_le_bytes());
+        let encoded = state.encode();
+        assert_eq!(encoded.get(..expected.len()), Some(expected.as_slice()));
+    }
+
+    #[test]
+    fn an_engine_round_trips_with_and_without_a_pending_operation() {
+        for pending in [
+            None,
+            Some(Pending::GenerateDebt {
+                position: AccountId::new([23; 32]),
+                amount: 24,
+                to: AccountId::new([25; 32]),
+                collateral_amount: 26,
+                normalized_debt_amount: 27,
+            }),
+        ] {
+            let state = StablecoinState::Engine(distinct_engine(pending));
+            assert_eq!(StablecoinState::decode(&state.encode()), Some(state));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "stablecoin state must decode")]
+    fn garbage_bytes_panic() {
+        let _ = StablecoinState::decode(&[0xFF, 1, 2]);
+    }
+
+    #[test]
+    fn the_engine_seed_is_unchanged_from_v0_2_5() {
+        // sha256(b"STABLECOIN__PROTOCOL_PARAMS_____")
+        assert_eq!(
+            seed_hex(&compute_engine_pda_seed()),
+            "998dcdf7cba5f45df1e2296055d5f1f26e69ad24fc4feedc1f1a034c1539e0fd"
+        );
+    }
+
+    #[test]
+    fn the_definition_seed_is_unchanged_from_v0_2_5() {
+        // sha256(b"STABLECOIN__DEFINITION__________")
+        assert_eq!(
+            seed_hex(&compute_stablecoin_definition_pda_seed()),
+            "8251e63f0096a09bcf24b5eed3be2b8e385350826d5ef5d6e6a01554ec9e4aa0"
+        );
+    }
+
+    #[test]
+    fn the_surplus_holding_seed_is_unchanged_from_v0_2_5() {
+        // sha256(b"STABLECOIN__MASTER_HOLDING______")
+        assert_eq!(
+            seed_hex(&compute_surplus_holding_pda_seed()),
+            "432f53122869e896f19173a7709f366154aa4127efe54e2b57ece812891578f7"
+        );
+    }
+
+    #[test]
+    fn the_fixed_pdas_are_distinct() {
+        let program = AccountId::new([11; 32]);
+        let ids = [
+            compute_engine_pda(program),
+            compute_stablecoin_definition_pda(program),
+            compute_surplus_holding_pda(program),
+        ];
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[0], ids[2]);
+        assert_ne!(ids[1], ids[2]);
+    }
+
+    #[test]
+    fn vaults_differ_per_owner() {
+        let program = AccountId::new([3; 32]);
+        assert_ne!(
+            compute_position_vault_pda(program, AccountId::new([1; 32])),
+            compute_position_vault_pda(program, AccountId::new([2; 32])),
+        );
+    }
+
+    #[test]
+    fn internal_variants_keep_their_tags() {
+        // Append-only: these tags are the wire format.
+        assert_eq!(
+            borsh::to_vec(&Internal::CreateStablecoinToken {
+                name: String::new(),
+                token_program_id: AccountId::new([0; 32]),
+            })
+            .unwrap()
+            .first(),
+            Some(&0)
+        );
+        assert_eq!(
+            borsh::to_vec(&Internal::WithdrawApproved {
+                amount: 1,
+                to: AccountId::new([0; 32]),
+            })
+            .unwrap()
+            .first(),
+            Some(&10)
+        );
+        assert_eq!(
+            borsh::to_vec(&Internal::AssertOracleReplied).unwrap(),
+            vec![11]
+        );
+    }
+
+    #[test]
+    fn message_variants_keep_their_tags() {
+        // Append-only: these tags are the wire format.
+        assert_eq!(
+            borsh::to_vec(&Message::AccrueStabilityFee).unwrap(),
+            vec![1]
+        );
+        assert_eq!(borsh::to_vec(&Message::ClosePosition).unwrap(), vec![9]);
+        assert_eq!(
+            borsh::to_vec(&Message::ResetRedemptionRateController).unwrap(),
+            vec![19]
+        );
+        assert_eq!(
+            borsh::to_vec(&Message::SetDebtLimits {
+                minimum_debt_amount: 1,
+                debt_ceiling: 2
+            })
+            .unwrap()
+            .first(),
+            Some(&20)
+        );
     }
 }

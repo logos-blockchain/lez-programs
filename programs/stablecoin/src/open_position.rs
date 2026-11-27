@@ -1,164 +1,340 @@
+//! `OpenPosition`: a position is the stablecoin program's actor state on the owner's own
+//! account. Opening asks the engine for approval (the protocol must not be frozen; the engine
+//! also names the token program and the collateral), then initializes the vault's token holding
+//! and pulls the initial collateral in.
+
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response, SyncMessage},
 };
 use stablecoin_core::{
-    compute_protocol_parameters_pda, verify_position_and_get_seed,
-    verify_position_vault_and_get_seed, Position, ProtocolParameters,
+    compute_position_vault_pda, compute_position_vault_pda_seed,
+    event::{PositionOpened, StablecoinEvent as _},
+    Internal, Position, StablecoinState,
 };
-use token_core::TokenHolding;
 
-/// Open a new collateral-only position for `owner`.
-///
-/// This claims the [`Position`] PDA, issues two chained token-program calls under the
-/// stablecoin's PDA authority, and stores `collateral_amount` with `debt_amount = 0`:
-/// 1. `InitializeAccount` materializes the vault token holding for the collateral.
-/// 2. `Transfer` moves `collateral_amount` collateral tokens from the user's holding into the
-///    freshly initialized vault.
-///
-/// `debt_amount` is deferred to a future `generate_debt` instruction and is intentionally
-/// not parameterized here.
+use crate::{checks, engine_actor, engine_state, program_id, save_position};
+
+/// At the owner's actor, signed as a root message: ask the engine to approve a new position.
 ///
 /// # Panics
-/// - `owner` or `user_collateral_holding` is not authorized.
-/// - `position` or `vault` is already initialized.
-/// - `position.account_id` / `vault.account_id` do not match their PDA derivations.
-/// - `protocol_parameters` is uninitialized, not owned by `stablecoin_program_id`, not at
-///   `compute_protocol_parameters_pda(stablecoin_program_id)`, or does not decode.
-/// - `protocol_parameters.is_frozen` is set.
-/// - `collateral_definition.account_id` does not match
-///   `protocol_parameters.collateral_definition_id`.
-/// - `clock` is not the system `CLOCK_01` account, or is uninitialized.
-/// - `user_collateral_holding` cannot be decoded as a [`TokenHolding`].
-/// - `user_collateral_holding`'s definition does not match `collateral_definition`.
-/// - `collateral_definition.program_owner` does not match `user_collateral_holding.program_owner`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "account inputs + program id + nonce + amount are all required; a param struct would obscure the host-call ABI"
-)]
-pub fn open_position(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    vault: AccountWithMetadata,
-    user_collateral_holding: AccountWithMetadata,
-    collateral_definition: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    position_nonce: u64,
+/// - `"this actor is the engine"` when the receiver holds engine state.
+/// - `"this account already has a position"` when it holds a position.
+/// - `"only the account's owner may send this"` when the message is nested or unsigned.
+pub(crate) fn open_position(
+    input: &ReceiveInput,
+    collateral_holding: AccountId,
     initial_collateral_amount: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-    assert!(
-        user_collateral_holding.is_authorized,
-        "User collateral holding authorization is missing"
-    );
-    assert_eq!(
-        position.account,
-        Account::default(),
-        "Position account must be uninitialized"
-    );
-    assert_eq!(
-        vault.account,
-        Account::default(),
-        "Position vault account must be uninitialized"
-    );
+) -> Response {
+    assert_no_state(input);
+    checks::assert_owner(input);
+    Response::keep_state().send_sync(
+        engine_actor(input),
+        &Internal::OpenRequest {
+            collateral_holding,
+            initial_collateral_amount,
+        },
+    )
+}
 
-    assert_ne!(
-        protocol_parameters.account,
-        Account::default(),
-        "ProtocolParameters account must be initialized"
-    );
-    assert_eq!(
-        protocol_parameters.account.program_owner, stablecoin_program_id,
-        "ProtocolParameters account must be owned by the stablecoin program"
-    );
-    // Ownership and a successful decode are not enough: without pinning the
-    // address, any stablecoin-owned account that happens to decode as
-    // ProtocolParameters could stand in for the global config and bypass both
-    // the freeze flag and the collateral binding below.
-    assert_eq!(
-        protocol_parameters.account_id,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        "ProtocolParameters account ID does not match expected PDA derivation"
-    );
-    let parameters = ProtocolParameters::try_from(&protocol_parameters.account.data)
-        .expect("ProtocolParameters must decode");
+/// At the engine, from the position's actor: approve unless the protocol is frozen, replying
+/// to the sender with the token program and the collateral definition. Any actor of this
+/// program may ask: only the program's own code, after its owner check, sends `OpenRequest`.
+///
+/// # Panics
+/// - `"this actor is not the engine"` when the receiver holds no engine state.
+/// - `"Protocol is frozen"` while the protocol is frozen.
+pub(crate) fn approve(
+    input: &ReceiveInput,
+    from: Actor,
+    collateral_holding: AccountId,
+    initial_collateral_amount: u128,
+) -> Response {
+    let parameters = engine_state(input).parameters;
     assert!(!parameters.is_frozen, "Protocol is frozen");
-    assert_eq!(
-        collateral_definition.account_id, parameters.collateral_definition_id,
-        "Collateral definition does not match the one bound at initialize_program"
-    );
+    Response::keep_state().send_sync(
+        from,
+        &Internal::OpenApproved {
+            token_program_id: parameters.token_program_id,
+            collateral_definition_id: parameters.collateral_definition_id,
+            collateral_holding,
+            initial_collateral_amount,
+        },
+    )
+}
 
-    let now = crate::accrue_stability_fee::read_clock(&clock);
-
-    let user_collateral_holding_definition_id =
-        TokenHolding::try_from(&user_collateral_holding.account.data)
-            .expect("User collateral holding must be a valid TokenHolding")
-            .definition_id();
-    assert_eq!(
-        user_collateral_holding_definition_id, collateral_definition.account_id,
-        "User collateral holding does not match the collateral definition"
-    );
-    let token_program_id = user_collateral_holding.account.program_owner;
-    assert_eq!(
-        collateral_definition.account.program_owner, token_program_id,
-        "Collateral definition is not owned by the user collateral holding's Token Program"
-    );
-
-    // Both calls assert the PDA derivation; only the vault seed is carried
-    // further, as the authority for the chained InitializeAccount.
-    verify_position_and_get_seed(&position, &owner, position_nonce, stablecoin_program_id);
-    let vault_seed =
-        verify_position_vault_and_get_seed(&vault, position.account_id, stablecoin_program_id);
-
-    let vault_id = vault.account_id;
-    let user_collateral_holding_id = user_collateral_holding.account_id;
-    let collateral_definition_id = collateral_definition.account_id;
-
-    // Writing the position data is itself the ownership claim on the position
-    // PDA — v0.2.5 acquires ownership on data write, so no `Claim::Pda`.
-    let position_data = Data::from(&Position {
-        owner_account_id: owner.account_id,
-        position_nonce,
-        vault_account_id: vault_id,
+/// At the owner's actor, from the engine: write the position, initialize the vault's token
+/// holding and pull `initial_collateral_amount` in (no transfer when it is zero).
+///
+/// The seeded `InitializeHolding` is a sync message to `vault@token` sent before the
+/// `Transfer`, so the transaction must declare the vault, and the transfer's async credit to it
+/// is delivered in the same transaction, where a holding of another token is refused. A
+/// deposit relies on the same pin (see `deposit_collateral`).
+///
+/// # Panics
+/// - `"this actor is the engine"` / `"this account already has a position"` when the receiver holds
+///   state.
+/// - `"only the engine may send this"` when the sender is anyone else.
+pub(crate) fn opened(
+    input: &ReceiveInput,
+    token_program_id: AccountId,
+    collateral_definition_id: AccountId,
+    collateral_holding: AccountId,
+    initial_collateral_amount: u128,
+) -> Response {
+    assert_no_state(input);
+    checks::assert_from_engine(input);
+    let owner = input.receiver.account_id;
+    let vault = compute_position_vault_pda(program_id(input), owner);
+    let mut response = save_position(Position {
+        token_program_id,
+        collateral_definition_id,
         collateral_amount: initial_collateral_amount,
         normalized_debt_amount: 0,
-        opened_at: now,
-    });
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        AccountStateDiff::new(position, BalanceDiff::Add(0), position_data),
-        AccountStateDiff::unchanged(vault),
-        AccountStateDiff::unchanged(user_collateral_holding),
-        AccountStateDiff::unchanged(collateral_definition),
-        AccountStateDiff::unchanged(protocol_parameters),
-        AccountStateDiff::unchanged(clock),
-    ];
-
-    // Chained Token::InitializeAccount makes the vault a Token holding. The
-    // Stablecoin program authorizes that write by passing the vault PDA seed —
-    // the call ships account ids, so there is no pre-state flag to set.
-    let initialize_call = ChainedCall::new(
-        token_program_id,
-        vec![collateral_definition_id, vault_id],
-        &token_core::Instruction::InitializeAccount,
-    )
-    .with_pda_seeds(vec![vault_seed]);
-
-    // After InitializeAccount the vault is a zero-balance Fungible holding for the
-    // collateral definition. Token::Transfer only requires the sender to be authorized;
-    // the recipient (vault) is already initialized by the call above, and since calls
-    // name accounts by id the runtime resolves its post-InitializeAccount state — this
-    // no longer has to hand-build a synthetic pre-state.
-    let transfer_call = ChainedCall::new(
-        token_program_id,
-        vec![user_collateral_holding_id, vault_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: initial_collateral_amount,
-        },
+    })
+    .send(
+        SyncMessage::new(
+            Actor::new(vault, token_program_id),
+            &token_core::Message::InitializeHolding {
+                definition: collateral_definition_id,
+            },
+        )
+        .with_pda_seeds([compute_position_vault_pda_seed(owner)]),
     );
+    if initial_collateral_amount > 0 {
+        response = response.send_sync(
+            Actor::new(collateral_holding, token_program_id),
+            &token_core::Message::Transfer {
+                to: vault,
+                amount: initial_collateral_amount,
+            },
+        );
+    }
+    response.event(
+        PositionOpened {
+            owner,
+            vault,
+            collateral_amount: initial_collateral_amount,
+        }
+        .to_program_event(),
+    )
+}
 
-    (state_diffs, vec![initialize_call, transfer_call])
+/// The receiver has no position yet.
+fn assert_no_state(input: &ReceiveInput) {
+    match StablecoinState::decode(&input.pre_state) {
+        Some(StablecoinState::Engine(_)) => panic!("this actor is the engine"),
+        Some(StablecoinState::Position(_)) => panic!("this account already has a position"),
+        None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use stablecoin_core::Internal;
+
+    use super::*;
+    use crate::test_utils::*;
+
+    fn engine_state_at_rest() -> StablecoinState {
+        StablecoinState::Engine(engine_at(1_000))
+    }
+
+    fn position_state_at_rest() -> StablecoinState {
+        StablecoinState::Position(Position {
+            token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
+            collateral_amount: 1,
+            normalized_debt_amount: 0,
+        })
+    }
+
+    fn open(from: Option<Actor>, is_authorized: bool, pre: Option<&StablecoinState>) -> Response {
+        run(
+            stablecoin(OWNER),
+            from,
+            is_authorized,
+            pre,
+            &Message::OpenPosition {
+                collateral_holding: HOLDING,
+                initial_collateral_amount: 500,
+            },
+        )
+    }
+
+    fn request(engine_state: &Engine) -> Response {
+        run(
+            engine(),
+            Some(stablecoin(OWNER)),
+            false,
+            Some(&StablecoinState::Engine(engine_state.clone())),
+            &Internal::OpenRequest {
+                collateral_holding: HOLDING,
+                initial_collateral_amount: 500,
+            },
+        )
+    }
+
+    fn approved(
+        initial_collateral_amount: u128,
+        from: Actor,
+        pre: Option<&StablecoinState>,
+    ) -> Response {
+        run(
+            stablecoin(OWNER),
+            Some(from),
+            false,
+            pre,
+            &Internal::OpenApproved {
+                token_program_id: TOKEN,
+                collateral_definition_id: COLLATERAL_DEFINITION,
+                collateral_holding: HOLDING,
+                initial_collateral_amount,
+            },
+        )
+    }
+
+    fn initialize_vault() -> SyncMessage {
+        SyncMessage::new(
+            token(vault_id(OWNER)),
+            &token_core::Message::InitializeHolding {
+                definition: COLLATERAL_DEFINITION,
+            },
+        )
+        .with_pda_seeds([compute_position_vault_pda_seed(OWNER)])
+    }
+
+    fn opened_position(collateral_amount: u128) -> Response {
+        Response::set_state(
+            StablecoinState::Position(Position {
+                token_program_id: TOKEN,
+                collateral_definition_id: COLLATERAL_DEFINITION,
+                collateral_amount,
+                normalized_debt_amount: 0,
+            })
+            .encode(),
+        )
+    }
+
+    fn opened_event(collateral_amount: u128) -> lee_core::program::ProgramEvent {
+        PositionOpened {
+            owner: OWNER,
+            vault: vault_id(OWNER),
+            collateral_amount,
+        }
+        .to_program_event()
+    }
+
+    #[test]
+    fn the_owner_asks_the_engine_for_approval() {
+        assert_eq!(
+            open(None, true, None),
+            Response::keep_state().send_sync(
+                engine(),
+                &Internal::OpenRequest {
+                    collateral_holding: HOLDING,
+                    initial_collateral_amount: 500,
+                },
+            )
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "this account already has a position")]
+    fn opening_over_an_existing_position_panics() {
+        let _ = open(None, true, Some(&position_state_at_rest()));
+    }
+
+    #[test]
+    #[should_panic(expected = "this actor is the engine")]
+    fn opening_at_the_engine_panics() {
+        let _ = open(None, true, Some(&engine_state_at_rest()));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn opening_from_another_actor_panics() {
+        let _ = open(Some(outsider(OTHER_PROGRAM)), true, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn opening_without_the_owners_signature_panics() {
+        let _ = open(None, false, None);
+    }
+
+    #[test]
+    fn the_engine_approves_and_names_the_token_program_and_collateral() {
+        assert_eq!(
+            request(&engine_at(1_000)),
+            Response::keep_state().send_sync(
+                stablecoin(OWNER),
+                &Internal::OpenApproved {
+                    token_program_id: TOKEN,
+                    collateral_definition_id: COLLATERAL_DEFINITION,
+                    collateral_holding: HOLDING,
+                    initial_collateral_amount: 500,
+                },
+            )
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Protocol is frozen")]
+    fn the_engine_refuses_while_frozen() {
+        let mut frozen = engine_at(1_000);
+        frozen.parameters.is_frozen = true;
+        let _ = request(&frozen);
+    }
+
+    #[test]
+    fn the_position_opens_and_pulls_the_collateral_in() {
+        assert_eq!(
+            approved(500, engine(), None),
+            opened_position(500)
+                .send(initialize_vault())
+                .send_sync(
+                    token(HOLDING),
+                    &token_core::Message::Transfer {
+                        to: vault_id(OWNER),
+                        amount: 500,
+                    },
+                )
+                .event(opened_event(500))
+        );
+    }
+
+    #[test]
+    fn the_position_stores_the_collateral_definition_the_engine_names() {
+        let response = approved(500, engine(), None);
+        let state = response.post_state.expect("the position is written");
+        match StablecoinState::decode(&state) {
+            Some(StablecoinState::Position(position)) => {
+                assert_eq!(position.collateral_definition_id, COLLATERAL_DEFINITION);
+            }
+            other => panic!("expected a position, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn opening_with_no_collateral_only_initializes_the_vault() {
+        assert_eq!(
+            approved(0, engine(), None),
+            opened_position(0)
+                .send(initialize_vault())
+                .event(opened_event(0))
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "only the engine may send this")]
+    fn approval_from_another_stablecoin_actor_panics() {
+        let _ = approved(500, stablecoin(ADMIN), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "this account already has a position")]
+    fn approval_over_an_existing_position_panics() {
+        let _ = approved(500, engine(), Some(&position_state_at_rest()));
+    }
 }

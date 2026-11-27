@@ -1,75 +1,87 @@
-//! Shared validation helpers: the §6.2 collateralization invariant, global-account
-//! validation, admin authorization, and the §8 parameter bands.
+//! Shared validation helpers: who may send a message, the collateralization invariant and the
+//! parameter bands.
 //!
-//! The bands live here rather than in `initialize_program` because spec §8 requires
-//! the same limits at bootstrap *and* in every `set_*` instruction. One definition
-//! means the two can't drift apart.
+//! The bands live here because the design requires the same limits at bootstrap and in every
+//! setter. One definition means the two can't drift apart.
 
 use alloy_primitives::U512;
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::ChainedCall,
-};
+use lee_core::{account::AccountId, program::ReceiveInput};
 use stablecoin_core::{
-    collateralization::collateralization_values, compute_stablecoin_definition_pda_seed,
-    compute_stablecoin_master_holding_pda, math::FIXED_POINT_ONE, Position, ProtocolParameters,
+    collateralization::collateralization_values, math::FIXED_POINT_ONE,
+    MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
+    MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
 };
 
-/// Assert that `position` satisfies the collateralization invariant from spec §6.2:
+use crate::engine_actor;
+
+/// The message is the transaction's root message, signed by the receiving account's owner.
+///
+/// # Panics
+/// - `"only the account's owner may send this"` when the message is nested or unsigned.
+pub(crate) fn assert_owner(input: &ReceiveInput) {
+    assert!(
+        input.is_authorized && input.from.is_none(),
+        "only the account's owner may send this"
+    );
+}
+
+/// The message comes from the engine.
+///
+/// # Panics
+/// - `"only the engine may send this"` when the sender is anyone else.
+pub(crate) fn assert_from_engine(input: &ReceiveInput) {
+    assert!(
+        input.from == Some(engine_actor(input)),
+        "only the engine may send this"
+    );
+}
+
+/// Assert that a position of `collateral_amount` and `normalized_debt_amount` satisfies the
+/// collateralization invariant:
 ///
 /// ```text
-/// position.collateral_amount * FIXED_POINT_ONE^2
+/// collateral_amount * FIXED_POINT_ONE^2
 ///   >= nominal_debt * current_redemption_price * minimum_collateralization_ratio
 /// ```
 ///
-/// where `nominal_debt = position.normalized_debt_amount * current_accumulator /
-/// FIXED_POINT_ONE`. That division is folded into the left-hand side instead of
-/// being performed, so the comparison is **exact**:
+/// where `nominal_debt = normalized_debt_amount * current_accumulator / FIXED_POINT_ONE`. That
+/// division is folded into the left-hand side instead of being performed, so the comparison is
+/// **exact**:
 ///
 /// ```text
 /// collateral * FIXED_POINT_ONE^3
 ///   >= normalized_debt * accumulator * redemption_price * ratio
 /// ```
 ///
-/// Flooring the nominal debt first would understate it and tilt the check toward
-/// the borrower — the opposite of §6.3's rounding direction.
+/// Flooring the nominal debt first would understate it and tilt the check toward the borrower.
 ///
-/// Computed in `U512`. `U256` is **not** wide enough: `collateral × FIXED_POINT_ONE²`
-/// alone exceeds it once collateral passes 115792089237316195423570 — about
-/// 115_792 whole tokens at 18 decimals.
+/// Computed in `U512`: `U256` is **not** wide enough, `collateral × FIXED_POINT_ONE²` alone
+/// exceeds it past about 115_792 whole tokens at 18 decimals.
 ///
-/// `current_accumulator` and `current_redemption_price` arrive as `U512` because
-/// neither projection is bounded by `u128` — a rate at its permitted limit
-/// outgrows that type well inside the compounding window (see
-/// [`stablecoin_core::math::compute_current_redemption_price_wide`]). The caller
-/// is responsible for projecting both forward to the current timestamp (spec
-/// §5.3); this helper only compares.
+/// `current_accumulator` and `current_redemption_price` arrive as `U512` because neither
+/// projection is bounded by `u128`. The caller projects both forward to the current time; this
+/// helper only compares. The right-hand side saturates rather than panicking on overflow, which
+/// is the safe direction: the left-hand side tops out around `10^119`, far below `U512::MAX`, so
+/// a saturated requirement always loses the comparison.
 ///
-/// The right-hand side multiplies with [`U512::saturating_mul`] rather than
-/// panicking on overflow. Saturating is the safe direction here: the left-hand
-/// side tops out around `10^119` (`u128::MAX × FIXED_POINT_ONE^3`), far below
-/// `U512::MAX`, so a saturated requirement always loses the comparison — which
-/// is the right answer for a debt whose value has outgrown the type.
-///
-/// **A zero-debt position always passes**, regardless of collateral — there is
-/// nothing to collateralize.
+/// **A zero-debt position always passes**, regardless of collateral.
 ///
 /// # Panics
-///
-/// - `"Position is undercollateralized"` when `lhs >= rhs` does not hold.
-pub fn assert_position_is_collateralized(
-    position: &Position,
+/// - `"Position is undercollateralized"` when the inequality does not hold.
+pub(crate) fn assert_position_is_collateralized(
+    collateral_amount: u128,
+    normalized_debt_amount: u128,
     current_accumulator: U512,
     current_redemption_price: U512,
     minimum_collateralization_ratio: u128,
 ) {
-    if position.normalized_debt_amount == 0 {
+    if normalized_debt_amount == 0 {
         return;
     }
 
     let values = collateralization_values(
-        position.collateral_amount,
-        position.normalized_debt_amount,
+        collateral_amount,
+        normalized_debt_amount,
         current_accumulator,
         current_redemption_price,
         minimum_collateralization_ratio,
@@ -80,42 +92,25 @@ pub fn assert_position_is_collateralized(
     );
 }
 
-// --- Sane-band constants per spec §8 -----------------------------------------
+// --- Sane-band constants ----------------------------------------------------------------
 
 pub(crate) const MIN_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 110 / 100; // 1.1x
 pub(crate) const MAX_COLLATERALIZATION_RATIO: u128 = FIXED_POINT_ONE * 10;
-pub(crate) use stablecoin_core::protocol_parameters::{
-    MAXIMUM_CONTROLLER_INTEGRAL_GAIN, MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN,
-    MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
-};
 pub(crate) const MAX_TIMING_MILLISECONDS: u64 = 86_400_000; // 1 day
 
-/// The two-part gate every admin instruction performs: the caller signed, and the
-/// caller is the handle currently bound as `ProtocolParameters.admin_account_id`.
-///
-/// Rotating the admin (`set_admin`) therefore takes effect immediately for every
-/// later instruction, since the check always reads the stored handle.
-///
-/// # Panics
-/// - `"Admin authorization is missing"` when `admin` did not sign.
-/// - `"Signer is not the protocol's admin"` when the handle does not match.
-pub(crate) fn assert_admin_authorized(
-    admin: &AccountWithMetadata,
-    parameters: &ProtocolParameters,
-) {
-    assert!(admin.is_authorized, "Admin authorization is missing");
-    assert_eq!(
-        admin.account_id, parameters.admin_account_id,
-        "Signer is not the protocol's admin"
+/// The market price oracle's program id is not the all-zero id, which names no program.
+pub(crate) fn assert_oracle_program_is_set(oracle_program_id: AccountId) {
+    assert_ne!(
+        oracle_program_id,
+        AccountId::new([0; 32]),
+        "Market price oracle program must not be the default owner"
     );
 }
 
-/// Spec §8: `FIXED_POINT_ONE <= rate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND`
-/// (about 100% a year).
+/// `FIXED_POINT_ONE <= rate <= MAXIMUM_STABILITY_FEE_PER_MILLISECOND` (about 100% a year).
 ///
-/// The lower bound keeps the fee from decaying debt. The upper bound is the
-/// overflow guard: it keeps every accrual, including the setter's catch-up at the
-/// old rate, inside `u128` (see the constant's docs).
+/// The lower bound keeps the fee from decaying debt. The upper bound is the overflow guard: it
+/// keeps every accrual, including the setter's catch-up at the old rate, inside `u128`.
 pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
     assert!(rate >= FIXED_POINT_ONE, "{label} below FIXED_POINT_ONE");
     assert!(
@@ -124,17 +119,16 @@ pub(crate) fn assert_stability_fee_in_band(rate: u128, label: &str) {
     );
 }
 
-/// Spec §8: `1.1x <= ratio <= 10x`. Below 1.1x a position is insolvent on arrival.
+/// `1.1x <= ratio <= 10x`. Below 1.1x a position is insolvent on arrival.
 pub(crate) fn assert_collateralization_ratio_in_band(ratio: u128, label: &str) {
     assert!(ratio >= MIN_COLLATERALIZATION_RATIO, "{label} below 1.1x");
     assert!(ratio <= MAX_COLLATERALIZATION_RATIO, "{label} above 10x");
 }
 
-/// Spec §8 bands on the PI gains: `0 ..= MAXIMUM_CONTROLLER_*_GAIN`.
+/// Bands on the PI gains: `0 ..= MAXIMUM_CONTROLLER_*_GAIN`.
 ///
-/// Negative gains are rejected. The controller embeds the stabilizing direction
-/// (§6.4), so a negative gain would be positive feedback and push the redemption
-/// price away from the market.
+/// Negative gains are rejected. The controller embeds the stabilizing direction, so a negative
+/// gain would be positive feedback and push the redemption price away from the market.
 pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_gain: i128) {
     assert!(
         (0..=MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN).contains(&proportional_gain),
@@ -146,8 +140,8 @@ pub(crate) fn assert_controller_gains_in_band(proportional_gain: i128, integral_
     );
 }
 
-/// Spec §8: `1 <= milliseconds <= 86_400_000`. Zero would allow spam; beyond a
-/// day is self-evidently wrong for both the rate interval and oracle staleness.
+/// `1 <= milliseconds <= 86_400_000`. Zero would allow spam; beyond a day is self-evidently
+/// wrong for both the rate interval and oracle staleness.
 pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str) {
     assert!(milliseconds >= 1, "{label} below minimum 1ms");
     assert!(
@@ -156,102 +150,54 @@ pub(crate) fn assert_timing_milliseconds_in_band(milliseconds: u64, label: &str)
     );
 }
 
-/// Validate the accounts a fee accrual mints into and build the chained
-/// `Token::Mint` of `accrued_fees` to the surplus holding (spec §6.6).
-///
-/// The surplus holding is the stablecoin master holding `initialize_program`
-/// created at its PDA. The definition is its own mint authority, so the call is
-/// authorized with the definition's PDA seed, exactly like `generate_debt`'s.
-/// The accounts are validated even when nothing accrued, so a bad account list
-/// fails the same way whatever the clock says. Returns `None` when there is
-/// nothing to mint.
-///
-/// # Panics
-/// - `stablecoin_definition` does not match `ProtocolParameters.stablecoin_definition_id`, or is
-///   uninitialized.
-/// - `stablecoin_master_holding` is not at its canonical PDA, is uninitialized, or is owned by a
-///   different Token Program than the definition.
-pub(crate) fn surplus_mint_call(
-    stablecoin_definition: &AccountWithMetadata,
-    stablecoin_master_holding: &AccountWithMetadata,
-    parameters: &ProtocolParameters,
-    stablecoin_program_id: AccountId,
-    accrued_fees: u128,
-) -> Option<ChainedCall> {
-    assert_eq!(
-        stablecoin_definition.account_id, parameters.stablecoin_definition_id,
-        "Stablecoin definition does not match the one bound at initialize_program"
-    );
-    assert_ne!(
-        stablecoin_definition.account,
-        Account::default(),
-        "Stablecoin definition account must be initialized"
-    );
-    assert_eq!(
-        stablecoin_master_holding.account_id,
-        compute_stablecoin_master_holding_pda(stablecoin_program_id),
-        "Stablecoin master holding account ID does not match expected PDA derivation"
-    );
-    assert_ne!(
-        stablecoin_master_holding.account,
-        Account::default(),
-        "Stablecoin master holding must be initialized"
-    );
-    let token_program_id = stablecoin_definition.account.program_owner;
-    assert_eq!(
-        stablecoin_master_holding.account.program_owner, token_program_id,
-        "Stablecoin master holding must be owned by the same Token Program as the definition"
-    );
-
-    (accrued_fees > 0).then(|| {
-        ChainedCall::new(
-            token_program_id,
-            vec![
-                stablecoin_definition.account_id,
-                stablecoin_master_holding.account_id,
-            ],
-            &token_core::Instruction::Mint {
-                amount_to_mint: accrued_fees,
-            },
-        )
-        .with_pda_seeds(vec![compute_stablecoin_definition_pda_seed()])
-    })
-}
-
-/// Validate a read-only global: initialized, program-owned, and at its canonical
-/// PDA. Returns its `Data` for the caller to decode.
-pub(crate) fn decode_global(
-    account: &AccountWithMetadata,
-    expected_id: AccountId,
-    stablecoin_program_id: AccountId,
-    label: &str,
-) -> Data {
-    assert_ne!(
-        account.account,
-        Account::default(),
-        "{label} account must be initialized"
-    );
-    assert_eq!(
-        account.account.program_owner, stablecoin_program_id,
-        "{label} account must be owned by the stablecoin program"
-    );
-    assert_eq!(
-        account.account_id, expected_id,
-        "{label} account ID does not match expected PDA derivation"
-    );
-    account.account.data.clone()
-}
-
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::panic,
-    reason = "tests build fixture ratios from constants and deliberately panic via #[should_panic]"
-)]
 mod tests {
-    use lee_core::account::AccountId;
-
     use super::*;
+    use crate::test_utils::*;
+
+    fn input(from: Option<Actor>, is_authorized: bool) -> ReceiveInput {
+        ReceiveInput {
+            receiver: stablecoin(OWNER),
+            from,
+            is_authorized,
+            pre_state: ActorState::default(),
+            message: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn assert_owner_passes_for_a_signed_root_message() {
+        assert_owner(&input(None, true));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn assert_owner_rejects_a_nested_call() {
+        assert_owner(&input(Some(outsider(OTHER_PROGRAM)), true));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn assert_owner_rejects_an_unsigned_message() {
+        assert_owner(&input(None, false));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the engine may send this")]
+    fn assert_from_engine_rejects_another_stablecoin_actor() {
+        assert_from_engine(&input(Some(stablecoin(OWNER)), false));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the engine may send this")]
+    fn assert_from_engine_rejects_a_root_message() {
+        assert_from_engine(&input(None, false));
+    }
+
+    #[test]
+    fn assert_from_engine_passes_for_the_engine() {
+        assert_from_engine(&input(Some(engine()), false));
+    }
 
     /// The projections are `U512` in production; the fixtures below are all
     /// `u128`-sized, so widen them at the call boundary.
@@ -262,7 +208,8 @@ mod tests {
         minimum_collateralization_ratio: u128,
     ) {
         assert_position_is_collateralized(
-            position,
+            position.collateral_amount,
+            position.normalized_debt_amount,
             U512::from(current_accumulator),
             U512::from(current_redemption_price),
             minimum_collateralization_ratio,
@@ -271,12 +218,10 @@ mod tests {
 
     fn position_with(collateral_amount: u128, normalized_debt_amount: u128) -> Position {
         Position {
-            owner_account_id: AccountId::new([1u8; 32]),
-            position_nonce: 0,
-            vault_account_id: AccountId::new([2u8; 32]),
+            token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
             collateral_amount,
             normalized_debt_amount,
-            opened_at: 0,
         }
     }
 
@@ -330,50 +275,6 @@ mod tests {
             u128::MAX,
             u128::MAX,
         );
-    }
-
-    // --- admin authorization + §8 bounds ---
-
-    fn parameters() -> stablecoin_core::ProtocolParameters {
-        stablecoin_core::ProtocolParameters::try_from(
-            &crate::test_support::protocol_parameters_account(
-                crate::test_support::ParameterOverrides::default(),
-            )
-            .account
-            .data,
-        )
-        .expect("valid ProtocolParameters")
-    }
-
-    fn admin_account() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: crate::test_support::admin_id(),
-        }
-    }
-
-    #[test]
-    fn admin_authorization_accepts_the_bound_admin() {
-        assert_admin_authorized(&admin_account(), &parameters());
-    }
-
-    #[test]
-    #[should_panic(expected = "Admin authorization is missing")]
-    fn admin_authorization_requires_a_signature() {
-        let mut admin = admin_account();
-        admin.is_authorized = false;
-        assert_admin_authorized(&admin, &parameters());
-    }
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn admin_authorization_rejects_another_signer() {
-        // Authorized, but not the handle bound at initialize_program — e.g. the
-        // freeze authority, which has its own powers and must not gain the admin's.
-        let mut impostor = admin_account();
-        impostor.account_id = crate::test_support::freeze_authority_id();
-        assert_admin_authorized(&impostor, &parameters());
     }
 
     #[test]
@@ -596,7 +497,8 @@ mod tests {
     #[should_panic(expected = "Position is undercollateralized")]
     fn a_saturated_projected_price_can_never_pass() {
         assert_position_is_collateralized(
-            &position_with(u128::MAX, 1),
+            u128::MAX,
+            1,
             U512::from(FIXED_POINT_ONE),
             U512::MAX,
             FIXED_POINT_ONE,
@@ -608,7 +510,8 @@ mod tests {
     #[should_panic(expected = "Position is undercollateralized")]
     fn a_saturated_projected_accumulator_can_never_pass() {
         assert_position_is_collateralized(
-            &position_with(u128::MAX, 1),
+            u128::MAX,
+            1,
             U512::MAX,
             U512::from(FIXED_POINT_ONE),
             FIXED_POINT_ONE,
@@ -619,11 +522,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "Position is undercollateralized")]
     fn every_input_at_the_u512_ceiling_compares_rather_than_panicking() {
-        assert_position_is_collateralized(
-            &position_with(u128::MAX, u128::MAX),
-            U512::MAX,
-            U512::MAX,
-            u128::MAX,
-        );
+        assert_position_is_collateralized(u128::MAX, u128::MAX, U512::MAX, U512::MAX, u128::MAX);
     }
 }

@@ -29,6 +29,14 @@ path = "tests/nft_private.rs"
 name = "twap_oracle"
 path = "tests/twap_oracle.rs"
 
+[[test]]
+name = "stablecoin"
+path = "tests/stablecoin.rs"
+
+[[test]]
+name = "stablecoin_cycles"
+path = "tests/stablecoin_cycles.rs"
+
 [dependencies]
 borsh = { workspace = true }
 lee = { workspace = true }
@@ -39,7 +47,13 @@ nft_core = { workspace = true }
 nft-methods = { path = "../nft/methods" }
 twap_oracle_core = { workspace = true }
 twap-oracle-methods = { path = "../twap_oracle/methods" }
+stablecoin_core = { workspace = true }
+stablecoin-methods = { path = "../stablecoin/methods" }
 integration-test-methods = { path = "methods" }
 clock_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }
 # LEZ's system programs, prebuilt (`artifacts`): the tests deploy its clock.
 programs = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3", features = ["artifacts"] }
+
+[dev-dependencies]
+# `MAX_GAS_EXEC`: the cap on a transaction's `gas_limit`, for the cycle measurements.
+fee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.4.0-rc3" }

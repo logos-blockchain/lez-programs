@@ -1,1067 +1,889 @@
-//! Admin parameter updates (spec §10.10–10.16).
+//! Administration: the admin and freeze-authority messages.
 //!
-//! Every setter shares one skeleton: validate `protocol_parameters` at its
-//! canonical PDA, check the caller against the stored admin handle, bound-check
-//! the new value against §8, then overwrite exactly the named field(s).
+//! The admin (or the freeze authority) sends the message to its own account, the seat, which
+//! only checks the signature and forwards the action to the engine ([`forward`]). The engine
+//! checks the role against the seat's account id, applies the unchanged band checks and writes
+//! ([`apply`]).
 
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response},
 };
 use stablecoin_core::{
-    compute_protocol_parameters_pda, compute_stability_fee_accumulator_pda, ProtocolParameters,
-    StabilityFeeAccumulator,
+    bound_redemption_price,
+    event::{FrozenChanged, ParametersChanged, StablecoinEvent as _},
+    math::{compute_current_redemption_price_wide, FIXED_POINT_ONE},
+    AdminAction, Engine, Internal, Pending, ProtocolParameters, RedemptionPriceState,
 };
-use twap_oracle_core::OraclePriceAccount;
 
-/// Retune the stability fee (spec §10.10).
-///
-/// Accrues the fee accumulator forward at the **old** rate first, so the new rate
-/// applies only from `now` onward and never retroactively to the elapsed gap.
-/// That is why this is the one setter that takes the clock, the accumulator, and
-/// the stablecoin definition and master holding the accrued fees are minted to.
+use crate::{accrue_stability_fee::accrue, checks, clock, engine_actor, engine_state, save_engine};
+
+/// At the seat, signed by the seat's account as a root message: forward `action` to the engine.
 ///
 /// # Panics
-/// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - `new_rate` is outside the §8 band.
-/// - `protocol_parameters` or `stability_fee_accumulator` is uninitialized, wrongly owned, not at
-///   its canonical PDA, or does not decode.
-/// - `stablecoin_definition` or `stablecoin_master_holding` fails the surplus-account checks of
-///   [`crate::checks::surplus_mint_call`].
-/// - `clock` is not the initialized system `CLOCK_01` account.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the six account inputs mirror the spec §10.10 ABI"
-)]
-pub fn set_stability_fee_per_millisecond(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stability_fee_accumulator: AccountWithMetadata,
-    stablecoin_definition: AccountWithMetadata,
-    stablecoin_master_holding: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_rate: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let mut parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    ))
-    .expect("ProtocolParameters must decode");
-    crate::checks::assert_admin_authorized(&admin, &parameters);
-    crate::checks::assert_stability_fee_in_band(new_rate, "new_stability_fee_per_millisecond");
-
-    let accumulator = StabilityFeeAccumulator::try_from(&crate::checks::decode_global(
-        &stability_fee_accumulator,
-        compute_stability_fee_accumulator_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "StabilityFeeAccumulator",
-    ))
-    .expect("StabilityFeeAccumulator must decode");
-
-    let now = crate::accrue_stability_fee::read_clock(&clock);
-    // Accrue *before* the rate is replaced. `accrue_fees` reads the rate out of
-    // `parameters`, so calling it first is what makes the change non-retroactive
-    // — and it is the same helper `accrue_stability_fee` uses, so the two can
-    // never disagree about how a gap accrues or how much surplus it mints.
-    let accrual = crate::accrue_stability_fee::accrue_fees(&parameters, &accumulator, now);
-    let surplus_mint = crate::checks::surplus_mint_call(
-        &stablecoin_definition,
-        &stablecoin_master_holding,
-        &parameters,
-        stablecoin_program_id,
-        accrual.accrued_fees,
-    );
-
-    parameters.stability_fee_per_millisecond = new_rate;
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(admin),
-        AccountStateDiff::new(
-            protocol_parameters,
-            BalanceDiff::Add(0),
-            Data::from(&parameters),
-        ),
-        AccountStateDiff::new(
-            stability_fee_accumulator,
-            BalanceDiff::Add(0),
-            Data::from(&accrual.accumulator),
-        ),
-        AccountStateDiff::unchanged(stablecoin_definition),
-        AccountStateDiff::unchanged(stablecoin_master_holding),
-        AccountStateDiff::unchanged(clock),
-    ];
-
-    (state_diffs, surplus_mint.into_iter().collect())
+/// - `"only the account's owner may send this"` when the message is nested or unsigned.
+pub(crate) fn forward(input: &ReceiveInput, action: AdminAction) -> Response {
+    checks::assert_owner(input);
+    Response::keep_state().send_sync(engine_actor(input), &Internal::Admin(action))
 }
 
-/// The shape all six simple setters share: validate the parameters account at its
-/// canonical PDA, check the caller against the stored admin handle, let the caller
-/// mutate the decoded struct, then write it back.
-///
-/// Bound-checking happens inside `mutate`, so each setter states its own §8 band
-/// and its own panic message.
-fn update_parameters(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    mutate: impl FnOnce(&mut ProtocolParameters),
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let mut parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    ))
-    .expect("ProtocolParameters must decode");
-    crate::checks::assert_admin_authorized(&admin, &parameters);
-
-    mutate(&mut parameters);
-
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(admin),
-        AccountStateDiff::new(
-            protocol_parameters,
-            BalanceDiff::Add(0),
-            Data::from(&parameters),
-        ),
-    ];
-
-    (state_diffs, vec![])
-}
-
-/// Update both debt limits atomically, in raw stablecoin atomic units.
-///
-/// Lowering the ceiling below current accrued debt stops new borrowing. Raising
-/// the floor can restrict partial repayment of existing positions; settlement to
-/// zero remains allowed. Neither change rewrites positions or the debt counter.
+/// At the engine, from a seat: check the seat's role, then apply `action`.
 ///
 /// # Panics
-/// Invalid globals, missing admin authorization, or limits outside
-/// `0 < minimum_debt_amount <= debt_ceiling`.
-pub fn set_debt_limits(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    minimum_debt_amount: u128,
-    debt_ceiling: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
+/// - `"Signer is not the protocol's admin"` for a setter from anyone but the admin.
+/// - `"Signer is not the protocol's freeze authority"` for a freeze or unfreeze from anyone else.
+/// - `"Signer is neither the protocol's admin nor its freeze authority"` for a reset from anyone
+///   else.
+/// - The band panics of each setter.
+pub(crate) fn apply(input: &ReceiveInput, from: Actor, action: AdminAction) -> Response {
+    let engine = engine_state(input);
+    let signer = from.account_id;
+    match action {
+        AdminAction::Freeze => set_frozen(engine, signer, true),
+        AdminAction::Unfreeze => set_frozen(engine, signer, false),
+        AdminAction::ResetRedemptionRateController => {
+            assert!(
+                signer == engine.parameters.admin_account_id
+                    || signer == engine.parameters.freeze_authority_account_id,
+                "Signer is neither the protocol's admin nor its freeze authority"
+            );
+            clock::read_clock(engine, Pending::ResetController)
+        }
+        AdminAction::SetStabilityFeePerMillisecond { new_rate } => {
+            assert_admin(&engine, signer);
+            checks::assert_stability_fee_in_band(new_rate, "new_stability_fee_per_millisecond");
+            clock::read_clock(engine, Pending::SetStabilityFee { new_rate })
+        }
+        AdminAction::SetMinimumCollateralizationRatio { new_ratio } => {
+            change(engine, signer, |parameters| {
+                checks::assert_collateralization_ratio_in_band(
+                    new_ratio,
+                    "new_minimum_collateralization_ratio",
+                );
+                parameters.minimum_collateralization_ratio = new_ratio;
+            })
+        }
+        AdminAction::SetControllerGains {
+            new_proportional_gain,
+            new_integral_gain,
+        } => change(engine, signer, |parameters| {
+            checks::assert_controller_gains_in_band(new_proportional_gain, new_integral_gain);
+            parameters.controller_proportional_gain = new_proportional_gain;
+            parameters.controller_integral_gain = new_integral_gain;
+        }),
+        AdminAction::SetMarketPriceOracle {
+            oracle_account_id,
+            oracle_program_id,
+        } => change(engine, signer, |parameters| {
+            checks::assert_oracle_program_is_set(oracle_program_id);
+            parameters.market_price_oracle_id = oracle_account_id;
+            parameters.market_price_oracle_program_id = oracle_program_id;
+        }),
+        AdminAction::SetTimingParameters {
+            minimum_milliseconds_between_rate_updates,
+            maximum_oracle_price_age_milliseconds,
+        } => change(engine, signer, |parameters| {
+            checks::assert_timing_milliseconds_in_band(
+                minimum_milliseconds_between_rate_updates,
+                "new_minimum_milliseconds_between_rate_updates",
+            );
+            checks::assert_timing_milliseconds_in_band(
+                maximum_oracle_price_age_milliseconds,
+                "new_maximum_oracle_price_age_milliseconds",
+            );
+            parameters.minimum_milliseconds_between_rate_updates =
+                minimum_milliseconds_between_rate_updates;
+            parameters.maximum_oracle_price_age_milliseconds =
+                maximum_oracle_price_age_milliseconds;
+        }),
+        AdminAction::SetAdmin {
+            new_admin_account_id,
+        } => change(engine, signer, |parameters| {
+            parameters.admin_account_id = new_admin_account_id;
+        }),
+        AdminAction::SetFreezeAuthority {
+            new_freeze_authority_account_id,
+        } => change(engine, signer, |parameters| {
+            parameters.freeze_authority_account_id = new_freeze_authority_account_id;
+        }),
+        AdminAction::SetDebtLimits {
+            minimum_debt_amount,
+            debt_ceiling,
+        } => change(engine, signer, |parameters| {
             assert!(
                 stablecoin_core::debt_limits::valid_debt_limits(minimum_debt_amount, debt_ceiling),
                 "Debt limits require 0 < minimum_debt_amount <= debt_ceiling"
             );
             parameters.minimum_debt_amount = minimum_debt_amount;
             parameters.debt_ceiling = debt_ceiling;
-        },
-    )
+        }),
+    }
 }
 
-/// Retune the minimum collateralization ratio (spec §10.11).
-///
-/// Tightening can leave existing positions retroactively under-collateralized:
-/// they can still `deposit_collateral` or `repay_debt` to recover, but cannot
-/// `withdraw_collateral` or `generate_debt` until they are back above the ratio.
-///
-/// # Panics
-/// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - `new_ratio` is outside the §8 band `1.1x ..= 10x`.
-/// - `protocol_parameters` is invalid — see [`set_stability_fee_per_millisecond`].
-pub fn set_minimum_collateralization_ratio(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_ratio: u128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
-            crate::checks::assert_collateralization_ratio_in_band(
-                new_ratio,
-                "new_minimum_collateralization_ratio",
-            );
-            parameters.minimum_collateralization_ratio = new_ratio;
-        },
-    )
-}
-
-/// Retune both PI controller gains (spec §10.12).
-///
-/// Bundled because tuning one without the other is rarely meaningful. Deliberately
-/// does **not** reset `controller_integral_term`: the accumulated history stays,
-/// so re-tuning does not discard the controller's state.
-///
-/// # Panics
-/// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - Either gain magnitude is outside its §8 band.
-/// - `protocol_parameters` is invalid.
-pub fn set_controller_gains(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_proportional_gain: i128,
-    new_integral_gain: i128,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
-            crate::checks::assert_controller_gains_in_band(
-                new_proportional_gain,
-                new_integral_gain,
-            );
-            parameters.controller_proportional_gain = new_proportional_gain;
-            parameters.controller_integral_gain = new_integral_gain;
-        },
-    )
-}
-
-/// Retune both timing parameters (spec §10.14).
-///
-/// # Panics
-/// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - Either value is outside the §8 band `1 ..= 86_400_000` milliseconds.
-/// - `protocol_parameters` is invalid.
-pub fn set_timing_parameters(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_minimum_milliseconds_between_rate_updates: u64,
-    new_maximum_oracle_price_age_milliseconds: u64,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
-            crate::checks::assert_timing_milliseconds_in_band(
-                new_minimum_milliseconds_between_rate_updates,
-                "new_minimum_milliseconds_between_rate_updates",
-            );
-            crate::checks::assert_timing_milliseconds_in_band(
-                new_maximum_oracle_price_age_milliseconds,
-                "new_maximum_oracle_price_age_milliseconds",
-            );
-            parameters.minimum_milliseconds_between_rate_updates =
-                new_minimum_milliseconds_between_rate_updates;
-            parameters.maximum_oracle_price_age_milliseconds =
-                new_maximum_oracle_price_age_milliseconds;
-        },
-    )
-}
-
-/// Rotate the admin handle (spec §10.15).
-///
-/// One-step: the new handle is effective immediately, since every admin check
-/// reads `ProtocolParameters.admin_account_id` at call time. There is no
-/// confirmation step, so a wrong id locks the admin out permanently.
-///
-/// # Panics
-/// - `admin` did not sign, or is not the current `admin_account_id`.
-/// - `protocol_parameters` is invalid.
-pub fn set_admin(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_admin_account_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
-            parameters.admin_account_id = new_admin_account_id;
-        },
-    )
-}
-
-/// Rotate the freeze-authority handle (spec §10.16).
-///
-/// Set by the **admin**, not by the freeze authority itself, so a compromised
-/// freeze authority cannot entrench itself. Same one-step caveat as [`set_admin`].
-///
-/// # Panics
-/// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - `protocol_parameters` is invalid.
-pub fn set_freeze_authority(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_freeze_authority_account_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
-            parameters.freeze_authority_account_id = new_freeze_authority_account_id;
-        },
-    )
-}
-
-/// Rotate the market-price oracle (spec §10.13).
-///
-/// The replacement may not exist yet, exactly as at `initialize_program`: the
-/// controller simply does not run until it does (spec §3.2). One that exists must
-/// decode and its base/quote pair must match the definitions bound at bootstrap,
-/// so the controller cannot be pointed at an oracle quoting a different market.
-/// The admin selects the expected program owner with the address. An existing
-/// account must have that owner. Future observations must have the same owner.
-///
-/// # Panics
-/// - `admin` did not sign, or is not `ProtocolParameters.admin_account_id`.
-/// - `new_oracle` is initialized but does not decode as an `OraclePriceAccount`, or its
-///   `base_asset` / `quote_asset` do not match the bound definitions.
-/// - The expected program is the default owner, or an existing oracle has a different owner.
-/// - `protocol_parameters` is invalid.
-pub fn set_market_price_oracle(
-    admin: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    new_oracle: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-    new_oracle_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    let new_oracle_id = new_oracle.account_id;
-    let (mut state_diffs, chained_calls) = update_parameters(
-        admin,
-        protocol_parameters,
-        stablecoin_program_id,
-        |parameters| {
-            if new_oracle.account != Account::default() {
-                assert_eq!(
-                    new_oracle.account.program_owner, new_oracle_program_id,
-                    "New market price oracle program owner does not match"
-                );
-                let oracle = OraclePriceAccount::try_from(&new_oracle.account.data)
-                    .expect("New market price oracle must decode as OraclePriceAccount");
-                assert_eq!(
-                    oracle.base_asset, parameters.stablecoin_definition_id,
-                    "New oracle base_asset must equal the stablecoin definition's account_id"
-                );
-                assert_eq!(
-                    oracle.quote_asset, parameters.collateral_definition_id,
-                    "New oracle quote_asset must equal the collateral definition's account_id"
-                );
-            }
-            parameters.market_price_oracle_id = new_oracle_id;
-            assert_ne!(
-                new_oracle_program_id,
-                AccountId::default(),
-                "Market price oracle program must not be the default owner"
-            );
-            parameters.market_price_oracle_program_id = new_oracle_program_id;
-        },
+fn assert_admin(engine: &Engine, signer: AccountId) {
+    assert!(
+        signer == engine.parameters.admin_account_id,
+        "Signer is not the protocol's admin"
     );
-    state_diffs.push(AccountStateDiff::unchanged(new_oracle));
-    (state_diffs, chained_calls)
+}
+
+/// The shape of the plain setters: the admin signed, `mutate` checks the band and writes.
+fn change(
+    mut engine: Engine,
+    signer: AccountId,
+    mutate: impl FnOnce(&mut ProtocolParameters),
+) -> Response {
+    assert_admin(&engine, signer);
+    mutate(&mut engine.parameters);
+    parameters_changed(engine)
+}
+
+fn parameters_changed(engine: Engine) -> Response {
+    let event = ParametersChanged {
+        parameters: engine.parameters.clone(),
+    }
+    .to_program_event();
+    save_engine(engine).event(event)
+}
+
+/// Idempotent: freezing a frozen protocol (or unfreezing an unfrozen one) succeeds.
+fn set_frozen(mut engine: Engine, signer: AccountId, is_frozen: bool) -> Response {
+    assert!(
+        signer == engine.parameters.freeze_authority_account_id,
+        "Signer is not the protocol's freeze authority"
+    );
+    engine.parameters.is_frozen = is_frozen;
+    save_engine(engine).event(FrozenChanged { is_frozen }.to_program_event())
+}
+
+/// At the engine, on the clock's reply: accrue at the OLD rate up to `now`, then store the new
+/// rate, so the change is never retroactive.
+pub(crate) fn finish_set_stability_fee(
+    input: &ReceiveInput,
+    mut engine: Engine,
+    new_rate: u128,
+    now: u64,
+) -> Response {
+    let accrued = accrue(input, &mut engine, now);
+    engine.parameters.stability_fee_per_millisecond = new_rate;
+    let event = ParametersChanged {
+        parameters: engine.parameters.clone(),
+    }
+    .to_program_event();
+    accrued.attach(save_engine(engine)).event(event)
+}
+
+/// At the engine, on the clock's reply: re-anchor the redemption price at its current
+/// projection (clamped into its bounds), then set the rate to exactly 1.0 and the integral
+/// term to 0. The price does not jump while the projection is within the bounds, so no
+/// position's collateralization changes. A projection outside them is stored as the bound, and
+/// that does change the collateralization of positions with debt: a withdrawal checks against
+/// the unclamped projection.
+pub(crate) fn finish_reset_controller(
+    _input: &ReceiveInput,
+    mut engine: Engine,
+    now: u64,
+) -> Response {
+    let redemption = &engine.redemption;
+    let current_price = bound_redemption_price(compute_current_redemption_price_wide(
+        redemption.redemption_price_at_last_update,
+        redemption.redemption_rate_per_millisecond,
+        redemption.last_updated_at,
+        now,
+    ));
+    engine.redemption = RedemptionPriceState {
+        redemption_price_at_last_update: current_price,
+        redemption_rate_per_millisecond: FIXED_POINT_ONE,
+        controller_integral_term: 0,
+        last_updated_at: now,
+    };
+    save_engine(engine)
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::arithmetic_side_effects,
-    clippy::panic,
-    reason = "tests build fixture values from constants and deliberately panic via #[should_panic]"
-)]
 mod tests {
-    use lee_core::account::{Account, AccountId};
-    use stablecoin_core::math::{compute_current_accumulated_rate, FIXED_POINT_ONE};
-
-    use super::*;
-    use crate::{
-        test_support::{
-            accumulator_account, accumulator_id, admin_id, clock_account, freeze_authority_id,
-            protocol_parameters_account, protocol_parameters_id, uninitialized, ParameterOverrides,
-            ACCUMULATOR_ANCHOR, NOW, STABLECOIN_PROGRAM_ID, T0,
-        },
-        StateDiffExt,
+    use stablecoin_core::{
+        event::StablecoinEvent as _,
+        math::{compute_current_accumulated_rate, FIXED_POINT_ONE},
+        MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
     };
 
-    const OLD_RATE: u128 = FIXED_POINT_ONE + 1_500_000_000_000_000;
-    const NEW_RATE: u128 = FIXED_POINT_ONE + 3_000_000_000_000_000;
+    use super::*;
+    use crate::test_utils::*;
 
-    fn admin_account() -> AccountWithMetadata {
-        AccountWithMetadata {
-            account: Account::default(),
-            is_authorized: true,
-            account_id: admin_id(),
-        }
+    fn seat(account_id: AccountId) -> Actor {
+        stablecoin(account_id)
     }
 
-    fn parameters_at(rate: u128) -> AccountWithMetadata {
-        protocol_parameters_account(ParameterOverrides {
-            stability_fee_per_millisecond: rate,
-            ..Default::default()
-        })
+    fn pre() -> StablecoinState {
+        StablecoinState::Engine(engine_at(1_000))
     }
 
-    fn set_rate(
-        admin: AccountWithMetadata,
-        parameters: AccountWithMetadata,
-        accumulator: AccountWithMetadata,
-        now: u64,
-        new_rate: u128,
-    ) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-        set_stability_fee_per_millisecond(
-            admin,
-            parameters,
-            accumulator,
-            crate::test_support::stablecoin_definition_account(),
-            crate::test_support::stablecoin_master_holding_account(),
-            clock_account(now),
-            STABLECOIN_PROGRAM_ID,
-            new_rate,
+    /// The engine receives `action` from the seat of `signer`.
+    fn apply_from(signer: AccountId, action: AdminAction) -> Response {
+        run(
+            engine(),
+            Some(seat(signer)),
+            false,
+            Some(&pre()),
+            &Internal::Admin(action),
         )
     }
 
-    fn decoded(diff: &AccountStateDiff) -> ProtocolParameters {
-        ProtocolParameters::try_from(diff.post_data()).expect("valid ProtocolParameters")
+    fn apply_as_admin(action: AdminAction) -> Engine {
+        saved_engine(&apply_from(ADMIN, action))
+    }
+
+    // --- the seat ---
+
+    fn forwarded_pairs() -> Vec<(Message, AdminAction)> {
+        vec![
+            (
+                Message::SetMinimumCollateralizationRatio {
+                    new_ratio: FIXED_POINT_ONE * 2,
+                },
+                AdminAction::SetMinimumCollateralizationRatio {
+                    new_ratio: FIXED_POINT_ONE * 2,
+                },
+            ),
+            (
+                Message::SetControllerGains {
+                    new_proportional_gain: 1,
+                    new_integral_gain: 2,
+                },
+                AdminAction::SetControllerGains {
+                    new_proportional_gain: 1,
+                    new_integral_gain: 2,
+                },
+            ),
+            (
+                Message::SetMarketPriceOracle {
+                    oracle_account_id: OWNER,
+                    oracle_program_id: OTHER_PROGRAM,
+                },
+                AdminAction::SetMarketPriceOracle {
+                    oracle_account_id: OWNER,
+                    oracle_program_id: OTHER_PROGRAM,
+                },
+            ),
+            (
+                Message::SetTimingParameters {
+                    minimum_milliseconds_between_rate_updates: 5,
+                    maximum_oracle_price_age_milliseconds: 6,
+                },
+                AdminAction::SetTimingParameters {
+                    minimum_milliseconds_between_rate_updates: 5,
+                    maximum_oracle_price_age_milliseconds: 6,
+                },
+            ),
+            (
+                Message::SetAdmin {
+                    new_admin_account_id: OWNER,
+                },
+                AdminAction::SetAdmin {
+                    new_admin_account_id: OWNER,
+                },
+            ),
+            (
+                Message::SetFreezeAuthority {
+                    new_freeze_authority_account_id: OWNER,
+                },
+                AdminAction::SetFreezeAuthority {
+                    new_freeze_authority_account_id: OWNER,
+                },
+            ),
+            (
+                Message::SetStabilityFeePerMillisecond { new_rate: 7 },
+                AdminAction::SetStabilityFeePerMillisecond { new_rate: 7 },
+            ),
+            (Message::Freeze, AdminAction::Freeze),
+            (Message::Unfreeze, AdminAction::Unfreeze),
+            (
+                Message::ResetRedemptionRateController,
+                AdminAction::ResetRedemptionRateController,
+            ),
+            (
+                Message::SetDebtLimits {
+                    minimum_debt_amount: 1,
+                    debt_ceiling: 2,
+                },
+                AdminAction::SetDebtLimits {
+                    minimum_debt_amount: 1,
+                    debt_ceiling: 2,
+                },
+            ),
+        ]
     }
 
     #[test]
-    fn writes_the_new_rate_and_emits_no_chained_calls() {
-        let (post_states, chained_calls) = set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
-        );
-
-        assert_eq!(post_states.len(), 6);
-        // No outstanding debt, so the catch-up accrual mints nothing.
-        assert!(chained_calls.is_empty());
-        assert_eq!(
-            decoded(&post_states[1]).stability_fee_per_millisecond,
-            NEW_RATE
-        );
-        assert_eq!(
-            post_states[5].post_account(STABLECOIN_PROGRAM_ID),
-            clock_account(NOW).account
-        );
-    }
-
-    #[test]
-    fn changes_only_the_fee_field() {
-        let before = ProtocolParameters::try_from(&parameters_at(OLD_RATE).account.data)
-            .expect("valid ProtocolParameters");
-        let (post_states, _) = set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
-        );
-        let after = decoded(&post_states[1]);
-        assert_eq!(
-            ProtocolParameters {
-                stability_fee_per_millisecond: OLD_RATE,
-                ..after
-            },
-            before
-        );
-    }
-
-    /// The load-bearing property: the elapsed gap accrues at the OLD rate, so a
-    /// rate change is never retroactive.
-    #[test]
-    fn accrues_the_elapsed_gap_at_the_old_rate() {
-        let (post_states, _) = set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
-        );
-
-        let accumulator = StabilityFeeAccumulator::try_from(post_states[2].post_data())
-            .expect("valid StabilityFeeAccumulator");
-        let at_old_rate = compute_current_accumulated_rate(ACCUMULATOR_ANCHOR, OLD_RATE, T0, NOW);
-        let at_new_rate = compute_current_accumulated_rate(ACCUMULATOR_ANCHOR, NEW_RATE, T0, NOW);
-
-        assert_eq!(accumulator.accumulated_rate_at_last_accrual, at_old_rate);
-        assert_ne!(
-            at_old_rate, at_new_rate,
-            "fixture must make the two rates distinguishable"
-        );
-        assert_eq!(accumulator.last_accrued_at, NOW);
-    }
-
-    #[test]
-    fn zero_elapsed_time_leaves_the_anchor_unchanged() {
-        let (post_states, _) = set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, NOW),
-            NOW,
-            NEW_RATE,
-        );
-        let accumulator = StabilityFeeAccumulator::try_from(post_states[2].post_data())
-            .expect("valid StabilityFeeAccumulator");
-        assert_eq!(
-            accumulator.accumulated_rate_at_last_accrual,
-            ACCUMULATOR_ANCHOR
-        );
-    }
-
-    #[test]
-    fn accepts_both_band_endpoints() {
-        for rate in [
-            FIXED_POINT_ONE,
-            crate::checks::MAXIMUM_STABILITY_FEE_PER_MILLISECOND,
-        ] {
-            let (post_states, _) = set_rate(
-                admin_account(),
-                parameters_at(OLD_RATE),
-                accumulator_account(ACCUMULATOR_ANCHOR, T0),
-                NOW,
-                rate,
+    fn the_seat_forwards_every_admin_message_to_the_engine() {
+        let pairs = forwarded_pairs();
+        assert_eq!(pairs.len(), 11);
+        for (message, action) in pairs {
+            assert_eq!(
+                run(seat(ADMIN), None, true, None, &message),
+                Response::keep_state().send_sync(engine(), &Internal::Admin(action)),
+                "{message:?}",
             );
-            assert_eq!(decoded(&post_states[1]).stability_fee_per_millisecond, rate);
         }
     }
 
     #[test]
-    #[should_panic(expected = "new_stability_fee_per_millisecond below FIXED_POINT_ONE")]
-    fn rejects_a_rate_below_the_band() {
-        set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            FIXED_POINT_ONE - 1,
+    fn a_seat_that_also_holds_a_position_still_forwards() {
+        let position = StablecoinState::Position(Position {
+            token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
+            collateral_amount: 5,
+            normalized_debt_amount: 3,
+        });
+        assert_eq!(
+            run(seat(ADMIN), None, true, Some(&position), &Message::Freeze),
+            Response::keep_state().send_sync(engine(), &Internal::Admin(AdminAction::Freeze)),
         );
     }
 
     #[test]
-    #[should_panic(expected = "new_stability_fee_per_millisecond above sane upper bound")]
-    fn rejects_a_rate_above_the_band() {
-        set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            crate::checks::MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1,
-        );
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn an_unsigned_seat_message_panics() {
+        let _ = run(seat(ADMIN), None, false, None, &Message::Freeze);
     }
 
     #[test]
-    #[should_panic(expected = "Admin authorization is missing")]
-    fn requires_the_admin_to_sign() {
-        let mut admin = admin_account();
-        admin.is_authorized = false;
-        set_rate(
-            admin,
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn a_nested_seat_message_panics() {
+        let _ = run(
+            seat(ADMIN),
+            Some(outsider(OWNER)),
+            true,
+            None,
+            &Message::Freeze,
+        );
+    }
+
+    // --- roles ---
+
+    #[test]
+    #[should_panic(expected = "Signer is not the protocol's admin")]
+    fn a_setter_from_the_freeze_authority_panics() {
+        let _ = apply_from(
+            FREEZE_AUTHORITY,
+            AdminAction::SetAdmin {
+                new_admin_account_id: OWNER,
+            },
         );
     }
 
     #[test]
     #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn rejects_a_signer_other_than_the_admin() {
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_rate(
-            impostor,
-            parameters_at(OLD_RATE),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
-        );
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "ProtocolParameters account ID does not match expected PDA derivation"
-    )]
-    fn rejects_protocol_parameters_at_the_wrong_address() {
-        let mut parameters = parameters_at(OLD_RATE);
-        parameters.account_id = AccountId::new([0xC0u8; 32]);
-        set_rate(
-            admin_account(),
-            parameters,
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "ProtocolParameters account must be initialized")]
-    fn rejects_uninitialized_protocol_parameters() {
-        set_rate(
-            admin_account(),
-            uninitialized(protocol_parameters_id()),
-            accumulator_account(ACCUMULATOR_ANCHOR, T0),
-            NOW,
-            NEW_RATE,
-        );
-    }
-
-    #[test]
-    #[should_panic(
-        expected = "StabilityFeeAccumulator account ID does not match expected PDA derivation"
-    )]
-    fn rejects_the_accumulator_at_the_wrong_address() {
-        let mut accumulator = accumulator_account(ACCUMULATOR_ANCHOR, T0);
-        accumulator.account_id = AccountId::new([0xC1u8; 32]);
-        set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            accumulator,
-            NOW,
-            NEW_RATE,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "StabilityFeeAccumulator account must be initialized")]
-    fn rejects_an_uninitialized_accumulator() {
-        set_rate(
-            admin_account(),
-            parameters_at(OLD_RATE),
-            uninitialized(accumulator_id()),
-            NOW,
-            NEW_RATE,
-        );
-    }
-    // --- the six simple setters ---
-
-    fn params() -> AccountWithMetadata {
-        protocol_parameters_account(ParameterOverrides::default())
-    }
-
-    fn before() -> ProtocolParameters {
-        ProtocolParameters::try_from(&params().account.data).expect("valid ProtocolParameters")
-    }
-
-    fn new_oracle_account() -> AccountWithMetadata {
-        let mut oracle = crate::test_support::oracle_account(
-            NOW,
-            crate::test_support::ORACLE_PRICE_BELOW_ANCHOR,
-        );
-        oracle.account_id = AccountId::new([0x3Au8; 32]);
-        oracle
-    }
-
-    #[test]
-    fn set_minimum_collateralization_ratio_writes_only_that_field() {
-        let new_ratio = FIXED_POINT_ONE * 2;
-        let (post_states, chained_calls) = set_minimum_collateralization_ratio(
-            admin_account(),
-            params(),
-            STABLECOIN_PROGRAM_ID,
-            new_ratio,
-        );
-
-        assert_eq!(post_states.len(), 2);
-        assert!(chained_calls.is_empty());
-        let after = decoded(&post_states[1]);
-        assert_eq!(after.minimum_collateralization_ratio, new_ratio);
-        assert_eq!(
-            ProtocolParameters {
-                minimum_collateralization_ratio: before().minimum_collateralization_ratio,
-                ..after
+    fn the_fee_setter_from_a_stranger_panics() {
+        let _ = apply_from(
+            OWNER,
+            AdminAction::SetStabilityFeePerMillisecond {
+                new_rate: FIXED_POINT_ONE,
             },
-            before()
         );
     }
 
     #[test]
-    fn set_minimum_collateralization_ratio_accepts_both_band_endpoints() {
-        for ratio in [FIXED_POINT_ONE * 110 / 100, FIXED_POINT_ONE * 10] {
-            let (post_states, _) = set_minimum_collateralization_ratio(
-                admin_account(),
-                params(),
-                STABLECOIN_PROGRAM_ID,
-                ratio,
-            );
+    #[should_panic(expected = "Signer is not the protocol's admin")]
+    fn the_debt_limits_from_a_stranger_panics() {
+        let _ = apply_from(
+            OWNER,
+            AdminAction::SetDebtLimits {
+                minimum_debt_amount: 1,
+                debt_ceiling: 2,
+            },
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Signer is not the protocol's freeze authority")]
+    fn freeze_from_the_admin_panics() {
+        let _ = apply_from(ADMIN, AdminAction::Freeze);
+    }
+
+    #[test]
+    #[should_panic(expected = "Signer is not the protocol's freeze authority")]
+    fn unfreeze_from_a_stranger_panics() {
+        let _ = apply_from(OWNER, AdminAction::Unfreeze);
+    }
+
+    #[test]
+    #[should_panic(expected = "Signer is neither the protocol's admin nor its freeze authority")]
+    fn reset_from_a_stranger_panics() {
+        let _ = apply_from(OWNER, AdminAction::ResetRedemptionRateController);
+    }
+
+    #[test]
+    #[should_panic(expected = "this actor is not the engine")]
+    fn an_admin_action_at_an_actor_that_is_not_the_engine_panics() {
+        let _ = run(
+            stablecoin(OWNER),
+            Some(seat(ADMIN)),
+            false,
+            None,
+            &Internal::Admin(AdminAction::Freeze),
+        );
+    }
+
+    // --- setters ---
+
+    #[test]
+    fn each_setter_changes_only_its_fields_and_emits_the_event() {
+        let before = parameters();
+        let cases: Vec<(AdminAction, ProtocolParameters)> = vec![
+            (
+                AdminAction::SetMinimumCollateralizationRatio {
+                    new_ratio: FIXED_POINT_ONE * 2,
+                },
+                ProtocolParameters {
+                    minimum_collateralization_ratio: FIXED_POINT_ONE * 2,
+                    ..before.clone()
+                },
+            ),
+            (
+                AdminAction::SetControllerGains {
+                    new_proportional_gain: 5,
+                    new_integral_gain: 6,
+                },
+                ProtocolParameters {
+                    controller_proportional_gain: 5,
+                    controller_integral_gain: 6,
+                    ..before.clone()
+                },
+            ),
+            (
+                AdminAction::SetMarketPriceOracle {
+                    oracle_account_id: OWNER,
+                    oracle_program_id: OTHER_PROGRAM,
+                },
+                ProtocolParameters {
+                    market_price_oracle_id: OWNER,
+                    market_price_oracle_program_id: OTHER_PROGRAM,
+                    ..before.clone()
+                },
+            ),
+            (
+                AdminAction::SetTimingParameters {
+                    minimum_milliseconds_between_rate_updates: 5,
+                    maximum_oracle_price_age_milliseconds: 6,
+                },
+                ProtocolParameters {
+                    minimum_milliseconds_between_rate_updates: 5,
+                    maximum_oracle_price_age_milliseconds: 6,
+                    ..before.clone()
+                },
+            ),
+            (
+                AdminAction::SetAdmin {
+                    new_admin_account_id: OWNER,
+                },
+                ProtocolParameters {
+                    admin_account_id: OWNER,
+                    ..before.clone()
+                },
+            ),
+            (
+                AdminAction::SetFreezeAuthority {
+                    new_freeze_authority_account_id: OWNER,
+                },
+                ProtocolParameters {
+                    freeze_authority_account_id: OWNER,
+                    ..before.clone()
+                },
+            ),
+            (
+                // A floor equal to the ceiling is accepted; the fixture's floor 10 and ceiling
+                // 1_000_000 both change, and nothing else does.
+                AdminAction::SetDebtLimits {
+                    minimum_debt_amount: 20,
+                    debt_ceiling: 20,
+                },
+                ProtocolParameters {
+                    minimum_debt_amount: 20,
+                    debt_ceiling: 20,
+                    ..before.clone()
+                },
+            ),
+        ];
+        for (action, expected) in cases {
+            let response = apply_from(ADMIN, action.clone());
+            let after = saved_engine(&response);
+            assert_eq!(after.parameters, expected, "{action:?}");
+            assert_eq!(after.fee, engine_at(1_000).fee);
+            assert_eq!(after.redemption, engine_at(1_000).redemption);
+            assert!(response.sync_messages.is_empty());
             assert_eq!(
-                decoded(&post_states[1]).minimum_collateralization_ratio,
-                ratio
+                response.events,
+                vec![ParametersChanged {
+                    parameters: expected
+                }
+                .to_program_event()],
+                "{action:?}",
             );
         }
     }
 
     #[test]
-    #[should_panic(expected = "new_minimum_collateralization_ratio below 1.1x")]
-    fn set_minimum_collateralization_ratio_rejects_below_the_band() {
-        set_minimum_collateralization_ratio(
-            admin_account(),
-            params(),
-            STABLECOIN_PROGRAM_ID,
-            FIXED_POINT_ONE * 110 / 100 - 1,
+    #[should_panic(expected = "Market price oracle program must not be the default owner")]
+    fn a_zero_oracle_program_id_panics() {
+        let _ = apply_as_admin(AdminAction::SetMarketPriceOracle {
+            oracle_account_id: OWNER,
+            oracle_program_id: AccountId::new([0; 32]),
+        });
+    }
+
+    #[test]
+    fn the_gains_setter_keeps_the_integral_term() {
+        let mut parked = engine_at(1_000);
+        parked.redemption.controller_integral_term = 99;
+        let response = run(
+            engine(),
+            Some(seat(ADMIN)),
+            false,
+            Some(&StablecoinState::Engine(parked)),
+            &Internal::Admin(AdminAction::SetControllerGains {
+                new_proportional_gain: 1,
+                new_integral_gain: 1,
+            }),
         );
+        assert_eq!(
+            saved_engine(&response).redemption.controller_integral_term,
+            99
+        );
+    }
+
+    #[test]
+    fn the_band_endpoints_are_accepted() {
+        let low = apply_as_admin(AdminAction::SetMinimumCollateralizationRatio {
+            new_ratio: checks::MIN_COLLATERALIZATION_RATIO,
+        });
+        assert_eq!(
+            low.parameters.minimum_collateralization_ratio,
+            checks::MIN_COLLATERALIZATION_RATIO
+        );
+        let high = apply_as_admin(AdminAction::SetTimingParameters {
+            minimum_milliseconds_between_rate_updates: 1,
+            maximum_oracle_price_age_milliseconds: checks::MAX_TIMING_MILLISECONDS,
+        });
+        assert_eq!(high.parameters.minimum_milliseconds_between_rate_updates, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "new_minimum_collateralization_ratio below 1.1x")]
+    fn a_ratio_below_the_band_panics() {
+        let _ = apply_as_admin(AdminAction::SetMinimumCollateralizationRatio {
+            new_ratio: checks::MIN_COLLATERALIZATION_RATIO - 1,
+        });
     }
 
     #[test]
     #[should_panic(expected = "new_minimum_collateralization_ratio above 10x")]
-    fn set_minimum_collateralization_ratio_rejects_above_the_band() {
-        set_minimum_collateralization_ratio(
-            admin_account(),
-            params(),
-            STABLECOIN_PROGRAM_ID,
-            FIXED_POINT_ONE * 10 + 1,
-        );
-    }
-
-    #[test]
-    fn set_controller_gains_writes_both_and_preserves_the_integral_term() {
-        let parameters = protocol_parameters_account(ParameterOverrides {
-            controller_integral_gain: 5,
-            ..Default::default()
+    fn a_ratio_above_the_band_panics() {
+        let _ = apply_as_admin(AdminAction::SetMinimumCollateralizationRatio {
+            new_ratio: checks::MAX_COLLATERALIZATION_RATIO + 1,
         });
-        let integral_term_before = ProtocolParameters::try_from(&parameters.account.data)
-            .expect("valid ProtocolParameters");
-        let (post_states, _) =
-            set_controller_gains(admin_account(), parameters, STABLECOIN_PROGRAM_ID, 42, 7);
-
-        let after = decoded(&post_states[1]);
-        assert_eq!(after.controller_proportional_gain, 42);
-        assert_eq!(after.controller_integral_gain, 7);
-        // Retuning must not discard the controller's accumulated history; the
-        // integral *term* lives on RedemptionPriceState and is untouched here.
-        assert_eq!(
-            ProtocolParameters {
-                controller_proportional_gain: integral_term_before.controller_proportional_gain,
-                controller_integral_gain: integral_term_before.controller_integral_gain,
-                ..after
-            },
-            integral_term_before
-        );
     }
 
     #[test]
     #[should_panic(expected = "controller_proportional_gain out of band")]
-    fn set_controller_gains_rejects_an_oversized_proportional_gain() {
-        let kp = i128::try_from(FIXED_POINT_ONE * 1_000).expect("fits i128") + 1;
-        set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, kp, 0);
+    fn a_negative_proportional_gain_panics() {
+        let _ = apply_as_admin(AdminAction::SetControllerGains {
+            new_proportional_gain: -1,
+            new_integral_gain: 0,
+        });
     }
 
     #[test]
     #[should_panic(expected = "controller_proportional_gain out of band")]
-    fn set_controller_gains_rejects_a_negative_gain() {
-        set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, -1, 0);
+    fn an_oversized_proportional_gain_panics() {
+        let _ = apply_as_admin(AdminAction::SetControllerGains {
+            new_proportional_gain: stablecoin_core::MAXIMUM_CONTROLLER_PROPORTIONAL_GAIN + 1,
+            new_integral_gain: 0,
+        });
     }
 
     #[test]
     #[should_panic(expected = "controller_integral_gain out of band")]
-    fn set_controller_gains_rejects_an_oversized_integral_gain() {
-        let ki = i128::try_from(FIXED_POINT_ONE).expect("fits i128") + 1;
-        set_controller_gains(admin_account(), params(), STABLECOIN_PROGRAM_ID, 0, ki);
-    }
-
-    #[test]
-    fn set_timing_parameters_writes_both_fields() {
-        let (post_states, _) =
-            set_timing_parameters(admin_account(), params(), STABLECOIN_PROGRAM_ID, 5, 6);
-        let after = decoded(&post_states[1]);
-        assert_eq!(after.minimum_milliseconds_between_rate_updates, 5);
-        assert_eq!(after.maximum_oracle_price_age_milliseconds, 6);
+    fn an_oversized_integral_gain_panics() {
+        let _ = apply_as_admin(AdminAction::SetControllerGains {
+            new_proportional_gain: 0,
+            new_integral_gain: stablecoin_core::MAXIMUM_CONTROLLER_INTEGRAL_GAIN + 1,
+        });
     }
 
     #[test]
     #[should_panic(expected = "new_minimum_milliseconds_between_rate_updates below minimum 1ms")]
-    fn set_timing_parameters_rejects_a_zero_interval() {
-        set_timing_parameters(admin_account(), params(), STABLECOIN_PROGRAM_ID, 0, 6);
+    fn a_zero_interval_panics() {
+        let _ = apply_as_admin(AdminAction::SetTimingParameters {
+            minimum_milliseconds_between_rate_updates: 0,
+            maximum_oracle_price_age_milliseconds: 1,
+        });
     }
 
     #[test]
     #[should_panic(
         expected = "new_maximum_oracle_price_age_milliseconds above maximum 86_400_000ms"
     )]
-    fn set_timing_parameters_rejects_an_oversized_staleness_window() {
-        set_timing_parameters(
-            admin_account(),
-            params(),
-            STABLECOIN_PROGRAM_ID,
-            5,
-            86_400_001,
-        );
-    }
-
-    #[test]
-    fn set_admin_rotates_the_handle_in_one_step() {
-        let new_admin = AccountId::new([0xADu8; 32]);
-        let (post_states, _) =
-            set_admin(admin_account(), params(), STABLECOIN_PROGRAM_ID, new_admin);
-
-        let after = decoded(&post_states[1]);
-        assert_eq!(after.admin_account_id, new_admin);
-        // Effective immediately: the old admin no longer satisfies the gate.
-        assert_ne!(after.admin_account_id, admin_id());
-    }
-
-    #[test]
-    fn set_freeze_authority_rotates_the_handle() {
-        let new_authority = AccountId::new([0xFAu8; 32]);
-        let (post_states, _) = set_freeze_authority(
-            admin_account(),
-            params(),
-            STABLECOIN_PROGRAM_ID,
-            new_authority,
-        );
-        assert_eq!(
-            decoded(&post_states[1]).freeze_authority_account_id,
-            new_authority
-        );
-    }
-
-    #[test]
-    fn set_market_price_oracle_rotates_and_echoes_the_new_oracle() {
-        let (post_states, chained_calls) = set_market_price_oracle(
-            admin_account(),
-            params(),
-            new_oracle_account(),
-            STABLECOIN_PROGRAM_ID,
-            crate::test_support::ORACLE_PROGRAM_ID,
-        );
-
-        assert_eq!(post_states.len(), 3);
-        assert!(chained_calls.is_empty());
-        assert_eq!(
-            decoded(&post_states[1]).market_price_oracle_id,
-            new_oracle_account().account_id
-        );
-        assert_eq!(
-            post_states[2].post_account(STABLECOIN_PROGRAM_ID),
-            new_oracle_account().account
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "New oracle base_asset must equal the stablecoin definition")]
-    fn set_market_price_oracle_rejects_a_different_base_asset() {
-        let mut oracle = new_oracle_account();
-        oracle.account.data = Data::from(&OraclePriceAccount {
-            base_asset: AccountId::new([0x99u8; 32]),
-            quote_asset: crate::test_support::collateral_definition_id(),
-            price: FIXED_POINT_ONE / 4,
-            timestamp: NOW,
-            source_id: crate::test_support::oracle_source_id(),
-            confidence_interval: 0,
+    fn an_oversized_staleness_window_panics() {
+        let _ = apply_as_admin(AdminAction::SetTimingParameters {
+            minimum_milliseconds_between_rate_updates: 1,
+            maximum_oracle_price_age_milliseconds: checks::MAX_TIMING_MILLISECONDS + 1,
         });
-        set_market_price_oracle(
-            admin_account(),
-            params(),
-            oracle,
-            STABLECOIN_PROGRAM_ID,
-            crate::test_support::ORACLE_PROGRAM_ID,
-        );
     }
 
     #[test]
-    #[should_panic(expected = "New oracle quote_asset must equal the collateral definition")]
-    fn set_market_price_oracle_rejects_a_different_quote_asset() {
-        let mut oracle = new_oracle_account();
-        oracle.account.data = Data::from(&OraclePriceAccount {
-            base_asset: crate::test_support::stablecoin_definition_id(),
-            quote_asset: AccountId::new([0x99u8; 32]),
-            price: FIXED_POINT_ONE / 4,
-            timestamp: NOW,
-            source_id: crate::test_support::oracle_source_id(),
-            confidence_interval: 0,
+    #[should_panic(expected = "Debt limits require 0 < minimum_debt_amount <= debt_ceiling")]
+    fn a_zero_minimum_debt_panics() {
+        let _ = apply_as_admin(AdminAction::SetDebtLimits {
+            minimum_debt_amount: 0,
+            debt_ceiling: 100,
         });
-        set_market_price_oracle(
-            admin_account(),
-            params(),
-            oracle,
-            STABLECOIN_PROGRAM_ID,
-            crate::test_support::ORACLE_PROGRAM_ID,
-        );
     }
 
     #[test]
-    fn set_market_price_oracle_binds_an_oracle_that_does_not_exist_yet() {
-        // Like RAI pointing its rate setter at a feed that is not valid yet: the
-        // controller just does not run until the oracle exists (spec §3.2).
-        let future_oracle = AccountId::new([0x3Au8; 32]);
-        let (post_states, _) = set_market_price_oracle(
-            admin_account(),
-            params(),
-            uninitialized(future_oracle),
-            STABLECOIN_PROGRAM_ID,
-            crate::test_support::ORACLE_PROGRAM_ID,
-        );
+    #[should_panic(expected = "Debt limits require 0 < minimum_debt_amount <= debt_ceiling")]
+    fn a_minimum_debt_above_the_ceiling_panics() {
+        let _ = apply_as_admin(AdminAction::SetDebtLimits {
+            minimum_debt_amount: 10,
+            debt_ceiling: 9,
+        });
+    }
+
+    // --- freeze ---
+
+    #[test]
+    fn freeze_and_unfreeze_are_idempotent() {
+        let freeze = apply_from(FREEZE_AUTHORITY, AdminAction::Freeze);
+        assert!(saved_engine(&freeze).parameters.is_frozen);
         assert_eq!(
-            decoded(&post_states[1]).market_price_oracle_id,
-            future_oracle
+            freeze.events,
+            vec![FrozenChanged { is_frozen: true }.to_program_event()],
         );
+        let mut frozen = engine_at(1_000);
+        frozen.parameters.is_frozen = true;
+        let state = StablecoinState::Engine(frozen);
+        let again = run(
+            engine(),
+            Some(seat(FREEZE_AUTHORITY)),
+            false,
+            Some(&state),
+            &Internal::Admin(AdminAction::Freeze),
+        );
+        assert!(saved_engine(&again).parameters.is_frozen);
+        let unfreeze = run(
+            engine(),
+            Some(seat(FREEZE_AUTHORITY)),
+            false,
+            Some(&state),
+            &Internal::Admin(AdminAction::Unfreeze),
+        );
+        assert!(!saved_engine(&unfreeze).parameters.is_frozen);
         assert_eq!(
-            decoded(&post_states[1]).market_price_oracle_program_id,
-            crate::test_support::ORACLE_PROGRAM_ID
+            unfreeze.events,
+            vec![FrozenChanged { is_frozen: false }.to_program_event()],
         );
+        let unfreeze_again = apply_from(FREEZE_AUTHORITY, AdminAction::Unfreeze);
+        assert!(!saved_engine(&unfreeze_again).parameters.is_frozen);
     }
 
-    #[test]
-    #[should_panic(expected = "New market price oracle program owner does not match")]
-    fn set_market_price_oracle_rejects_an_untrusted_owner() {
-        set_market_price_oracle(
-            admin_account(),
-            params(),
-            new_oracle_account(),
-            STABLECOIN_PROGRAM_ID,
-            AccountId::new([99; 32]),
-        );
-    }
+    // --- the fee setter ---
 
     #[test]
-    #[should_panic(expected = "Market price oracle program must not be the default owner")]
-    fn set_market_price_oracle_rejects_a_default_trusted_program() {
-        set_market_price_oracle(
-            admin_account(),
-            params(),
-            uninitialized(new_oracle_account().account_id),
-            STABLECOIN_PROGRAM_ID,
-            AccountId::default(),
-        );
-    }
-
-    // Every public entry point must reject a signer that is not the stored admin,
-    // not just the one that happens to share the helper.
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn set_minimum_collateralization_ratio_rejects_a_non_admin() {
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_minimum_collateralization_ratio(
-            impostor,
-            params(),
-            STABLECOIN_PROGRAM_ID,
-            FIXED_POINT_ONE * 2,
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn set_controller_gains_rejects_a_non_admin() {
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_controller_gains(impostor, params(), STABLECOIN_PROGRAM_ID, 0, 0);
-    }
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn set_timing_parameters_rejects_a_non_admin() {
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_timing_parameters(impostor, params(), STABLECOIN_PROGRAM_ID, 5, 6);
-    }
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn set_admin_rejects_a_non_admin() {
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_admin(impostor, params(), STABLECOIN_PROGRAM_ID, admin_id());
-    }
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn set_freeze_authority_rejects_a_non_admin() {
-        // Notably the freeze authority itself cannot rotate the role — only the
-        // admin can, so a compromised freeze authority cannot entrench itself.
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_freeze_authority(impostor, params(), STABLECOIN_PROGRAM_ID, admin_id());
-    }
-
-    #[test]
-    #[should_panic(expected = "Signer is not the protocol's admin")]
-    fn set_market_price_oracle_rejects_a_non_admin() {
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        set_market_price_oracle(
-            impostor,
-            params(),
-            new_oracle_account(),
-            STABLECOIN_PROGRAM_ID,
-            crate::test_support::ORACLE_PROGRAM_ID,
-        );
-    }
-    #[test]
-    fn debt_limits_update_atomically_and_validate_authority_and_bounds() {
-        let (post, calls) =
-            set_debt_limits(admin_account(), params(), STABLECOIN_PROGRAM_ID, 20, 20);
-        assert!(calls.is_empty());
-        let after = decoded(&post[1]);
-        assert_eq!((after.minimum_debt_amount, after.debt_ceiling), (20, 20));
-        assert_eq!(
-            ProtocolParameters {
-                minimum_debt_amount: before().minimum_debt_amount,
-                debt_ceiling: before().debt_ceiling,
-                ..after
+    fn the_fee_setter_parks_and_asks_the_clock() {
+        let response = apply_from(
+            ADMIN,
+            AdminAction::SetStabilityFeePerMillisecond {
+                new_rate: FIXED_POINT_ONE + 1,
             },
-            before()
         );
-        for (minimum, ceiling) in [(0, 100), (10, 9)] {
-            assert!(std::panic::catch_unwind(|| set_debt_limits(
-                admin_account(),
-                params(),
-                STABLECOIN_PROGRAM_ID,
-                minimum,
-                ceiling,
-            ))
-            .is_err());
-        }
-        let mut unsigned = admin_account();
-        unsigned.is_authorized = false;
-        let mut impostor = admin_account();
-        impostor.account_id = freeze_authority_id();
-        for signer in [unsigned, impostor] {
-            assert!(std::panic::catch_unwind(|| set_debt_limits(
-                signer,
-                params(),
-                STABLECOIN_PROGRAM_ID,
-                1,
-                100,
-            ))
-            .is_err());
-        }
-        let mut wrong_address = params();
-        wrong_address.account_id = AccountId::new([0xC0; 32]);
-        let mut wrong_owner = params();
-        wrong_owner.account.program_owner = AccountId::new([0xC1; 32]);
-        for parameters in [wrong_address, wrong_owner] {
-            assert!(std::panic::catch_unwind(|| set_debt_limits(
-                admin_account(),
-                parameters,
-                STABLECOIN_PROGRAM_ID,
-                1,
-                100,
-            ))
-            .is_err());
+        let mut parked = engine_at(1_000);
+        parked.pending = Some(Pending::SetStabilityFee {
+            new_rate: FIXED_POINT_ONE + 1,
+        });
+        assert_eq!(
+            response,
+            Response::set_state(StablecoinState::Engine(parked).encode()).send_sync(
+                clock(),
+                &clock_core::Message::ReadTimestamp { granularity: 1 }
+            ),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "new_stability_fee_per_millisecond below FIXED_POINT_ONE")]
+    fn a_fee_below_the_band_panics() {
+        let _ = apply_as_admin(AdminAction::SetStabilityFeePerMillisecond {
+            new_rate: FIXED_POINT_ONE - 1,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "new_stability_fee_per_millisecond above sane upper bound")]
+    fn a_fee_above_the_band_panics() {
+        let _ = apply_as_admin(AdminAction::SetStabilityFeePerMillisecond {
+            new_rate: MAXIMUM_STABILITY_FEE_PER_MILLISECOND + 1,
+        });
+    }
+
+    #[test]
+    #[should_panic(expected = "the engine is already waiting for a reply")]
+    fn the_fee_setter_while_another_operation_is_parked_panics() {
+        let mut parked = engine_at(1_000);
+        parked.pending = Some(Pending::AccrueStabilityFee);
+        let _ = run(
+            engine(),
+            Some(seat(ADMIN)),
+            false,
+            Some(&StablecoinState::Engine(parked)),
+            &Internal::Admin(AdminAction::SetStabilityFeePerMillisecond {
+                new_rate: FIXED_POINT_ONE,
+            }),
+        );
+    }
+
+    fn fee_reply(old_rate: u128, new_rate: u128, now: u64) -> (Response, Engine) {
+        let mut parked = engine_at(1_000);
+        parked.parameters.stability_fee_per_millisecond = old_rate;
+        parked.fee.total_normalized_debt = 1_000_000;
+        parked.pending = Some(Pending::SetStabilityFee { new_rate });
+        let response = run(
+            engine(),
+            Some(clock()),
+            false,
+            Some(&StablecoinState::Engine(parked)),
+            &clock_reply(now),
+        );
+        let after = saved_engine(&response);
+        (response, after)
+    }
+
+    #[test]
+    fn the_fee_setter_accrues_the_gap_at_the_old_rate_then_stores_the_new_one() {
+        let old_rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 1_000_000;
+        let new_rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000;
+        let (response, after) = fee_reply(old_rate, new_rate, 4_000);
+        let at_old = compute_current_accumulated_rate(FIXED_POINT_ONE, old_rate, 1_000, 4_000);
+        let at_new = compute_current_accumulated_rate(FIXED_POINT_ONE, new_rate, 1_000, 4_000);
+        assert_ne!(at_old, at_new, "the fixture must tell the two rates apart");
+        assert_eq!(after.fee.accumulated_rate_at_last_accrual, at_old);
+        assert_eq!(after.fee.last_accrued_at, 4_000);
+        assert_eq!(after.parameters.stability_fee_per_millisecond, new_rate);
+        assert_eq!(after.pending, None);
+        // The surplus mint comes first, then the accrual event, then the parameters event.
+        assert_eq!(response.sync_messages.len(), 1);
+        assert_eq!(response.events.len(), 2);
+        assert_eq!(
+            response.events.last(),
+            Some(
+                &ParametersChanged {
+                    parameters: after.parameters.clone()
+                }
+                .to_program_event()
+            ),
+        );
+    }
+
+    #[test]
+    fn the_fee_setter_with_no_time_elapsed_keeps_the_anchor() {
+        let (response, after) = fee_reply(FIXED_POINT_ONE * 2, FIXED_POINT_ONE, 1_000);
+        assert_eq!(after.fee.accumulated_rate_at_last_accrual, FIXED_POINT_ONE);
+        assert_eq!(
+            after.parameters.stability_fee_per_millisecond,
+            FIXED_POINT_ONE
+        );
+        assert!(response.sync_messages.is_empty());
+    }
+
+    // --- the controller reset ---
+
+    fn reset_reply(parked: Engine, now: u64) -> (Response, Engine) {
+        let response = run(
+            engine(),
+            Some(clock()),
+            false,
+            Some(&StablecoinState::Engine(parked)),
+            &clock_reply(now),
+        );
+        let after = saved_engine(&response);
+        (response, after)
+    }
+
+    fn wound_up(rate: u128, last_updated_at: u64) -> Engine {
+        let mut parked = engine_at(last_updated_at);
+        parked.redemption.redemption_rate_per_millisecond = rate;
+        parked.redemption.controller_integral_term = 777;
+        parked.pending = Some(Pending::ResetController);
+        parked
+    }
+
+    #[test]
+    fn the_reset_parks_for_the_admin_and_the_freeze_authority() {
+        for signer in [ADMIN, FREEZE_AUTHORITY] {
+            let response = apply_from(signer, AdminAction::ResetRedemptionRateController);
+            let mut parked = engine_at(1_000);
+            parked.pending = Some(Pending::ResetController);
+            assert_eq!(
+                response,
+                Response::set_state(StablecoinState::Engine(parked).encode()).send_sync(
+                    clock(),
+                    &clock_core::Message::ReadTimestamp { granularity: 1 }
+                ),
+            );
         }
     }
 
     #[test]
-    fn fee_setter_preserves_nonzero_aggregate_above_ceiling() {
-        let mut parameters = parameters_at(OLD_RATE);
-        let mut parameter_data =
-            ProtocolParameters::try_from(&parameters.account.data).expect("params");
-        parameter_data.debt_ceiling = 100;
-        parameters.account.data = Data::from(&parameter_data);
-        let mut accumulator = accumulator_account(ACCUMULATOR_ANCHOR, T0);
-        let mut accumulator_data =
-            StabilityFeeAccumulator::try_from(&accumulator.account.data).expect("accumulator");
-        accumulator_data.total_normalized_debt = 100;
-        accumulator.account.data = Data::from(&accumulator_data);
-        let (post, _) = set_rate(admin_account(), parameters, accumulator, NOW, NEW_RATE);
-        let after = StabilityFeeAccumulator::try_from(post[2].post_data()).expect("accumulator");
-        assert_eq!(after.total_normalized_debt, 100);
-        assert_eq!(after.schema_version, stablecoin_core::GLOBAL_SCHEMA_VERSION);
-        assert!(after.accumulated_rate_at_last_accrual > ACCUMULATOR_ANCHOR);
+    fn the_reset_re_anchors_the_price_at_now_and_zeroes_the_controller() {
+        let rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 1_000_000;
+        let (_, after) = reset_reply(wound_up(rate, 1_000), 3_000);
+        let projected = bound_redemption_price(compute_current_redemption_price_wide(
+            FIXED_POINT_ONE,
+            rate,
+            1_000,
+            3_000,
+        ));
+        assert!(projected > FIXED_POINT_ONE);
+        assert_eq!(after.redemption.redemption_price_at_last_update, projected);
+        assert_eq!(
+            after.redemption.redemption_rate_per_millisecond,
+            FIXED_POINT_ONE
+        );
+        assert_eq!(after.redemption.controller_integral_term, 0);
+        assert_eq!(after.redemption.last_updated_at, 3_000);
+        assert_eq!(after.pending, None);
+    }
+
+    #[test]
+    fn the_reset_recovers_a_projection_that_overflows() {
+        let rate = FIXED_POINT_ONE + FIXED_POINT_ONE / 100_000;
+        let (_, after) = reset_reply(wound_up(rate, 1_000), 1_000 + 86_400_000);
+        assert_eq!(
+            after.redemption.redemption_price_at_last_update,
+            stablecoin_core::MAXIMUM_REDEMPTION_PRICE
+        );
+        assert_eq!(
+            after.redemption.redemption_rate_per_millisecond,
+            FIXED_POINT_ONE
+        );
+    }
+
+    #[test]
+    fn the_reset_recovers_a_projection_that_decays_to_zero() {
+        let rate = FIXED_POINT_ONE - FIXED_POINT_ONE / 100_000;
+        let (_, after) = reset_reply(wound_up(rate, 1_000), 1_000 + 86_400_000);
+        assert_eq!(
+            after.redemption.redemption_price_at_last_update,
+            stablecoin_core::MINIMUM_REDEMPTION_PRICE
+        );
+    }
+
+    #[test]
+    fn the_reset_is_idempotent() {
+        let (_, once) = reset_reply(wound_up(FIXED_POINT_ONE + 5, 1_000), 3_000);
+        let mut again = once.clone();
+        again.pending = Some(Pending::ResetController);
+        let (_, twice) = reset_reply(again, 3_000);
+        assert_eq!(twice.redemption, once.redemption);
     }
 }

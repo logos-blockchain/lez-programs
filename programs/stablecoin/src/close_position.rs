@@ -1,116 +1,99 @@
-use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff, Data},
-    program::{AccountStateDiff, ChainedCall},
-};
-use stablecoin_core::{
-    compute_protocol_parameters_pda, verify_position_and_get_seed, Position, ProtocolParameters,
-};
-use token_core::TokenHolding;
+//! `ClosePosition`: the owner clears a settled position. Only the position is involved, so it
+//! works while the protocol is frozen.
 
-/// Clear a fully-settled `position` (spec §10.9).
-///
-/// The position's data is zeroed but the account itself lingers: LEE's
-/// `validate_execution` forbids a program from changing an account's
-/// `program_owner` or `nonce`, so the PDA cannot be released and an
-/// `Account::default()` post-state is not expressible. A consequence worth
-/// knowing: the `(owner, position_nonce)` pair cannot be reused afterwards,
-/// because `open_position` requires an uninitialized position account.
-///
-/// The vault is **not** closed either — the Token Program has no `CloseHolding`,
-/// so it also lingers at `balance = 0` (§12, §14). It is passed read-only purely
-/// so its emptiness can be asserted.
-///
-/// Allowed while the protocol is frozen: closing a settled position removes an
-/// obligation and cannot worsen protocol health.
+use lee_core::program::{ReceiveInput, Response};
+use stablecoin_core::event::{PositionClosed, StablecoinEvent as _};
+
+use crate::{checks, position_state};
+
+/// At the owner's actor, signed as a root message: an empty actor state means "no position".
+/// The vault's empty token holding stays; opening again initializes it idempotently.
 ///
 /// # Panics
-/// - `owner` is not authorized.
-/// - `position` is uninitialized, not owned by `stablecoin_program_id`, does not decode, or is not
-///   at its `(owner, position_nonce)` PDA.
-/// - `position.normalized_debt_amount` or `position.collateral_amount` is non-zero.
-/// - `vault` does not match `Position.vault_account_id`, does not decode as a fungible
-///   [`TokenHolding`], or still holds a balance.
-/// - `protocol_parameters` is uninitialized, wrongly owned, not at its canonical PDA, or does not
-///   decode.
-pub fn close_position(
-    owner: AccountWithMetadata,
-    position: AccountWithMetadata,
-    vault: AccountWithMetadata,
-    protocol_parameters: AccountWithMetadata,
-    stablecoin_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
-    assert!(owner.is_authorized, "Owner authorization is missing");
-
-    assert_ne!(
-        position.account,
-        Account::default(),
-        "Position account must be initialized"
+/// - `"only the account's owner may send this"` when the message is nested or unsigned.
+/// - `"this account has no position"` when the receiver holds no position.
+/// - `"Position still has debt"` / `"Position still holds collateral"` when it is not settled.
+pub(crate) fn close_position(input: &ReceiveInput) -> Response {
+    checks::assert_owner(input);
+    let position = position_state(input);
+    assert!(
+        position.normalized_debt_amount == 0,
+        "Position still has debt"
     );
-    assert_eq!(
-        position.account.program_owner, stablecoin_program_id,
-        "Position is not owned by this stablecoin program"
-    );
-    let position_data = Position::try_from(&position.account.data)
-        .expect("Position account must hold valid Position state");
-    let _position_seed = verify_position_and_get_seed(
-        &position,
-        &owner,
-        position_data.position_nonce,
-        stablecoin_program_id,
-    );
-    assert_eq!(
-        position_data.owner_account_id, owner.account_id,
-        "Position owner_account_id does not match the owner account"
-    );
-
-    // Read-only, but still pinned: a substituted global would be a silent
-    // inconsistency even though nothing here branches on its contents.
-    let _parameters = ProtocolParameters::try_from(&crate::checks::decode_global(
-        &protocol_parameters,
-        compute_protocol_parameters_pda(stablecoin_program_id),
-        stablecoin_program_id,
-        "ProtocolParameters",
-    ))
-    .expect("ProtocolParameters must decode");
-    // `is_frozen` is deliberately not read: closing a settled position removes an
-    // obligation and cannot worsen protocol health (§7).
-
-    assert_eq!(
-        position_data.normalized_debt_amount, 0,
-        "Position still has outstanding debt"
-    );
-    assert_eq!(
-        position_data.collateral_amount, 0,
+    assert!(
+        position.collateral_amount == 0,
         "Position still holds collateral"
     );
-
-    assert_eq!(
-        position_data.vault_account_id, vault.account_id,
-        "Position vault_account_id does not match the vault account"
-    );
-    let vault_balance = match TokenHolding::try_from(&vault.account.data)
-        .expect("Vault account must hold a valid TokenHolding")
-    {
-        TokenHolding::Fungible { balance, .. } => balance,
-        TokenHolding::NftMaster { .. } | TokenHolding::NftPrintedCopy { .. } => {
-            panic!("Vault must hold a fungible collateral balance")
+    Response::set_state(Vec::new()).event(
+        PositionClosed {
+            owner: input.receiver.account_id,
         }
-    };
-    // The position's own accounting already reads zero; this catches the case
-    // where the two disagree, which would strand tokens behind a cleared position.
-    assert_eq!(vault_balance, 0, "Vault still holds a balance");
+        .to_program_event(),
+    )
+}
 
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(owner),
-        // Clear the data only. A diff cannot change an account's `program_owner`
-        // or `nonce` — it does not carry them, and the runtime derives the post
-        // owner itself — so the PDA cannot actually be released; an
-        // `Account::default()` post-state is not expressible here. The account lingers
-        // stablecoin-owned with empty data, like the vault does per §12.
-        AccountStateDiff::new(position, BalanceDiff::Add(0), Data::default()),
-        AccountStateDiff::unchanged(vault),
-        AccountStateDiff::unchanged(protocol_parameters),
-    ];
+#[cfg(test)]
+mod tests {
+    use stablecoin_core::event::{PositionClosed, StablecoinEvent as _};
 
-    (state_diffs, vec![])
+    use super::*;
+    use crate::test_utils::*;
+
+    fn position(collateral_amount: u128, normalized_debt_amount: u128) -> StablecoinState {
+        StablecoinState::Position(Position {
+            token_program_id: TOKEN,
+            collateral_definition_id: COLLATERAL_DEFINITION,
+            collateral_amount,
+            normalized_debt_amount,
+        })
+    }
+
+    fn close(from: Option<Actor>, is_authorized: bool, pre: Option<&StablecoinState>) -> Response {
+        run(
+            stablecoin(OWNER),
+            from,
+            is_authorized,
+            pre,
+            &Message::ClosePosition,
+        )
+    }
+
+    #[test]
+    fn closing_an_empty_position_clears_the_state() {
+        assert_eq!(
+            close(None, true, Some(&position(0, 0))),
+            Response::set_state(Vec::new())
+                .event(PositionClosed { owner: OWNER }.to_program_event())
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Position still has debt")]
+    fn closing_with_debt_panics() {
+        let _ = close(None, true, Some(&position(0, 1)));
+    }
+
+    #[test]
+    #[should_panic(expected = "Position still holds collateral")]
+    fn closing_with_collateral_panics() {
+        let _ = close(None, true, Some(&position(1, 0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "this account has no position")]
+    fn closing_without_a_position_panics() {
+        let _ = close(None, true, None);
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn closing_from_another_actor_panics() {
+        let _ = close(Some(outsider(OTHER_PROGRAM)), true, Some(&position(0, 0)));
+    }
+
+    #[test]
+    #[should_panic(expected = "only the account's owner may send this")]
+    fn closing_without_the_owners_signature_panics() {
+        let _ = close(None, false, Some(&position(0, 0)));
+    }
 }

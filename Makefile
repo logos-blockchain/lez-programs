@@ -38,7 +38,7 @@ fmt:
 # IDLs of the programs ported to the actor model, generated from their core crates, which mark
 # their message enum, state types and event trait. The others keep their v1 IDLs in artifacts/
 # until their ports. `make idl PROGRAM=<name>` generates only that one.
-IDL_PROGRAMS := token nft twap_oracle
+IDL_PROGRAMS := token nft twap_oracle stablecoin
 
 idl:
 	@for program in $(IDL_PROGRAMS); do \
