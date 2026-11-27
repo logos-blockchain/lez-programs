@@ -1,71 +1,92 @@
 {
-  "version": "0.1.0",
+  "version": "2",
   "name": "token_mint_authority",
-  "instructions": [
+  "messages": [
     {
-      "name": "faucet_mint",
-      "accounts": [
+      "name": "FaucetMint",
+      "tag": 0,
+      "docs": "Claim a fixed grant for the holding at `to`. The claimant must authorize the call.\nAn empty holding also requires its account's authorization. An existing holding\nmust belong to `definition` in `token_program_id`.\n\nInclude the claimant, allowance PDA and destination under the faucet program,\nthe mint authority PDA, definition and destination under the token program,\nand the system clock actor. The allowance reads the clock. The destination\nasks the token program to mint and checks that the credit settled. A private\ndestination must promote the token credit within the transaction.",
+      "fields": [
         {
-          "name": "recipient",
-          "writable": false,
-          "signer": true,
-          "init": false
+          "name": "token_program_id",
+          "type": "account_id"
         },
         {
-          "name": "mint_allowance",
-          "writable": true,
-          "signer": false,
-          "init": false
+          "name": "definition",
+          "type": "account_id"
         },
         {
-          "name": "user_holding",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "token_definition",
-          "writable": true,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "mint_authority",
-          "writable": false,
-          "signer": false,
-          "init": false
-        },
-        {
-          "name": "clock",
-          "writable": false,
-          "signer": false,
-          "init": false
+          "name": "to",
+          "type": "account_id"
         }
-      ],
-      "args": []
+      ]
     }
   ],
-  "accounts": [
+  "state_types": [
+    "FaucetState"
+  ],
+  "types": [
     {
-      "name": "MintAllowance",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "recipient_id",
-            "type": "account_id"
-          },
-          {
-            "name": "definition_id",
-            "type": "account_id"
-          },
-          {
-            "name": "last_mint_ms",
-            "type": "u64"
-          }
-        ]
-      }
+      "name": "FaucetState",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Allowance",
+          "fields": [
+            {
+              "name": "last_mint_ms",
+              "type": "u64"
+            }
+          ]
+        },
+        {
+          "name": "ReadingHolding",
+          "fields": [
+            {
+              "name": "token_program_id",
+              "type": "account_id"
+            },
+            {
+              "name": "definition",
+              "type": "account_id"
+            },
+            {
+              "name": "to",
+              "type": "account_id",
+              "docs": "Destination as presented by the claimant, including a private alias when used."
+            },
+            {
+              "name": "last_mint_ms",
+              "type": {
+                "option": "u64"
+              }
+            }
+          ]
+        },
+        {
+          "name": "VerifyingCredit",
+          "fields": [
+            {
+              "name": "token_program_id",
+              "type": "account_id"
+            },
+            {
+              "name": "definition",
+              "type": "account_id"
+            },
+            {
+              "name": "expected_balance",
+              "type": "u128"
+            },
+            {
+              "name": "last_mint_ms",
+              "type": {
+                "option": "u64"
+              }
+            }
+          ]
+        }
+      ]
     }
-  ],
-  "instruction_type": "token_mint_authority_core::Instruction"
+  ]
 }

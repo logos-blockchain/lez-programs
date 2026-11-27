@@ -1755,11 +1755,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
-name = "spel-attrs"
-version = "0.7.0"
-source = "git+https://github.com/logos-co/spel.git?rev=0f9e285bfe35b1e32906ddafeaa4d26138cad1b3#0f9e285bfe35b1e32906ddafeaa4d26138cad1b3"
-
-[[package]]
 name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1903,7 +1898,6 @@ dependencies = [
  "lee_core",
  "risc0-zkvm",
  "serde",
- "spel-attrs",
 ]
 
 [[package]]

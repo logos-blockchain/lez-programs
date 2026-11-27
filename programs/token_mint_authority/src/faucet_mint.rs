@@ -1,196 +1,172 @@
-//! Host-side implementation of [`token_mint_authority_core::Instruction::FaucetMint`].
-//!
-//! Delegates to the Token Program (`user -> token-mint-authority -> token`): after the
-//! per-day rate-limit check, it emits a single chained
-//! `Token::MintWithAuthority` that mints [`FAUCET_MINT_AMOUNT`] to the caller,
-//! authorized by the Token-Mint-Authority's mint-authority PDA seed. The Token-Mint-Authority
-//! holds no key — the PDA seed is its authority.
-//!
-//! Wall-clock time comes from the system `CLOCK_01` account (the pinned
-//! `spel-framework`'s `ProgramContext` exposes no clock), same as the stablecoin
-//! program.
+//! One grant, from the signed recipient through its allowance and destination holding.
 
-use clock_core::{ClockAccountData, CLOCK_01_PROGRAM_ACCOUNT_ID};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, BalanceDiff},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response, StateReply, SyncMessage},
 };
-use token_core::TokenDefinition;
+use token_core::{Message as TokenMessage, TokenState};
 use token_mint_authority_core::{
-    verify_mint_allowance_and_get_seed, verify_mint_authority_and_get_seed, MintAllowance,
+    compute_mint_allowance_pda_seed, compute_mint_authority_pda_seed, FaucetState, Internal,
     FAUCET_MINT_AMOUNT, MINT_COOLDOWN_MS,
 };
 
-/// Grant [`FAUCET_MINT_AMOUNT`] of the faucet token to `recipient`, at most once
-/// per [`MINT_COOLDOWN_MS`] per `(recipient, token definition)`.
-///
-/// Returns the six state diffs (in input-account order) and one chained
-/// `Token::MintWithAuthority`.
-///
-/// Topping up an *existing* holding is deliberately permissive — anyone may fund
-/// anyone's holding. Creating a *fresh* one requires `user_holding.is_authorized`.
-///
-/// That split used to be enforced downstream rather than here: v0.2.4's token program
-/// claimed a fresh holding via `Claim::Authorized`, which failed unless the recipient
-/// had authorized it. v0.2.5 removed claims —
-/// `acquire_ownership_on_data_write` fires on any data write to a default-owned
-/// account with no authorization check — so the chained `Token::MintWithAuthority`
-/// would otherwise materialize a holding at *any* unowned address the caller names,
-/// making it token-program-owned permanently and denying it to every other program.
-/// The `else` branch below restores the v0.2.4 rule locally.
-///
-/// # Panics
-/// - `recipient` is not authorized.
-/// - `user_holding` is uninitialized and not authorized.
-/// - `token_definition` is uninitialized, not a `Fungible`, or its stored `mint_authority` is not
-///   `mint_authority` / is renounced.
-/// - `mint_authority` / `mint_allowance` do not match their PDA derivations.
-/// - `mint_allowance` exists but is not owned by this program, or its cooldown has not elapsed
-///   (`FaucetMint cooldown has not elapsed`).
-/// - `clock` is not the system `CLOCK_01` account or is uninitialized.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "six account inputs + program id mirror the host-call ABI; a struct would obscure it"
-)]
-pub fn faucet_mint(
-    recipient: AccountWithMetadata,
-    mint_allowance: AccountWithMetadata,
-    user_holding: AccountWithMetadata,
-    token_definition: AccountWithMetadata,
-    mint_authority: AccountWithMetadata,
-    clock: AccountWithMetadata,
-    token_mint_authority_program_id: AccountId,
-) -> (Vec<AccountStateDiff>, Vec<ChainedCall>) {
+pub(crate) fn request(
+    input: &ReceiveInput,
+    token_program_id: AccountId,
+    definition: AccountId,
+    to: AccountId,
+) -> Response {
+    assert!(input.is_authorized, "recipient must authorize faucet mint");
+    let faucet = input.receiver.program_account_id;
     assert!(
-        recipient.is_authorized,
-        "Recipient authorization is missing"
+        token_program_id != faucet && token_program_id != clock_core::clock_account_id(),
+        "token program must be distinct from the faucet and clock"
     );
+    let seed =
+        compute_mint_allowance_pda_seed(token_program_id, input.receiver.account_id, definition);
+    let allowance = Actor::new(AccountId::for_public_pda(&faucet, &seed), faucet);
+    // The allowance grant ends with the clock read. The token program receives only the
+    // mint authority grant specific to its deployment, further down the second call.
+    Response::keep_state()
+        .send(SyncMessage::new(allowance, &Internal::Claim).with_pda_seeds([seed]))
+        .send_sync(
+            Actor::new(to, faucet),
+            &Internal::Fund {
+                token_program_id,
+                definition,
+                to,
+            },
+        )
+}
 
-    // The faucet token is owned by the Token Program; that owner is the target
-    // of the chained mint.
-    assert_ne!(
-        token_definition.account,
-        Account::default(),
-        "Faucet token definition must be initialized"
-    );
-    let token_program_id = token_definition.account.program_owner;
-    if user_holding.account != Account::default() {
-        assert_eq!(
-            user_holding.account.program_owner, token_program_id,
-            "User holding must be owned by the same Token Program as the token definition"
-        );
-    } else {
-        // Creating a holding requires consent from the address that will receive it.
-        // Topping up an existing holding stays open to anyone (see the doc comment).
+pub(crate) fn read_clock() -> Response {
+    Response::keep_state().send_sync(
+        clock_core::clock_actor(),
+        &clock_core::Message::ReadTimestamp { granularity: 1 },
+    )
+}
+
+pub(crate) fn claim(input: &ReceiveInput, state: Option<FaucetState>) -> Response {
+    let clock_core::Reply::Timestamp(now) = clock_core::Reply::from_message(&input.message) else {
+        panic!("faucet requires a clock timestamp");
+    };
+    if let Some(previous) = idle_timestamp(state) {
         assert!(
-            user_holding.is_authorized,
-            "A fresh user holding must be authorized by its owner"
-        );
-    }
-    let definition_id = token_definition.account_id;
-    // The definition must be a mintable Fungible whose stored authority is this
-    // program's mint-authority PDA — otherwise the chained mint could never
-    // succeed, so fail early with a clear message.
-    let authority_seed =
-        verify_mint_authority_and_get_seed(&mint_authority, token_mint_authority_program_id);
-    match TokenDefinition::try_from(&token_definition.account.data)
-        .expect("Faucet token definition must decode as a TokenDefinition")
-    {
-        TokenDefinition::Fungible { authority, .. } => {
-            let authority =
-                authority.expect("Faucet token has a renounced mint authority (fixed supply)");
-            assert_eq!(
-                authority, mint_authority.account_id,
-                "Faucet token mint authority is not this program's mint-authority PDA"
-            );
-        }
-        TokenDefinition::NonFungible { .. } => {
-            panic!("Faucet token definition must be Fungible");
-        }
-    }
-
-    let now = read_clock(&clock);
-
-    // Called for its address assertion; the seed itself is no longer needed —
-    // ownership of the allowance PDA now comes from writing its data.
-    let _allowance_seed = verify_mint_allowance_and_get_seed(
-        &mint_allowance,
-        recipient.account_id,
-        definition_id,
-        token_mint_authority_program_id,
-    );
-
-    // First mint claims the allowance PDA; later mints must respect the cooldown.
-    // A default (unowned) account means this recipient has never used this faucet
-    // token, so there is nothing to throttle yet.
-    if mint_allowance.account != Account::default() {
-        assert_eq!(
-            mint_allowance.account.program_owner, token_mint_authority_program_id,
-            "Mint allowance account is not owned by this program"
-        );
-        let previous = MintAllowance::try_from(&mint_allowance.account.data)
-            .expect("Mint allowance account must decode as a MintAllowance");
-        // `saturating_sub` treats a backwards clock as "no time elapsed", which
-        // conservatively keeps the faucet throttled rather than opening it.
-        assert!(
-            now.saturating_sub(previous.last_mint_ms) >= MINT_COOLDOWN_MS,
+            now.saturating_sub(previous) >= MINT_COOLDOWN_MS,
             "FaucetMint cooldown has not elapsed"
         );
     }
-
-    let updated = MintAllowance {
-        recipient_id: recipient.account_id,
-        definition_id,
-        last_mint_ms: now,
-    };
-    // The chained call names its accounts by id, so capture them before the
-    // pre-states are moved into the state diffs below.
-    let user_holding_id = user_holding.account_id;
-    let mint_authority_id = mint_authority.account_id;
-
-    // Diffs mirror the input account order, and every declared account must
-    // appear: v0.2.5 fails a transaction whose output omits one. `user_holding`
-    // and `token_definition` are echoed unchanged here; the chained mint applies
-    // the actual mutation. Writing data to the allowance PDA *is* the ownership
-    // claim on first use — `Claim::Pda` is gone, ownership is acquired implicitly
-    // by the write — after which `last_mint_ms` persists and is rewritten. The
-    // authority PDA is only echoed: it never holds state, and taking no ownership
-    // of it is deliberate (the seed alone authorizes the mint).
-    let state_diffs = vec![
-        AccountStateDiff::unchanged(recipient),
-        AccountStateDiff::new(mint_allowance, BalanceDiff::Add(0), (&updated).into()),
-        AccountStateDiff::unchanged(user_holding),
-        AccountStateDiff::unchanged(token_definition.clone()),
-        AccountStateDiff::unchanged(mint_authority),
-        AccountStateDiff::unchanged(clock),
-    ];
-
-    // Delegate the mint to the Token Program under the mint-authority PDA seed.
-    // MintWithAuthority account order: [definition, holding, authority]. The
-    // authority is carried by `pda_seeds`, not by an `is_authorized` pre-state
-    // flag — the call ships ids, not accounts.
-    let mint_call = ChainedCall::new(
-        token_program_id,
-        vec![definition_id, user_holding_id, mint_authority_id],
-        &token_core::Instruction::MintWithAuthority {
-            amount_to_mint: FAUCET_MINT_AMOUNT,
-        },
-    )
-    .with_pda_seeds(vec![authority_seed]);
-
-    (state_diffs, vec![mint_call])
+    Response::set_state(FaucetState::Allowance { last_mint_ms: now }.encode())
 }
 
-/// Read the millisecond wall-clock timestamp from the system `CLOCK_01` account.
-pub(crate) fn read_clock(clock: &AccountWithMetadata) -> u64 {
+// Actor roles can coincide: for example, a token holding can live at an allowance PDA.
+// Restore the allowance's timestamp when the transient balance checks finish.
+fn idle_timestamp(state: Option<FaucetState>) -> Option<u64> {
+    match state {
+        None => None,
+        Some(FaucetState::Allowance { last_mint_ms }) => Some(last_mint_ms),
+        Some(FaucetState::ReadingHolding { .. } | FaucetState::VerifyingCredit { .. }) => {
+            panic!("faucet mint already in progress")
+        }
+    }
+}
+
+pub(crate) fn fund(
+    input: &ReceiveInput,
+    state: Option<FaucetState>,
+    token_program_id: AccountId,
+    definition: AccountId,
+    to: AccountId,
+) -> Response {
+    let holding = Actor::new(input.receiver.account_id, token_program_id);
+    let pending = FaucetState::ReadingHolding {
+        token_program_id,
+        definition,
+        to,
+        last_mint_ms: idle_timestamp(state),
+    };
+    let mut response = Response::set_state(pending.encode());
+    if input.is_authorized {
+        // Idempotent for a holding of this definition. Only its owner may open a fresh one.
+        response = response.send_sync(holding, &TokenMessage::InitializeHolding { definition });
+    }
+    response
+        .send_sync(holding, &TokenMessage::ReadState)
+        .send_sync(input.receiver, &Internal::AssertSettled)
+}
+
+fn holding_balance(
+    input: &ReceiveInput,
+    token_program_id: AccountId,
+    definition: AccountId,
+) -> u128 {
+    let holding_actor = Actor::new(input.receiver.account_id, token_program_id);
     assert_eq!(
-        clock.account_id, CLOCK_01_PROGRAM_ACCOUNT_ID,
-        "Clock account must be the system CLOCK_01 account"
+        input.from,
+        Some(holding_actor),
+        "unexpected holding state sender"
     );
-    assert_ne!(
-        clock.account,
-        Account::default(),
-        "Clock account must be initialized"
+    let reply: StateReply =
+        borsh::from_slice(&input.message).expect("holding state reply must decode");
+    let Some(TokenState::Holding(holding)) = TokenState::decode(&reply.state) else {
+        panic!("destination must be an initialized token holding");
+    };
+    assert_eq!(
+        holding.definition_id, definition,
+        "destination holds another token"
     );
-    ClockAccountData::from_bytes(clock.account.data.as_ref()).timestamp
+    holding.balance
+}
+
+pub(crate) fn mint(
+    input: &ReceiveInput,
+    token_program_id: AccountId,
+    definition: AccountId,
+    to: AccountId,
+    last_mint_ms: Option<u64>,
+) -> Response {
+    let expected_balance = holding_balance(input, token_program_id, definition)
+        .checked_add(FAUCET_MINT_AMOUNT)
+        .expect("destination balance overflow");
+    let seed = compute_mint_authority_pda_seed(token_program_id);
+    let authority = AccountId::for_public_pda(&input.receiver.program_account_id, &seed);
+    // Preserve the address supplied by the claimant when the holding is private.
+    let message = TokenMessage::Mint {
+        definition,
+        to,
+        amount: FAUCET_MINT_AMOUNT,
+    };
+    Response::set_state(
+        FaucetState::VerifyingCredit {
+            token_program_id,
+            definition,
+            expected_balance,
+            last_mint_ms,
+        }
+        .encode(),
+    )
+    .send(
+        SyncMessage::new(Actor::new(authority, token_program_id), &message).with_pda_seeds([seed]),
+    )
+    .send_sync(
+        Actor::new(input.receiver.account_id, token_program_id),
+        &TokenMessage::ReadState,
+    )
+}
+
+pub(crate) fn verify(
+    input: &ReceiveInput,
+    token_program_id: AccountId,
+    definition: AccountId,
+    expected_balance: u128,
+    last_mint_ms: Option<u64>,
+) -> Response {
+    assert_eq!(
+        holding_balance(input, token_program_id, definition),
+        expected_balance,
+        "faucet credit did not settle"
+    );
+    Response::set_state(last_mint_ms.map_or_else(Vec::new, |last_mint_ms| {
+        FaucetState::Allowance { last_mint_ms }.encode()
+    }))
 }

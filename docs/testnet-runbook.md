@@ -597,6 +597,8 @@ See [AMM protocol fees](./amm-protocol-fees.md) for the full model.
 
 ## 14. Faucet: mint additional tokens (`token-mint-authority`)
 
+For LEZ v0.4, use the deployment-scoped PDA helpers and actor message in the [v0.4 faucet instructions](../README.md#claim-from-the-v04-faucet).
+
 The **token-mint-authority** program is a permissionless faucet: once a token's
 `mint_authority` is set to the faucet's singleton PDA, anyone can mint a fixed amount of
 that token to themselves — rate-limited to **once per 24h per `(recipient, token

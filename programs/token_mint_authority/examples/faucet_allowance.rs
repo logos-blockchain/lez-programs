@@ -1,15 +1,4 @@
-//! Print the mint-allowance PDA for a `(recipient, token definition)` pair.
-//!
-//! `FaucetMint` rate-limits per `(recipient, definition)` by claiming a
-//! [`MintAllowance`] account at [`compute_mint_allowance_pda`]. That address is a
-//! required input to the instruction, so anything that submits a faucet mint (the
-//! testnet setup script, an e2e test) needs to derive it up front. Since LEZ v0.2.5 it
-//! derives from the deployed program's account id (its `ProgramHeader` address), not from
-//! the binary's ImageID, so pass that account id.
-//!
-//! Usage:
-//!   cargo run -p token_mint_authority_program --example faucet_allowance -- \
-//!     <program-account-id-base58> <recipient-base58> <definition-base58>
+//! Derive the allowance account to declare when submitting a faucet claim.
 
 use std::{error::Error, str::FromStr};
 
@@ -17,27 +6,16 @@ use lee_core::account::AccountId;
 use token_mint_authority_core::compute_mint_allowance_pda;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let mut args = std::env::args().skip(1);
-    let usage = "usage: cargo run -p token_mint_authority_program --example faucet_allowance -- \
-         <program-account-id-base58> <recipient-base58> <definition-base58>";
-    let program_s = args.next().ok_or(usage)?;
-    let recipient_s = args.next().ok_or(usage)?;
-    let definition_s = args.next().ok_or(usage)?;
-
-    let program_account_id =
-        AccountId::from_str(&program_s).map_err(|_| "program account id must be base58")?;
-    let recipient =
-        AccountId::from_str(&recipient_s).map_err(|_| "recipient must be a base58 account id")?;
-    let definition =
-        AccountId::from_str(&definition_s).map_err(|_| "definition must be a base58 account id")?;
-
-    let allowance = compute_mint_allowance_pda(program_account_id, recipient, definition);
-
-    // Print only the base58 id on the last line so callers can grep it out easily.
-    println!("program:          {program_account_id}");
-    println!("recipient:        {recipient}");
-    println!("definition:       {definition}");
-    println!("base58:           {allowance}");
-
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    let [faucet, token, recipient, definition] = args.as_slice() else {
+        return Err("usage: faucet_allowance <faucet-program-id> <token-program-id> <recipient> <definition>".into());
+    };
+    let allowance = compute_mint_allowance_pda(
+        AccountId::from_str(faucet).map_err(|_| "invalid faucet program id")?,
+        AccountId::from_str(token).map_err(|_| "invalid token program id")?,
+        AccountId::from_str(recipient).map_err(|_| "invalid recipient account id")?,
+        AccountId::from_str(definition).map_err(|_| "invalid definition account id")?,
+    );
+    println!("base58: {allowance}");
     Ok(())
 }
