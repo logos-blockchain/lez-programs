@@ -72,7 +72,7 @@ COMPONENTS = [
     program("nft", "token"),
     program("twap_oracle"),
     program("amm", "token", "twap_oracle"),
-    program("ata", "token"),
+    program("ata", "token", "nft"),
     program("stablecoin", "token", "twap_oracle"),
     program("token_mint_authority", "token"),
     module("amm", "programs/amm/core/", "programs/token/core/", "programs/twap_oracle/core/"),

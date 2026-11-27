@@ -1,465 +1,264 @@
-use ata_core::{compute_ata_seed, get_associated_token_account_id};
+use ata_core::{AtaState, Holding, Internal, Message, TransferKind, TransferRequest};
 use lee_core::{
-    account::{Account, AccountId, AccountWithMetadata, Data},
-    program::{AccountStateDiff, ChainedCall},
+    account::{AccountId, Actor},
+    program::{ReceiveInput, Response, StateReply},
 };
-use token_core::{TokenDefinition, TokenHolding};
+use token_core::{TokenHolding, TokenState};
 
-const ATA_PROGRAM_ID: AccountId = AccountId::new([1u8; 32]);
-const TOKEN_PROGRAM_ID: AccountId = AccountId::new([2u8; 32]);
-const OTHER_TOKEN_PROGRAM_ID: AccountId = AccountId::new([3u8; 32]);
+use crate::handle_message;
 
-fn owner_id() -> AccountId {
-    AccountId::new([0x01u8; 32])
-}
+const ATA: AccountId = AccountId::new([1; 32]);
+const ASSET: AccountId = AccountId::new([2; 32]);
+const OWNER: AccountId = AccountId::new([3; 32]);
+const DEF: AccountId = AccountId::new([4; 32]);
+const TO: AccountId = AccountId::new([5; 32]);
 
-fn definition_id() -> AccountId {
-    AccountId::new([0x02u8; 32])
-}
-
-fn ata_id() -> AccountId {
-    get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    )
-}
-
-fn owner_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: true,
-        account_id: owner_id(),
+fn input(account: AccountId, message: &impl borsh::BorshSerialize) -> ReceiveInput {
+    ReceiveInput {
+        receiver: Actor::new(account, ATA),
+        from: None,
+        is_authorized: false,
+        pre_state: Vec::new().into(),
+        message: borsh::to_vec(message).unwrap(),
     }
 }
 
-fn definition_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenDefinition::Fungible {
-                name: "TEST".to_string(),
-                total_supply: 1000,
-                metadata_id: None,
-                authority: None,
-            }),
-            nonce: lee_core::account::Nonce(0),
+fn request(amount: u128) -> TransferRequest {
+    TransferRequest {
+        owner: OWNER,
+        asset_program: ASSET,
+        definition: DEF,
+        kind: TransferKind::Token { amount },
+    }
+}
+
+fn source() -> AccountId {
+    ata_core::get_associated_token_account_id(&ATA, &ata_core::compute_ata_seed(ASSET, OWNER, DEF))
+}
+
+fn start(amount: u128) -> Response {
+    let mut call = input(TO, &Internal::Transfer(request(amount)));
+    call.from = Some(Actor::new(OWNER, ATA));
+    handle_message(&call)
+}
+
+fn reply(response: Response, sender: Actor, balance: u128) -> ReceiveInput {
+    let mut call = input(
+        TO,
+        &StateReply {
+            state: TokenState::Holding(TokenHolding {
+                definition_id: DEF,
+                balance,
+            })
+            .encode()
+            .into(),
         },
-        is_authorized: false,
-        account_id: definition_id(),
-    }
+    );
+    call.pre_state = response.post_state.unwrap();
+    call.from = Some(sender);
+    call
 }
 
-fn uninitialized_ata_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: ata_id(),
-    }
-}
-
-fn initialized_ata_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: definition_id(),
-                balance: 100,
-            }),
-            nonce: lee_core::account::Nonce(0),
+#[test]
+fn spending_always_needs_owner_authorization() {
+    for message in [
+        Message::Transfer {
+            token_program_id: ASSET,
+            definition: DEF,
+            to: TO,
+            amount: 1,
         },
-        is_authorized: false,
-        account_id: ata_id(),
+        Message::TransferNft {
+            nft_program_id: ASSET,
+            definition: DEF,
+            to: TO,
+        },
+        Message::Burn {
+            token_program_id: ASSET,
+            definition: DEF,
+            amount: 1,
+        },
+        Message::BurnNft {
+            nft_program_id: ASSET,
+            definition: DEF,
+            amount: 1,
+        },
+    ] {
+        assert!(std::panic::catch_unwind(|| handle_message(&input(OWNER, &message))).is_err());
     }
 }
 
 #[test]
-fn create_emits_chained_call_for_uninitialized_ata() {
-    let (post_states, chained_calls) = crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        uninitialized_ata_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
+fn forwarding_captures_the_authorized_owner_and_grants_nothing_to_recipient() {
+    let mut call = input(
+        OWNER,
+        &Message::Transfer {
+            token_program_id: ASSET,
+            definition: DEF,
+            to: TO,
+            amount: 7,
+        },
     );
-
-    assert_eq!(post_states.len(), 3);
-    // The owner is echoed untouched. v0.2.4 claimed it as a marker when it was default
-    // (`Claim::Authorized` over empty data); v0.2.5 acquires ownership only on a data
-    // write and forbids an unowned account from carrying data, so that marker is gone.
-    assert_eq!(post_states[0], AccountStateDiff::unchanged(owner_account()));
-
-    let expected_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![definition_id(), ata_id()],
-        &token_core::Instruction::InitializeAccount,
-    )
-    .with_pda_seeds(vec![compute_ata_seed(
-        TOKEN_PROGRAM_ID,
-        owner_id(),
-        definition_id(),
-    )]);
-
-    assert_eq!(chained_calls, vec![expected_call]);
-}
-
-#[test]
-fn create_is_idempotent_for_initialized_ata() {
-    let (post_states, chained_calls) = crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        initialized_ata_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    assert!(
-        chained_calls.is_empty(),
-        "Should emit no chained call for already-initialized ATA"
+    call.is_authorized = true;
+    // Authorization may come from another program's PDA grant, not only a root signature.
+    call.from = Some(Actor::new(DEF, ASSET));
+    let response = handle_message(&call);
+    assert_eq!(
+        response,
+        Response::keep_state().send_sync(Actor::new(TO, ATA), &Internal::Transfer(request(7)))
     );
 }
 
 #[test]
-#[should_panic(expected = "ATA account ID does not match expected derivation")]
-fn create_panics_on_wrong_ata_address() {
-    let wrong_ata = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: AccountId::new([0xFFu8; 32]),
+fn create_is_permissionless_and_grants_only_the_derived_holding() {
+    let response = handle_message(&input(
+        TO,
+        &Message::Create {
+            token_program_id: ASSET,
+            owner: OWNER,
+            definition: DEF,
+        },
+    ));
+    let [call] = response.sync_messages.as_slice() else {
+        panic!("one initialization")
     };
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        wrong_ata,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
+    assert_eq!(call.to, Actor::new(source(), ASSET));
+    assert_eq!(
+        call.pda_seeds,
+        [ata_core::compute_ata_seed(ASSET, OWNER, DEF)].into()
     );
+    assert_eq!(
+        borsh::from_slice::<token_core::Message>(&call.message).unwrap(),
+        token_core::Message::InitializeHolding { definition: DEF }
+    );
+    assert!(response.post_state.is_none());
 }
 
 #[test]
-fn get_associated_token_account_id_is_deterministic() {
-    let seed = compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id());
-    let id1 = get_associated_token_account_id(&ATA_PROGRAM_ID, &seed);
-    let id2 = get_associated_token_account_id(&ATA_PROGRAM_ID, &seed);
-    assert_eq!(id1, id2);
+fn an_external_program_cannot_forge_an_internal_transfer() {
+    let mut call = input(TO, &Internal::Transfer(request(1)));
+    call.from = Some(Actor::new(OWNER, ASSET));
+    call.is_authorized = true;
+    assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
 }
 
 #[test]
-fn get_associated_token_account_id_differs_by_token_program() {
-    let id1 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    let id2 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(OTHER_TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    assert_ne!(id1, id2);
-}
-
-#[test]
-fn get_associated_token_account_id_differs_by_owner() {
-    let other_owner = AccountId::new([0x99u8; 32]);
-    let id1 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    let id2 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, other_owner, definition_id()),
-    );
-    assert_ne!(id1, id2);
-}
-
-#[test]
-fn get_associated_token_account_id_differs_by_definition() {
-    let other_def = AccountId::new([0x99u8; 32]);
-    let id1 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), definition_id()),
-    );
-    let id2 = get_associated_token_account_id(
-        &ATA_PROGRAM_ID,
-        &compute_ata_seed(TOKEN_PROGRAM_ID, owner_id(), other_def),
-    );
-    assert_ne!(id1, id2);
-}
-
-#[test]
-#[should_panic(expected = "Token definition must be owned by expected token program")]
-fn create_panics_when_definition_is_owned_by_unexpected_token_program() {
-    let mut definition = definition_account();
-    definition.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition,
-        uninitialized_ata_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Existing ATA must be owned by expected token program")]
-fn create_panics_when_existing_ata_is_owned_by_unexpected_token_program() {
-    let mut ata = initialized_ata_account();
-    ata.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        ata,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Existing ATA token definition does not match")]
-fn create_panics_when_existing_ata_definition_mismatches_requested_definition() {
-    let mut ata = initialized_ata_account();
-    ata.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: AccountId::new([0xAAu8; 32]),
-        balance: 100,
-    });
-
-    crate::create::create_associated_token_account(
-        owner_account(),
-        definition_account(),
-        ata,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-    );
-}
-
-fn recipient_id() -> AccountId {
-    AccountId::new([0x03u8; 32])
-}
-
-fn initialized_recipient_account() -> AccountWithMetadata {
-    AccountWithMetadata {
-        account: Account {
-            program_owner: TOKEN_PROGRAM_ID,
-            balance: 0,
-            data: Data::from(&TokenHolding::Fungible {
-                definition_id: definition_id(),
-                balance: 0,
-            }),
-            nonce: lee_core::account::Nonce(0),
+fn replies_authenticate_account_and_program_and_refuse_reentry() {
+    for sender in [
+        None,
+        Some(Actor::new(source(), ATA)),
+        Some(Actor::new(OWNER, ASSET)),
+    ] {
+        let mut call = reply(start(1), Actor::new(source(), ASSET), 100);
+        call.from = sender;
+        assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
+    }
+    let mut call = input(
+        TO,
+        &Message::Create {
+            token_program_id: ASSET,
+            owner: OWNER,
+            definition: DEF,
         },
-        is_authorized: false,
-        account_id: recipient_id(),
+    );
+    call.pre_state = start(1).post_state.unwrap();
+    call.is_authorized = true;
+    assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
+}
+
+#[test]
+fn a_selected_asset_program_that_never_replies_cannot_commit_pending_state() {
+    // A caller can select a nonconforming program that returns no state reply.
+    let response = start(1);
+    let [read, guard] = response.sync_messages.as_slice() else {
+        panic!("read then completion guard")
+    };
+    assert_eq!(read.to, Actor::new(source(), ASSET));
+    assert!(read.pda_seeds.is_empty());
+    assert_eq!(guard.to, Actor::new(TO, ATA));
+    let mut call = input(TO, &Internal::AssertIdle);
+    call.pre_state = response.post_state.unwrap();
+    call.from = Some(call.receiver);
+    assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
+    call.pre_state = Vec::new().into();
+    assert_eq!(handle_message(&call), Response::keep_state());
+    call.from = Some(Actor::new(OWNER, ATA));
+    assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
+}
+
+fn transfer(amount: u128) -> Response {
+    let response = handle_message(&reply(start(amount), Actor::new(source(), ASSET), 100));
+    handle_message(&reply(response, Actor::new(TO, ASSET), 10))
+}
+
+#[test]
+fn transfer_grants_only_source_and_verifies_after_the_asset_call() {
+    let response = transfer(7);
+    let [debit, verify] = response.sync_messages.as_slice() else {
+        panic!("debit then verification")
+    };
+    assert_eq!(debit.to, Actor::new(source(), ASSET));
+    assert_eq!(
+        debit.pda_seeds,
+        [ata_core::compute_ata_seed(ASSET, OWNER, DEF)].into()
+    );
+    assert_eq!(verify.to, Actor::new(TO, ASSET));
+    assert!(verify.pda_seeds.is_empty());
+    assert_eq!(
+        AtaState::decode(response.post_state.as_ref().unwrap()),
+        Some(AtaState::VerifyingRecipient {
+            asset_program: ASSET,
+            definition: DEF,
+            expected: Holding::Token(17)
+        })
+    );
+    assert_eq!(
+        handle_message(&reply(response, Actor::new(TO, ASSET), 17)),
+        Response::set_state(Vec::new())
+    );
+}
+
+#[test]
+fn deferred_or_incorrect_credit_cannot_complete() {
+    for balance in [10, 16, 18] {
+        let call = reply(transfer(7), Actor::new(TO, ASSET), balance);
+        assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
     }
 }
 
 #[test]
-fn transfer_emits_chained_call_for_initialized_recipient() {
-    let (post_states, chained_calls) = crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        initialized_recipient_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        25,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    assert_eq!(chained_calls.len(), 1);
-
-    let expected_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![ata_id(), initialized_recipient_account().account_id],
-        &token_core::Instruction::Transfer {
-            amount_to_transfer: 25,
-        },
-    )
-    .with_pda_seeds(vec![compute_ata_seed(
-        TOKEN_PROGRAM_ID,
-        owner_id(),
-        definition_id(),
-    )]);
-
-    assert_eq!(chained_calls, vec![expected_call]);
+fn overflowing_recipient_snapshot_is_rejected_before_the_transfer() {
+    // A caller-selected asset may report holdings without the canonical token's
+    // total-supply invariant. ATA must not wrap its expected settlement balance.
+    let response = handle_message(&reply(start(1), Actor::new(source(), ASSET), 100));
+    let call = reply(response, Actor::new(TO, ASSET), u128::MAX);
+    assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
 }
 
 #[test]
-#[should_panic(expected = "Owner authorization is missing")]
-fn transfer_panics_when_owner_not_authorized() {
-    let mut unauthorized_owner = owner_account();
-    unauthorized_owner.is_authorized = false;
-
-    crate::transfer::transfer_from_associated_token_account(
-        unauthorized_owner,
-        initialized_ata_account(),
-        initialized_recipient_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
+fn zero_transfer_is_a_validated_noop_without_a_credit_or_event() {
+    assert_eq!(transfer(0), Response::set_state(Vec::new()));
+    let mut call = reply(start(0), Actor::new(source(), ASSET), 100);
+    call.message = borsh::to_vec(&StateReply {
+        state: Vec::new().into(),
+    })
+    .unwrap();
+    assert!(std::panic::catch_unwind(|| handle_message(&call)).is_err());
 }
 
 #[test]
-#[should_panic(expected = "Recipient token holding must be initialized")]
-fn transfer_panics_when_recipient_is_default() {
-    let default_recipient = AccountWithMetadata {
-        account: Account::default(),
-        is_authorized: false,
-        account_id: recipient_id(),
-    };
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        default_recipient,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Sender ATA must be owned by expected token program")]
-fn transfer_panics_when_sender_ata_is_owned_by_unexpected_token_program() {
-    let mut sender = initialized_ata_account();
-    sender.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        sender,
-        initialized_recipient_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Recipient must be owned by the same token program as the sender ATA")]
-fn transfer_panics_when_recipient_is_foreign_owned() {
-    let mut foreign_recipient = initialized_recipient_account();
-    foreign_recipient.account.program_owner = AccountId::new([9u8; 32]);
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        foreign_recipient,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Recipient must hold a valid token")]
-fn transfer_panics_when_recipient_data_is_malformed() {
-    let mut malformed_recipient = initialized_recipient_account();
-    malformed_recipient.account.data = Data::try_from(vec![0xFFu8, 0xFE, 0xFD]).unwrap();
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        malformed_recipient,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Recipient and sender token definitions do not match")]
-fn transfer_panics_when_recipient_definition_mismatches_sender() {
-    let mut mismatched_recipient = initialized_recipient_account();
-    mismatched_recipient.account.data = Data::from(&TokenHolding::Fungible {
-        definition_id: AccountId::new([0xAAu8; 32]),
-        balance: 0,
-    });
-
-    crate::transfer::transfer_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        mismatched_recipient,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-fn burn_emits_chained_call_for_initialized_ata() {
-    let (post_states, chained_calls) = crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        definition_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        25,
-    );
-
-    assert_eq!(post_states.len(), 3);
-    assert_eq!(chained_calls.len(), 1);
-
-    let expected_call = ChainedCall::new(
-        TOKEN_PROGRAM_ID,
-        vec![definition_id(), ata_id()],
-        &token_core::Instruction::Burn { amount_to_burn: 25 },
-    )
-    .with_pda_seeds(vec![compute_ata_seed(
-        TOKEN_PROGRAM_ID,
-        owner_id(),
-        definition_id(),
-    )]);
-
-    assert_eq!(chained_calls, vec![expected_call]);
-}
-
-#[test]
-#[should_panic(expected = "Holder ATA must be owned by expected token program")]
-fn burn_panics_when_holder_ata_is_owned_by_unexpected_token_program() {
-    let mut holder = initialized_ata_account();
-    holder.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        holder,
-        definition_account(),
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Token definition must be owned by expected token program")]
-fn burn_panics_when_definition_is_owned_by_unexpected_token_program() {
-    let mut definition = definition_account();
-    definition.account.program_owner = OTHER_TOKEN_PROGRAM_ID;
-
-    crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        definition,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
-    );
-}
-
-#[test]
-#[should_panic(expected = "Holder ATA token definition does not match")]
-fn burn_panics_when_holder_definition_mismatches_supplied_definition() {
-    let mut definition = definition_account();
-    definition.account_id = AccountId::new([0xBBu8; 32]);
-
-    crate::burn::burn_from_associated_token_account(
-        owner_account(),
-        initialized_ata_account(),
-        definition,
-        ATA_PROGRAM_ID,
-        TOKEN_PROGRAM_ID,
-        1,
+fn seed_namespaces_and_deployed_program_addresses_are_distinct() {
+    let other = AccountId::new([9; 32]);
+    let seed = ata_core::compute_ata_seed(ASSET, OWNER, DEF);
+    for different in [
+        ata_core::compute_ata_seed(other, OWNER, DEF),
+        ata_core::compute_ata_seed(ASSET, other, DEF),
+        ata_core::compute_ata_seed(ASSET, OWNER, other),
+    ] {
+        assert_ne!(seed, different);
+    }
+    assert_ne!(
+        ata_core::get_associated_token_account_id(&ATA, &seed),
+        ata_core::get_associated_token_account_id(&other, &seed)
     );
 }
