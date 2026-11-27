@@ -1,0 +1,4 @@
+[programs.token_mint_authority]
+core = "core"
+idl = "../../artifacts/token_mint_authority-idl.json"
+binary = "../../target/guest/token_mint_authority.bin"

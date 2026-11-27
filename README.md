@@ -66,7 +66,7 @@ See `apps/amm/README.md` for full details on these variables.
   cargo install cargo-risczero
   cargo risczero install
   ```
-- **SPEL toolchain** — provides `spel` and `wallet` CLI tools. Install from [logos-co/spel](https://github.com/logos-co/spel).
+- **SPEL CLI** for actor IDLs and messages. [Installation](#interacting-with-actor-programs-via-spel)
 - **LEZ** — provides `wallet` CLI. Install from [logos-blockchain/logos-execution-zone](https://github.com/logos-blockchain/logos-execution-zone)
 
 ## Build & Test
@@ -98,107 +98,68 @@ Integration tests live in `programs/integration_tests/tests/` and cover `token`,
 
 `twap_oracle` is tested via its own unit tests (`cargo test -p twap_oracle_program`).
 
-## Compile Guest Binaries
+## Compile guest binaries
 
-The guest binaries are compiled to the `riscv32im-risc0-zkvm-elf` target. This requires the RISC Zero toolchain.
+From the repository root, build the release binaries with Docker BuildKit.
+Set `PROGRAMS` to the space-separated names of the programs to build.
 
 ```bash
-cargo risczero build --manifest-path <PROGRAM>/methods/guest/Cargo.toml
+make build-programs PROGRAMS=token
 ```
 
-Binaries are output to:
-
-```
-<PROGRAM>/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/<PROGRAM>.bin
-```
+The build writes each deployable binary to `target/guest/<program>.bin`.
 
 ## Deployment
 
-Since LEZ v0.2.5 a program is deployed through the `program_loader`: its binary is
-uploaded as a chain of write-once segment accounts (one per 96 KiB chunk), and a header
-account points at that chain. The wallet never generates these accounts itself, so create
-them first. The header account's id is the program's address from then on.
+Set `PAYER` to a funded account in your configured LEZ wallet. SPEL creates
+the header and segment accounts, uploads the binary, and prints the deployed
+header address on stdout. Use that address in subsequent calls.
 
 ```bash
-BIN=programs/token/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/token.bin
-N=$(( ($(wc -c < "$BIN") + 98303) / 98304 ))   # 96 KiB segments; the count must match exactly
-
-# One header account and N segment accounts, all fresh
-wallet account new public --label token-header
-for i in $(seq 1 "$N"); do wallet account new public --label "token-seg-$i"; done
-
-# Header and segments start empty, so a separate funded public account pays the fees.
-# Accounts are labels or `Public/<base58-id>`; a bare id is mistaken for a label.
-wallet program-loader deploy \
-  --elf "$BIN" \
-  --header token-header \
-  --segments $(for i in $(seq 1 "$N"); do printf 'token-seg-%s ' "$i"; done) \
-  --payer <funded-account> \
-  --immutable   # optional: the program self-declares as immutable (not enforced)
-
-# The program's address
-wallet account id --account-id token-header
+TOKEN=$(spel deploy target/guest/token.bin --fee-payer "$PAYER")
 ```
 
-Repeat with each program's binary and its own labels (`amm`, `ata`, `stablecoin`,
-`twap_oracle`, `token_mint_authority`). Segments are write-once: if a deploy fails
-partway, use fresh segment accounts for the next attempt.
-`apps/amm/tests/testnet/setup-amm-testnet.sh` scripts this flow for several programs.
+From a program directory with a `spel.toml`, `spel deploy --fee-payer "$PAYER"`
+uses its configured binary. Every deployment gets a fresh address. To inspect
+the code's ImageID locally, run `spel program-id target/guest/token.bin` from
+the repository root.
 
-To print the ImageID of a built binary (it identifies the code, but is not the program's
-address):
+## Interacting with actor programs via SPEL
+
+The LEZ v0.4 actor programs use SPEL IDL v2. Install the CLI from the same
+revision as the workspace's IDL generator, using SPEL's Rust toolchain.
 
 ```bash
-spel -- program-id <path-to-binary>
+cargo +1.98.1 install --locked --git https://github.com/logos-co/spel.git \
+  --rev 0d42ddb914ddaf2766e0b94661d97d3a2886792b spel
 ```
 
-## Interacting with Programs via `spel`
-
-### Generate an IDL
-
-The IDL describes the program's instructions and can be used to interact with a deployed program.
-
-**Using the `idl-gen` crate** (no external toolchain required — this is what CI uses):
+Run `make idl` from the repository root to regenerate the ported programs' IDLs
+under `artifacts/`. To print one IDL, give SPEL its core crate. From a program
+directory with a `spel.toml`, `spel generate-idl` finds the core crate and
+`spel encode` loads the program's IDL. Both commands work offline.
 
 ```bash
-make idl
+spel generate-idl programs/token/core
 ```
 
-**Using the `spel` CLI** (requires the SPEL toolchain):
+To transfer one base unit between two existing public token holdings, set
+`TOKEN` to the deployed token program's header address, `FROM` and `TO` to the
+holding addresses, and `PAYER` to a funded wallet account. The source holding
+receives and signs the message. SPEL declares the destination token actor from
+the `to` field.
 
 ```bash
-spel generate-idl programs/token/methods/guest/src/bin/token.rs > artifacts/token-idl.json
-spel generate-idl programs/amm/methods/guest/src/bin/amm.rs > artifacts/amm-idl.json
-spel generate-idl programs/ata/methods/guest/src/bin/ata.rs > artifacts/ata-idl.json
-spel generate-idl programs/stablecoin/methods/guest/src/bin/stablecoin.rs > artifacts/stablecoin-idl.json
-spel generate-idl programs/twap_oracle/methods/guest/src/bin/twap_oracle.rs > artifacts/twap_oracle-idl.json
-spel generate-idl programs/token_mint_authority/core > artifacts/token_mint_authority-idl.json
+spel --idl artifacts/token-idl.json --program "$TOKEN" --fee-payer "$PAYER" \
+  send --root "$FROM" --signer "$FROM" -- transfer --to "$TO" --amount 1
+spel --idl artifacts/token-idl.json --program "$TOKEN" inspect "$TO"
 ```
 
-Generated IDL files are committed under `artifacts/`. CI will fail if a program's IDL is missing or out of date.
-
-### Invoke Instructions
-
-Use `spel --idl <IDL> --program <PROGRAM_ID> --fee-payer <FEE_PAYER> -- <INSTRUCTION> [ARGS...]`
-to call a deployed program instruction:
-
-```bash
-spel --idl artifacts/token-idl.json --program <TOKEN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-spel --idl artifacts/amm-idl.json --program <AMM_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-spel --idl artifacts/ata-idl.json --program <ATA_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-spel --idl artifacts/stablecoin-idl.json --program <STABLECOIN_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-spel --idl artifacts/twap_oracle-idl.json --program <TWAP_PROGRAM_ID> --fee-payer <FEE_PAYER> -- <instruction> [args...]
-```
-
-- `--program` is the program's header account id (see [Deployment](#deployment)); spel
-  rejects a binary path.
-- `--fee-payer` is a funded account your wallet holds. Without it the first signer pays,
-  which fails when the signers are fresh accounts, and instructions with no signers are
-  refused.
-- spel reports `Transaction confirmed` even when the program rejected the instruction, so
-  check the result with `spel --idl <IDL> inspect <ACCOUNT_ID> --type <TYPE>`.
-
-The testnet runbook covers the v0.2.5 guest and CLI. [v0.2.5 runbook](docs/testnet-runbook.md)
+For public sends, exit status 0 means a declared actor changed. Status 2 means
+simulation refused the call or the included transaction changed no declared
+actor. Status 1 reports an error. The token and NFT guides cover actor calls.
+The v0.2.5 runbook covers legacy instruction-based programs.
+[Token guide](docs/token/README.md) · [NFT guide](docs/nft/README.md) · [v0.2.5 runbook](docs/testnet-runbook.md)
 
 ### Claim from the v0.4 faucet
 

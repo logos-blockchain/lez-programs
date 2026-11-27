@@ -22,7 +22,7 @@ const MINT_AUTHORITY_PDA_DOMAIN: &[u8] = b"TOKEN_MINT_AUTHORITY__MINT_AUTHORITY"
 const MINT_ALLOWANCE_PDA_DOMAIN: &[u8] = b"TOKEN_MINT_AUTHORITY__MINT_ALLOWANCE";
 
 /// Public messages, Borsh encoded. Send to the claimant's faucet actor.
-#[spel_attrs::message]
+#[cfg_attr(feature = "idl", spel_attrs::message)]
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum Message {
     /// Claim a fixed grant for the holding at `to`. The claimant must authorize the call.
@@ -58,7 +58,7 @@ pub enum Internal {
 
 /// Persisted allowance and the temporary state used by a destination during settlement.
 /// When a destination also hosts an allowance, settlement preserves its last claim time.
-#[spel_attrs::state]
+#[cfg_attr(feature = "idl", spel_attrs::state)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum FaucetState {
     /// Timestamp of the most recent successful grant, in Unix milliseconds.

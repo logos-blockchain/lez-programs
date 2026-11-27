@@ -11,5 +11,4 @@ name = "idl-gen"
 path = "src/main.rs"
 
 [dependencies]
-# The actor-model generator (IDL v2), on spel's refactor/lez-v0.4.x.
-spel-framework-core = { git = "https://github.com/logos-co/spel.git", rev = "0f9e285bfe35b1e32906ddafeaa4d26138cad1b3", package = "spel-framework-core", features = ["idl-gen"] }
+spel-framework-core = { workspace = true, features = ["idl-gen"] }
