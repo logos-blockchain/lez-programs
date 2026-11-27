@@ -314,6 +314,43 @@ fn debt_limits_bound_minting_and_partial_repayment() {
     assert_eq!(engine(&world).fee.total_normalized_debt, 100);
 }
 
+/// The token debits and credits the same holding, so nothing would leave the vault.
+#[test]
+fn a_withdrawal_to_the_positions_own_vault_is_refused() {
+    let (mut world, user) = world_with_user(2_000);
+    let vault = vault_id(&world, user.id());
+    open_position(&mut world, &user, 10).expect("the position opens");
+    let past_root = [
+        stablecoin(&world, engine_id(&world)),
+        clock_actor(),
+        token(&world, vault),
+    ];
+
+    let result = position_message(
+        &mut world,
+        &user,
+        &past_root,
+        &[],
+        &Message::WithdrawCollateral {
+            to: vault,
+            amount: 10,
+        },
+    );
+
+    // A refused transaction records no events, so no `CollateralWithdrawn` either.
+    assert_refused(
+        &result,
+        "Collateral cannot be withdrawn to the position's own vault",
+    );
+    assert_eq!(
+        position(&world, user.id())
+            .expect("the position stays")
+            .collateral_amount,
+        10
+    );
+    assert_eq!(holding_balance(&world, vault), 10);
+}
+
 #[test]
 fn a_debt_free_position_withdraws_while_frozen() {
     let (mut world, user) = world_with_user(2_000);

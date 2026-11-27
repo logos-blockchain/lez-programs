@@ -2,6 +2,9 @@
 //! engine, which approves after checking the freeze flag and, when the position has debt, the
 //! collateralization ratio at the clock's time; the position then decrements its collateral and
 //! transfers from the vault.
+//!
+//! The destination may not be the position's own vault: the token would debit and credit the
+//! same holding, so the position would record a withdrawal that moved nothing out.
 
 use lee_core::{
     account::{AccountId, Actor},
@@ -25,9 +28,12 @@ use crate::{
 /// - `"only the account's owner may send this"` when the message is nested or unsigned.
 /// - `"this account has no position"` when the receiver holds no position.
 /// - `"Withdrawal amount exceeds position collateral"` when `amount` exceeds the collateral.
+/// - `"Collateral cannot be withdrawn to the position's own vault"` when a non-zero withdrawal
+///   names the vault as its destination.
 pub(crate) fn withdraw_collateral(input: &ReceiveInput, to: AccountId, amount: u128) -> Response {
     checks::assert_owner(input);
     let position = position_state(input);
+    assert_leaves_the_vault(input, to, amount);
     let collateral_after = position
         .collateral_amount
         .checked_sub(amount)
@@ -138,9 +144,12 @@ pub(crate) fn finish(
 /// - `"only the engine may send this"` when the sender is anyone else.
 /// - `"this account has no position"` when the receiver holds no position.
 /// - `"Withdrawal amount exceeds position collateral"` when `amount` exceeds the collateral.
+/// - `"Collateral cannot be withdrawn to the position's own vault"` when a non-zero withdrawal
+///   names the vault as its destination.
 pub(crate) fn approved(input: &ReceiveInput, amount: u128, to: AccountId) -> Response {
     checks::assert_from_engine(input);
     let mut position = position_state(input);
+    assert_leaves_the_vault(input, to, amount);
     position.collateral_amount = position
         .collateral_amount
         .checked_sub(amount)
@@ -160,6 +169,18 @@ pub(crate) fn approved(input: &ReceiveInput, amount: u128, to: AccountId) -> Res
             .with_pda_seeds([compute_position_vault_pda_seed(owner)]),
         )
         .event(CollateralWithdrawn { owner, to, amount }.to_program_event())
+}
+
+/// A non-zero withdrawal must name a destination other than the receiver's own vault.
+fn assert_leaves_the_vault(input: &ReceiveInput, to: AccountId, amount: u128) {
+    let vault = stablecoin_core::compute_position_vault_pda(
+        crate::program_id(input),
+        input.receiver.account_id,
+    );
+    assert!(
+        amount == 0 || to != vault,
+        "Collateral cannot be withdrawn to the position's own vault"
+    );
 }
 
 #[cfg(test)]
@@ -184,6 +205,53 @@ mod tests {
             collateral_amount,
             normalized_debt_amount,
         })
+    }
+
+    fn withdraw_to(to: AccountId, amount: u128) -> Response {
+        run(
+            stablecoin(OWNER),
+            None,
+            true,
+            Some(&position(10, 0)),
+            &Message::WithdrawCollateral { to, amount },
+        )
+    }
+
+    #[test]
+    #[should_panic(expected = "Collateral cannot be withdrawn to the position's own vault")]
+    fn position_refuses_a_withdrawal_to_its_own_vault() {
+        let _ = withdraw_to(vault_id(OWNER), 10);
+    }
+
+    #[test]
+    fn position_allows_a_zero_withdrawal_that_names_its_own_vault() {
+        assert_eq!(
+            withdraw_to(vault_id(OWNER), 0),
+            Response::keep_state().send_sync(
+                engine(),
+                &Internal::WithdrawRequest {
+                    amount: 0,
+                    to: vault_id(OWNER),
+                    collateral_after: 10,
+                    normalized_debt_amount: 0,
+                },
+            ),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Collateral cannot be withdrawn to the position's own vault")]
+    fn position_refuses_an_approval_that_pays_its_own_vault() {
+        let _ = run(
+            stablecoin(OWNER),
+            Some(engine()),
+            false,
+            Some(&position(10, 0)),
+            &Internal::WithdrawApproved {
+                amount: 10,
+                to: vault_id(OWNER),
+            },
+        );
     }
 
     fn withdraw(
