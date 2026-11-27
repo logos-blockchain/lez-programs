@@ -4,7 +4,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{account::AccountId, program::ProgramEvent};
 
 /// Event name used by both the runtime selector and the actor IDL generator.
-#[spel_attrs::event]
+#[cfg_attr(feature = "idl", spel_attrs::event)]
 pub trait AmmEvent: BorshSerialize {
     const NAME: &'static str;
 }

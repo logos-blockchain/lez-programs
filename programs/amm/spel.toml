@@ -1,0 +1,4 @@
+[programs.amm]
+core = "core"
+idl = "../../artifacts/amm-idl.json"
+binary = "../../target/guest/amm.bin"

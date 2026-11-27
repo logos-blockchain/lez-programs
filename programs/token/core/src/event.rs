@@ -5,7 +5,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use lee_core::{account::AccountId, program::ProgramEvent};
 use risc0_zkvm::sha::{Impl, Sha256 as _};
 
-#[spel_attrs::event]
+#[cfg_attr(feature = "idl", spel_attrs::event)]
 pub trait TokenEvent: BorshSerialize {
     const NAME: &'static str;
 

@@ -9,7 +9,6 @@
 # tools, lez-core-version. scripts/ci-plan.py rejects unknown names.
 # Remove the line in the PR that fixes the component, so CI checks it again.
 
-program:amm                   # LEZ actor-model port pending
 program:ata                   # LEZ actor-model port pending
 program:stablecoin            # LEZ actor-model port pending
 program:token_mint_authority  # LEZ actor-model port pending

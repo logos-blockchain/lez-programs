@@ -6,7 +6,7 @@ use token_core::TokenHolding;
 use crate::Message;
 
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-#[spel_attrs::state]
+#[cfg_attr(feature = "idl", spel_attrs::state)]
 pub enum AmmState {
     Config(AmmConfig),
     Pool(PoolDefinition),
