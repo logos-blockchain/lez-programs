@@ -10,6 +10,7 @@ use risc0_zkvm::sha::{Impl, Sha256 as _};
 
 use crate::ProtocolParameters;
 
+#[spel_attrs::event]
 pub trait StablecoinEvent: BorshSerialize {
     const NAME: &'static str;
 
